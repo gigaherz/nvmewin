@@ -264,6 +264,7 @@ NVMeFindAdapter(
         if (pRMT->pMsiMsgTbl == NULL)
             return (SP_RETURN_NOT_FOUND);
 
+#ifdef COMPLETE_IN_DPC
         /*
          * Allocate buffer for DPC completiong array. If fails, return
          * FALSE.
@@ -274,6 +275,7 @@ NVMeFindAdapter(
 
         if ( pAE->pDpcArray == NULL )
             return (SP_RETURN_NOT_FOUND);
+#endif
 
     }
 
@@ -434,12 +436,14 @@ BOOLEAN NVMePassiveInitialize(
     StorPortInitializeDpc(pAE, &pAE->AerDpc, NVMeAERDpcRoutine);
     StorPortInitializeDpc(pAE, &pAE->RecoveryDpc, RecoveryDpcRoutine);
 
+#ifdef COMPLETE_IN_DPC
     /* Initialize DPC objects for IO completions */
     for (i = 0; i < pAE->NumDpc; i++) {
         StorPortInitializeDpc(pAE,
             (PSTOR_DPC)pAE->pDpcArray + i,
             IoCompletionDpcRoutine);
     }
+#endif
 
     pAE->RecoveryAttemptPossible = FALSE;
     pAE->IoQueuesAllocated = FALSE;
@@ -455,7 +459,22 @@ BOOLEAN NVMePassiveInitialize(
      *   Create IO Completion Queues
      *   Create IO Submission Queues
      */
-     return NVMeRunningStartAttempt(pAE, FALSE, NULL);
+     NVMeRunningStartAttempt(pAE, FALSE, NULL);
+
+    /*
+     * We'll wait here until either the init machine completes or
+     * fails, its self-timing so we don't need a timeout here.  If
+     * we don't wait we have race with storport enum and if we're
+     * not ready he doesn't always retry initial commands which
+     * forces the user to manually rescan to find our namespaces
+     */
+     while ((pAE->StartState.NextStartState != NVMeStartComplete) &&
+            (pAE->StartState.NextStartState != NVMeStartFailed)){
+        NVMeStallExecution(pAE,STORPORT_TIMER_CB_us);
+     }
+
+     return (pAE->StartState.NextStartState == NVMeStartComplete) ? TRUE : FALSE;
+
 } /* NVMePassiveInitialize */
 
 /*******************************************************************************
@@ -490,19 +509,10 @@ BOOLEAN NVMeInitialize(
     ULONG Lun;
     NVMe_CONTROLLER_CONFIGURATION CC = {0};
     NVMe_CONTROLLER_CAPABILITIES CAP;
-    PERF_CONFIGURATION_DATA perfData;
 
     /* Ensure the Context is valid first */
     if (pAE == NULL)
         return (FALSE);
-
-    Status = StorPortInitializePerfOpts(pAE, TRUE, &perfData);
-    ASSERT(STOR_STATUS_SUCCESS == Status);
-    if (perfData.Flags & STOR_PERF_DPC_REDIRECTION) {
-        perfData.Flags = STOR_PERF_DPC_REDIRECTION;
-    Status = StorPortInitializePerfOpts(pAE, FALSE, &perfData);
-    ASSERT(STOR_STATUS_SUCCESS == Status);
-    }
 
     /* Zero controller config, toggle EN */
     CC.EN = 1;
@@ -932,7 +942,8 @@ BOOLEAN NVMeBuildIo(
                                  Srb);
 
             /* Perform SCSI to NVMe translation */
-            sntiStatus = SntiTranslateCommand(Srb);
+            sntiStatus = SntiTranslateCommand(pAdapterExtension,
+                                              Srb);
 
             switch (sntiStatus) {
                 case SNTI_COMMAND_COMPLETED:
@@ -1198,6 +1209,7 @@ BOOLEAN NVMeIsrIntx(
     return InterruptClaimed;
 }
 
+#ifdef COMPLETE_IN_DPC
 /*******************************************************************************
  * IoCompletionDpcRoutine
  *
@@ -1288,7 +1300,14 @@ IoCompletionDpcRoutine(
                 if (pSrbExtension != NULL) {
                     pSrbExtension->pCplEntry = pCplEntry;
 #if DBG
+#ifndef QEMU
+
+                    if ((pCplEntry->DW2.SQID > 0) &&
+                        (pMMT->Shared == FALSE) &&
+                        (pMMT->LogicalMode == FALSE) ){
                     ASSERT(pSrbExtension->procNum.Number == procNum.Number);
+                    }
+#endif
 #endif
                     if (pSrbExtension->pNvmeCompletionRoutine == NULL) {
                         /*
@@ -1346,17 +1365,149 @@ NVMeIsrMsix (
 {
     PNVME_DEVICE_EXTENSION        pAE = (PNVME_DEVICE_EXTENSION)AdapterExtension;
     PRES_MAPPING_TBL              pRMT = &pAE->ResMapTbl;
-    PMSI_MESSAGE_TBL              pMMT = pRMT->pMsiMsgTbl + MsgID;
-    ULONG                         qNum = pMMT->CplQueueNum;
+    PMSI_MESSAGE_TBL              pMMT = pRMT->pMsiMsgTbl;
+    ULONG                         qNum = 0;
     BOOLEAN                       status;
 
-    status = StorPortIssueDpc(pAE,
+    /*
+     * For shared mode, we'll use the DPC for queue 0,
+     * otherwise we'll use the DPC assoiated with the known
+     * queue number
+     */
+    if (pMMT->Shared == FALSE) {
+        pMMT = pRMT->pMsiMsgTbl + MsgID;
+        qNum = pMMT->CplQueueNum;
+    }
+
+    StorPortIssueDpc(pAE,
                 (PSTOR_DPC)pAE->pDpcArray + qNum,
                 (PVOID)MsgID,
                 NULL);
 
-    return status;
+    return TRUE;
 }
+
+#else /* COMPLETE_IN_DPC */
+
+BOOLEAN
+NVMeIsrMsix (
+    __in PVOID AdapterExtension,
+    __in ULONG MsgID )
+{
+    PNVME_DEVICE_EXTENSION pAE = (PNVME_DEVICE_EXTENSION)AdapterExtension;
+    PNVMe_COMPLETION_QUEUE_ENTRY pCplEntry = NULL;
+    PNVME_SRB_EXTENSION pSrbExtension = NULL;
+    SNTI_TRANSLATION_STATUS sntiStatus = SNTI_TRANSLATION_SUCCESS;
+    ULONG entryStatus = STOR_STATUS_SUCCESS;
+    PMSI_MESSAGE_TBL pMMT = NULL;
+    PQUEUE_INFO pQI = &pAE->QueueInfo;
+    PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
+    PSUB_QUEUE_INFO pSQI = NULL;
+    PCPL_QUEUE_INFO pCQI = NULL;
+    USHORT firstCheckQueue;
+    USHORT lastCheckQueue;
+    USHORT indexCheckQueue;
+    BOOLEAN InterruptClaimed = FALSE;
+#if DBG
+    PROCESSOR_NUMBER procNum;
+
+    StorPortGetCurrentProcessorNumber((PVOID)pAE,
+                                             &procNum);
+#endif
+
+    /* Use the message id to find the correct entry in the MSI_MESSAGE_TBL */
+    pMMT = pRMT->pMsiMsgTbl + MsgID;
+
+    if (pMMT->Shared == TRUE) {
+        firstCheckQueue = 0;
+        lastCheckQueue = (USHORT)pQI->NumCplIoQCreated;
+    } else {
+        firstCheckQueue = pMMT->CplQueueNum;
+        lastCheckQueue = pMMT->CplQueueNum;
+    }
+
+    for (indexCheckQueue = firstCheckQueue;
+          indexCheckQueue <= lastCheckQueue;
+          indexCheckQueue++) {
+        pCQI = pQI->pCplQueueInfo + indexCheckQueue;
+        pSQI = pQI->pSubQueueInfo + indexCheckQueue;
+
+        do {
+            entryStatus = NVMeGetCplEntry(pAE, pCQI, &pCplEntry);
+            if (entryStatus == STOR_STATUS_SUCCESS) {
+#ifndef CHATHAM
+                /*
+                 * Mask the interrupt only when first pending completed entry
+                 * found.
+                 */
+                if ((pRMT->InterruptType == INT_TYPE_INTX) &&
+                    (pAE->IntxMasked == FALSE)) {
+                    StorPortWriteRegisterUlong(pAE,
+                                               &pAE->pCtrlRegister->IVMS,
+                                               1);
+
+                    pAE->IntxMasked = TRUE;
+                }
+#endif /* CHATHAM */
+
+                InterruptClaimed = TRUE;
+
+#pragma prefast(suppress:6011,"This pointer is not NULL")
+                NVMeCompleteCmd(pAE,
+                                pCplEntry->DW2.SQID,
+                                pCplEntry->DW2.SQHD,
+                                pCplEntry->DW3.CID,
+                                (PVOID)&pSrbExtension);
+
+                if (pSrbExtension != NULL) {
+                    pSrbExtension->pCplEntry = pCplEntry;
+#if DBG
+#ifndef QEMU
+
+                    if ((pCplEntry->DW2.SQID > 0) &&
+                        (pMMT->Shared == FALSE) &&
+                        (pMMT->LogicalMode == FALSE) ){
+                        ASSERT(pSrbExtension->procNum.Number == procNum.Number);
+                    }
+#endif
+#endif
+                    if (pSrbExtension->pNvmeCompletionRoutine == NULL) {
+                        /*
+                         * Only call the mapping routine if there is a valid
+                         * SRB request.
+                         */
+                        if (SntiMapCompletionStatus(pSrbExtension) == TRUE) {
+                            IO_StorPortNotification(RequestComplete,
+                                                    pAE,
+                                                    pSrbExtension->pSrb);
+                        }
+                    } else {
+                        if (pSrbExtension->pNvmeCompletionRoutine(pAE,
+                            (PVOID)pSrbExtension)) {
+                            if (pSrbExtension->pSrb != NULL) {
+                                IO_StorPortNotification(RequestComplete,
+                                                        pAE,
+                                                        pSrbExtension->pSrb);
+                            }
+                        } /* If comp routine indicated the task finished */
+                    }
+                } /* If there was an SRB Extension */
+            } /* If a completed command was collected */
+        } while (entryStatus == STOR_STATUS_SUCCESS);
+
+        if (InterruptClaimed == TRUE) {
+            /* Now update the Completion Head Pointer via Doorbell register */
+            StorPortWriteRegisterUlong(pAE,
+                                       pCQI->pCplHDBL,
+                                       (ULONG)pCQI->CplQHeadPtr);
+}
+    } /* end for loop: for every queue to be checked */
+
+    return InterruptClaimed;
+
+} /* NVMeIsrMsix */
+
+#endif /* COMPLETE_IN_DPC */
 
 /*******************************************************************************
  * RecoveryDpcRoutine
@@ -3143,10 +3294,11 @@ ULONG NVMeInitAdminQueues(
      * registers. Need to determine if the adapter is ready for
      * processing commands after entering Start State Machine
      */
+    NVMeEnableAdapter(pAE);
+
 #ifdef CHATHAM
     NVMeChathamSetup(pAE);
 #endif
-    NVMeEnableAdapter(pAE);
 
     return (STOR_STATUS_SUCCESS);
 } /* NVMeInitAdminQueues */
@@ -3212,10 +3364,10 @@ VOID RegisterWriteAddrU64(
     UNREFERENCED_PARAMETER(pContext);
     ASSERT(pContext);
 
-    StorPortWriteRegisterUlong((PDEVICE_EXTENSION)pContext,
+    StorPortWriteRegisterUlong(pContext,
                                (PULONG)pRegAddr,
                                TmpVal);
-    StorPortWriteRegisterUlong((PDEVICE_EXTENSION)pContext,
+    StorPortWriteRegisterUlong(pContext,
                                (PULONG)(pAddress + 1),
                                (UINT32)(Value >> 32));
 }
@@ -3233,18 +3385,14 @@ VOID NVMeChathamSetup(
     PNVME_DEVICE_EXTENSION pAE
 )
 {
-    NVMe_CONTROLLER_CONFIGURATION CC = {0};
     PUCHAR pBar = (PUCHAR)pAE->pChathamRegs;
     ULONG ver = 0;
     ULONGLONG reg1 = 0;
     ULONGLONG reg2 = 0;
     ULONGLONG reg3 = 0;
-
-    CC.EN = 1;
-    CC.MPS = (PAGE_SIZE >> NVME_MEM_PAGE_SIZE_SHIFT);
-    StorPortWriteRegisterUlong(pAE,
-                               (PULONG)(&pAE->pCtrlRegister->CC),
-                               CC.AsUlong);
+    ULONGLONG temp1 = 0;
+    ULONGLONG temp2 = 0;
+    ULONG temp3 = 0;
 
     NVMeStallExecution(pAE,10000);
     ver = StorPortReadRegisterUlong(pAE, (PULONG)(pBar + 0x8080));
@@ -3252,7 +3400,7 @@ VOID NVMeChathamSetup(
     DbgPrint("Chatham Version: 0x%x\n", ver);
 
     ChathamNlb = StorPortReadRegisterUlong(pAE, (PULONG)(pBar + 0x8068));
-    ChathamNlb = 0x3FFFF00;
+    ChathamNlb = ChathamNlb - 0x100;
     ChathamSize = ChathamNlb * 512;
 
     DbgPrint("ChathamSize: 0x%x\n", ChathamSize);
@@ -3260,22 +3408,24 @@ VOID NVMeChathamSetup(
     reg1 = ChathamSize - 1;
     reg2 = reg3 = reg1;
 
+ //   temp1 = ((ULONGLONG)0x1b58 << 32) | 0x7d0;
+ //   temp2 = ((ULONGLONG)0xcb << 32) | 0x131;
+
     RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8000), reg1);
     RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8008), reg2);
     RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8010), reg3);
-    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8020), 0);
-    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8028), 0);
-    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8030), 0);
-    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8038), 0);
-    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8040), 0);
-    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8048), 0);
-    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8050), 0);
-    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8058), 0);
 
-    StorPortWriteRegisterUlong(pAE, (PULONG)(pBar + 0x8060), 0);
-    CC.EN = 0;
-    StorPortWriteRegisterUlong (pAE,
-                                (PULONG)(&pAE->pCtrlRegister->CC),
-                                CC.AsUlong);
+    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8020), temp1);
+    temp3 = StorPortReadRegisterUlong(pAE, (PULONG)(pBar + 0x8020));
+    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8028), temp2);
+    temp3 = StorPortReadRegisterUlong(pAE, (PULONG)(pBar + 0x8028));
+    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8030), temp1);
+    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8038), temp2);
+    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8040), temp1);
+    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8048), temp2);
+    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8050), temp1);
+    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8058), temp2);
+
+    NVMeStallExecution(pAE,10000);
 }
 #endif /* CHATHAM */

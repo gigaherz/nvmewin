@@ -94,7 +94,10 @@ BOOLEAN NVMeAdapterControlPowerDown(
     BOOLEAN status = FALSE;
 
     ASSERT(pAE != NULL);
-
+#ifdef CHATHAM
+    NVMeStallExecution(pAE,100000);
+    return TRUE;
+#endif
     /*
      * The controller is powered down when we get SRB_FUNCTION_POWER in
      * StartIo... nothing else to do, just return.
@@ -110,13 +113,11 @@ BOOLEAN NVMeAdapterControlPowerDown(
         /* Stop the controller, but do not free the resources */
         status = NVMeResetAdapter(pAE);
 
-#ifndef CHATHAM
         if (NVMeWaitOnReady(pAE) == FALSE) {
                 StorPortDebugPrint(INFO,
                                    "NVMeWaitOnReady: returned %d\n",
                                    status);
         }
-#endif
     }
 
     pAE->ShutdownInProgress = TRUE;

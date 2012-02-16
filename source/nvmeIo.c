@@ -205,6 +205,7 @@ ProcessIo(
 
     /* 4 - Issue the Command */
     StorStatus = NVMeIssueCmd(pAdapterExtension, SubQueue, pNvmeCmd);
+    ASSERT(StorStatus == STOR_STATUS_SUCCESS);
 
     /*
      * In crashdump we poll on admin command completions

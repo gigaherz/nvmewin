@@ -327,6 +327,9 @@ SNTI_RESPONSE_BLOCK mediaErrorTable[] = {
  *        - UNMAP (NVME_DATASET_MANAGEMENT is required for translation and this
  *          command will not be supported in the Windows open source driver)
  *
+ *
+ * @param pAdapterExtension - pointer to the adapter device extension
+ *
  * @param pSrb - This parameter specifies the SCSI I/O request. SNTI expects
  *               that the user can access the SCSI CDB, response, and data from
  *               this pointer. For example, if there is a failure in translation
@@ -338,6 +341,7 @@ SNTI_RESPONSE_BLOCK mediaErrorTable[] = {
  *     Indicates translation status
  ******************************************************************************/
 SNTI_TRANSLATION_STATUS SntiTranslateCommand(
+    PNVME_DEVICE_EXTENSION pAdapterExtension,
     PSCSI_REQUEST_BLOCK pSrb
 )
 {
@@ -365,6 +369,15 @@ SNTI_TRANSLATION_STATUS SntiTranslateCommand(
         break;
         case SCSIOP_INQUIRY:
             returnStatus = SntiTranslateInquiry(pSrb);
+            /* set the maximum queue depth per LUN */
+            if (pSrb->SrbStatus == SRB_STATUS_SUCCESS) {
+                StorPortSetDeviceQueueDepth(pAdapterExtension,
+                            pSrb->PathId,
+                            pSrb->TargetId,
+                            pSrb->Lun,
+                            SNTI_STORPORT_QUEUE_DEPTH
+                            );
+            }
         break;
         case SCSIOP_LOG_SENSE:
 #ifdef CHATHAM
@@ -3125,25 +3138,6 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeSense(
     SNTI_STATUS status = SNTI_SUCCESS;
     SNTI_TRANSLATION_STATUS returnStatus = SNTI_COMMAND_COMPLETED;
 
-#ifdef CHATHAM
-    {
-    PMODE_PARAMETER_HEADER pModeHeader6 = NULL;
-
-    pModeHeader6 = (PMODE_PARAMETER_HEADER)(GET_DATA_BUFFER(pSrb));
-    pModeHeader6->ModeDataLength = sizeof(MODE_PARAMETER_BLOCK) +
-                                   sizeof(MODE_PARAMETER_BLOCK) - 1;
-    pModeHeader6->MediumType = 0;
-    pModeHeader6->DeviceSpecificParameter = 0;
-    pModeHeader6->BlockDescriptorLength = 0;
-    pSrb->DataTransferLength = sizeof(MODE_PARAMETER_BLOCK) +
-                               sizeof(MODE_PARAMETER_BLOCK);
-    returnStatus = SNTI_TRANSLATION_SUCCESS;
-    pSrb->SrbStatus = SRB_STATUS_SUCCESS;
-
-    return returnStatus;
-    }
-#endif /* CHATHAM */
-
     /* Extract the Log Sense fields to determine the page */
     pSrbExt = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb);
     longLbaAccepted = GET_U8_FROM_CDB(pSrb, MODE_SENSE_CDB_LLBAA_OFFSET);
@@ -3201,6 +3195,17 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeSense(
         } else {
             switch (pageCode) {
                 case MODE_PAGE_CACHING:
+#ifdef CHATHAM
+                    SntiHardCodeCacheModePage(pSrbExt,
+                                              pLunExt,
+                                              allocLength,
+                                              longLbaAccepted,
+                                              disableBlockDesc,
+                                              modeSense10);
+
+                    pSrb->SrbStatus = SRB_STATUS_SUCCESS;
+                    returnStatus = SNTI_COMMAND_COMPLETED;
+#else
                     /*
                      * This mode page requires a paramter from Get Features.
                      * Must send Get Features w/ Volatile Write Cache Feature
@@ -3222,6 +3227,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeSense(
                      */
                     pSrbExt->pNvmeCompletionRoutine =
                         SntiCompletionCallbackRoutine;
+#endif
                 break;
                 case MODE_PAGE_CONTROL:
                     SntiCreateControlModePage(pSrbExt,
@@ -3268,6 +3274,10 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeSense(
                                            disableBlockDesc,
                                            modeSense10);
 
+#ifdef CHATHAM
+                    pSrb->SrbStatus = SRB_STATUS_SUCCESS;
+                    returnStatus = SNTI_COMMAND_COMPLETED;
+#else
                         /* Command is completed in Build I/O phase */
                         pSrb->SrbStatus = SRB_STATUS_PENDING;
                         returnStatus = SNTI_TRANSLATION_SUCCESS;
@@ -3278,6 +3288,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeSense(
                      */
                     pSrbExt->pNvmeCompletionRoutine =
                         SntiCompletionCallbackRoutine;
+#endif
                 break;
                 default:
                     SntiSetScsiSenseData(pSrb,
@@ -3416,6 +3427,79 @@ VOID SntiCreateControlModePage(
 
     pSrb->DataTransferLength = min(modeDataLength, allocLength);
 } /* SntiCreateControlModePage*/
+
+#ifdef CHATHAM
+VOID SntiHardCodeCacheModePage(
+    PNVME_SRB_EXTENSION pSrbExt,
+    PNVME_LUN_EXTENSION pLunExt,
+    UINT16 allocLength,
+    UINT8 longLbaAccepted,
+    UINT8 disableBlockDesc,
+    BOOLEAN modeSense10
+)
+{
+    PMODE_PARAMETER_HEADER pModeHeader6 = NULL;
+    PMODE_PARAMETER_HEADER10 pModeHeader10 = NULL;
+    PMODE_PARAMETER_BLOCK pModeParamBlock = NULL;
+    PMODE_CACHING_PAGE pCachingModePage = NULL;
+    PSCSI_REQUEST_BLOCK pSrb = pSrbExt->pSrb;
+    UINT16 modeDataLength = 0;
+    UINT16 blockDescLength = 0;
+
+    /* Determine which Mode Parameter Descriptor Block to use (8 or 16) */
+    if (longLbaAccepted == 0)
+        blockDescLength = SHORT_DESC_BLOCK;
+    else
+        blockDescLength = LONG_DESC_BLOCK;
+
+    /* Mode Page Header */
+    SntiCreateModeDataHeader(pSrb,
+                             &pModeParamBlock,
+                             &modeDataLength,
+                             (disableBlockDesc ? 0 : blockDescLength),
+                             modeSense10);
+
+    /* Check if block descriptors enabled, if not then mode page comes next */
+    if (disableBlockDesc == BLOCK_DESCRIPTORS_ENABLED)
+    {
+        /* Mode Parameter Descriptor Block */
+        SntiCreateModeParameterDescBlock(pLunExt,
+                                         pModeParamBlock,
+                                         &modeDataLength);
+
+        /* Increment pointer to after block descriptor */
+        pModeParamBlock++;
+    }
+
+    /* Cache Mode Page */
+    pCachingModePage  = (PMODE_CACHING_PAGE)pModeParamBlock;
+    modeDataLength += sizeof(MODE_CACHING_PAGE);
+
+    memset(pCachingModePage, 0, sizeof(MODE_CACHING_PAGE));
+    pCachingModePage->PageCode         = MODE_PAGE_CACHING;
+    pCachingModePage->PageSavable      = MODE_PAGE_PARAM_SAVEABLE_DISABLED;
+    pCachingModePage->PageLength       = CACHING_MODE_PAGE_LENGTH;
+    pCachingModePage->WriteCacheEnable = 0;
+
+    /* Now go back and set the Mode Data Length in the header */
+    if (modeSense10 == FALSE) {
+        pModeHeader6 = (PMODE_PARAMETER_HEADER)(GET_DATA_BUFFER(pSrb));
+
+        /* Subtract 1 from the mode data length - MODE DATA LENGTH field */
+        pModeHeader6->ModeDataLength = (UCHAR)(modeDataLength - 1);
+    } else {
+        pModeHeader10 = (PMODE_PARAMETER_HEADER10)(GET_DATA_BUFFER(pSrb));
+
+        /* Subtract 2 from mode data length - MODE DATA LENGTH field */
+        pModeHeader10->ModeDataLength[BYTE_0] = ((modeDataLength - 2) &
+            WORD_HIGH_BYTE_MASK) >> BYTE_SHIFT_1;
+        pModeHeader10->ModeDataLength[BYTE_1] = ((modeDataLength - 2) &
+            WORD_LOW_BYTE_MASK);
+    }
+
+    pSrb->DataTransferLength = min(modeDataLength, allocLength);
+} /* SntiHardCodeCacheModePage */
+#endif
 
 /******************************************************************************
  * SntiCreatePowerConditionControlModePage
@@ -3745,8 +3829,10 @@ VOID SntiReturnAllModePages(
             WORD_LOW_BYTE_MASK);
     }
 
+#ifndef CHATHAM
     /* Finally, make sure we issue the GET FEATURES command */
     SntiBuildGetFeaturesCmd(pSrbExt, VOLATILE_WRITE_CACHE);
+#endif
 
     pSrb->DataTransferLength = min(modeDataLength, allocLength);
 } /* SntiReturnAllModePages */
@@ -4068,6 +4154,11 @@ VOID SntiCreateModeParameterDescBlock(
     *pModeDataLength += sizeof(MODE_PARAMETER_BLOCK);
 
     memset(pModeParamBlock, 0, sizeof(MODE_PARAMETER_BLOCK));
+    if (pLunExt->identifyData.NCAP > MODE_BLOCK_DESC_MAX) {
+        pModeParamBlock->NumberOfBlocks[BYTE_0] = MODE_BLOCK_DESC_MAX_BYTE;
+        pModeParamBlock->NumberOfBlocks[BYTE_1] = MODE_BLOCK_DESC_MAX_BYTE;
+        pModeParamBlock->NumberOfBlocks[BYTE_2] = MODE_BLOCK_DESC_MAX_BYTE;
+    } else {
     pModeParamBlock->NumberOfBlocks[BYTE_0] =
         (UCHAR)((pLunExt->identifyData.NCAP &
                  DWORD_MASK_BYTE_2) >> BYTE_SHIFT_2);
@@ -4076,6 +4167,7 @@ VOID SntiCreateModeParameterDescBlock(
                  DWORD_MASK_BYTE_1) >> BYTE_SHIFT_1);
     pModeParamBlock->NumberOfBlocks[BYTE_2] =
         (UCHAR)((pLunExt->identifyData.NCAP & DWORD_MASK_BYTE_0));
+    }
 
     flbas = pLunExt->identifyData.FLBAS.SupportedCombination;
     lbaLengthPower = pLunExt->identifyData.LBAFx[flbas].LBADS;
@@ -5598,10 +5690,9 @@ BOOLEAN SntiMapCompletionStatus(
             break;
         }
     } else {
-        ASSERT(FALSE);
         returnValue = FALSE;
     }
-
+    ASSERT(returnValue == TRUE);
     return returnValue;
 } /* SntiMapCompletionStatus */
 

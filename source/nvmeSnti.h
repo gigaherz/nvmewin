@@ -50,6 +50,9 @@
 
 #define VALID_NVME_PATH_ID   0
 #define VALID_NVME_TARGET_ID 0
+#define SNTI_STORPORT_QUEUE_DEPTH (254)
+#define MODE_BLOCK_DESC_MAX (0xFFFFFF)
+#define MODE_BLOCK_DESC_MAX_BYTE (0xFF)
 
 /*******************************************************************************
  * VPD_EXTENDED_INQUIRY_DATA
@@ -410,6 +413,7 @@ typedef struct _snti_response_block
 /***  Public Interfaces  ***/
 
 SNTI_TRANSLATION_STATUS SntiTranslateCommand(
+    PNVME_DEVICE_EXTENSION pAdapterExtension,
     PSCSI_REQUEST_BLOCK pSrb
 );
 
@@ -579,6 +583,17 @@ VOID SntiCreateControlModePage(
     UINT8 disableBlockDesc,
     BOOLEAN modeSense10
 );
+
+#ifdef CHATHAM
+VOID SntiHardCodeCacheModePage(
+    PNVME_SRB_EXTENSION pSrbExt,
+    PNVME_LUN_EXTENSION pLunExt,
+    UINT16 allocLength,
+    UINT8 longLbaAccepted,
+    UINT8 disableBlockDesc,
+    BOOLEAN modeSense10
+);
+#endif
 
 VOID SntiCreatePowerConditionControlModePage(
     PNVME_SRB_EXTENSION pSrbExt,

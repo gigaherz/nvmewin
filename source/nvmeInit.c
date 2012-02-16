@@ -495,6 +495,8 @@ BOOLEAN NVMeEnumMsiMessages (
                 pMMT->MsgID = MII.MessageId;
                 pMMT->Addr = MII.MessageAddress;
                 pMMT->Data = MII.MessageData;
+            } else {
+                ASSERT(FALSE);
             }
         } else {
             /* Use INTx when failing to retrieve any message information */
@@ -516,11 +518,12 @@ BOOLEAN NVMeEnumMsiMessages (
         if (pRMT->NumMsiMsgGranted > pRMT->NumActiveCores) {
             /*
              * Seems they are all granted, need to determine it's MSI or MSI-X.
-             * Once the address are different, MSI-X is used
+             * If the addresses for the first 2 messaes are == then its MSI
              */
             pMMT = pRMT->pMsiMsgTbl + 1;
-            if (pMMT->Addr.QuadPart == pRMT->pMsiMsgTbl->Addr.QuadPart)
+            if (pMMT->Addr.QuadPart == pRMT->pMsiMsgTbl->Addr.QuadPart) {
                 pRMT->InterruptType = INT_TYPE_MSI;
+            }
         } else {
             /*
              * Should not happen, Windows either grants all requested messages
@@ -639,7 +642,7 @@ VOID NVMeMsixMapCores(
     PNVME_DEVICE_EXTENSION pAE
 )
 {
-    ULONG MsgID;
+    UCHAR MsgID;
     ULONG MsgUsed;
     ULONG Core;
     UCHAR DestField[MAX_MSIX_MSG_PER_DEVICE] = {0};
@@ -648,6 +651,7 @@ VOID NVMeMsixMapCores(
     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
     PMSI_MESSAGE_TBL pMMT = NULL;
     PCORE_TBL pCT = NULL;
+    BOOLEAN logicalMode = FALSE;
 
     /*
      * When being granted more messages than the number of active cores,
@@ -670,25 +674,9 @@ VOID NVMeMsixMapCores(
 
     if ((MsgAddr & MSI_ADDR_RH_DM_MASK) != 0) {
         /*
-         * It's in Logical Mode and only the first message is used.
-         * Handle one Core Table at a time
+         * It's in Logical Mode so we'll just map them 1:1
          */
-        for (Core = 0; Core < pRMT->NumActiveCores; Core++) {
-            /* Share the first message */
-            pCT = pRMT->pCoreTbl + Core;
-            pCT->MsiMsgID = 0;
-        }
-
-        /*
-         * On the other side, mark down the first message is shared and
-         * the internal interrupt type is INT_TYPE_MSI now
-         */
-        pMMT->Shared = TRUE;
-        pMMT->CoreNum = RESOURCE_SHARED;
-        pMMT->CplQueueNum = RESOURCE_SHARED;
-        pRMT->InterruptType = INT_TYPE_MSI;
-
-        return;
+        logicalMode = TRUE;
     }
 
     /* Retrieve Destination Field (bit[19..12]) of all used messages first */
@@ -698,7 +686,12 @@ VOID NVMeMsixMapCores(
 
         /* Retrieve it here and save it other place for now */
         if (MsgAddr != 0) {
+            if (!logicalMode) {
             DestField[MsgID] = (UCHAR)GET_DESTINATION_FIELD(MsgAddr);
+            } else {
+                DestField[MsgID] = MsgID;
+                pMMT->LogicalMode = TRUE;
+            }
             Temp[MsgID] = DestField[MsgID];
         }
     }
@@ -841,7 +834,7 @@ VOID NVMeCompleteResMapTbl(
  *
  * @param pAE - Pointer to hardware device extension
  * @param pPN - Pointer to PROCESSOR_NUMBER structure
- * @param pSubQueue - Pointer to buffer to save retrieved Submission queue ID
+ * @param pSubQueue - Pointer to buffer to save retrieved submI[QueueID]ssion queue ID
  * @param pCplQueue - Pointer to buffer to save retrieved Completion queue ID
  *
  * @return BOOLEAN
@@ -2485,6 +2478,11 @@ BOOLEAN NVMeNormalShutdown(
     ULONG PollMax = pAE->uSecCrtlTimeout / MAX_STATE_STALL_us;
     ULONG PollCount;
 
+#ifdef CHATHAM
+    NVMeStallExecution(pAE,100000);
+    return TRUE;
+#endif
+
     /* Check for any pending cmds. */
     if (NVMeDetectPendingCmds(pAE) == TRUE)
         return FALSE;
@@ -2507,9 +2505,9 @@ BOOLEAN NVMeNormalShutdown(
      */
     CC.AsUlong = StorPortReadRegisterUlong(pAE,
                                            (PULONG)(&pAE->pCtrlRegister->CC));
-
 #ifndef CHATHAM
     CC.SHN = 1;
+#endif
 
     /* Set SHN bits of Controller Configuration to normal shutdown (01b) */
     StorPortWriteRegisterUlong (pAE,
@@ -2529,10 +2527,6 @@ BOOLEAN NVMeNormalShutdown(
 
         NVMeStallExecution(pAE, MAX_STATE_STALL_us);
     }
-#else /* CHATHAM */
-    NVMeFreeBuffers(pAE);
-    return (TRUE);
-#endif /* CHATHAM */
 
 #if DBG
     /*
@@ -2647,10 +2641,12 @@ VOID NVMeFreeNonContiguousBuffers (
     if ( pQI->pCplQueueInfo != NULL )
         StorPortFreePool((PVOID)pAE, pQI->pCplQueueInfo);
 
+#ifdef COMPLETE_IN_DPC
     /* Free the DPC array memory */
     if (pAE->pDpcArray != NULL) {
         StorPortFreePool((PVOID)pAE, pAE->pDpcArray);
     }
+#endif
 
 } /* NVMeFreeNonContiguousBuffer */
 
@@ -2914,6 +2910,8 @@ ULONG NVMeGetCmdEntry(
 
     /* Mark down it's used and save the original context */
     pCmdEntry->Context = Context;
+    ASSERT(pCmdEntry->Pending == FALSE);
+
     pCmdEntry->Pending = TRUE;
 
     /* Return the CMD_INFO structure */

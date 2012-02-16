@@ -49,7 +49,11 @@ TARGETPATH=$(TARGETNAME)\obj$(BUILD_ALT_DIR)
 
 # -DCHATHAM:  Required for use with Chatham hardware
 
-C_DEFINES = $(C_DEFINES) -D__KERNEL__ -D__MSWINDOWS__
+# -DQEMU:  Required for use with QEMU emulator
+
+# -DCOMPLETE_IN_DPC:  Controls whether IOs are completed in the ISR ot in DPCs
+
+C_DEFINES = $(C_DEFINES) -D__KERNEL_ -D__MSWINDOWS__ -DQEMU -DCOMPLETE_IN_DPC
 
 TARGETLIBS=$(DDK_LIB_PATH)\storport.lib \
            $(DDK_LIB_PATH)\Ntoskrnl.lib \

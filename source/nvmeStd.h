@@ -686,6 +686,9 @@ typedef struct _MSI_MESSAGE_TBL
 
     /* Indicates MSI message is shared by multiple completion queues */
     BOOLEAN Shared;
+
+    /* Indicates whether our core mapping is physical or logical */
+    BOOLEAN LogicalMode;
 } MSI_MESSAGE_TBL, *PMSI_MESSAGE_TBL;
 
 /*******************************************************************************
@@ -823,9 +826,11 @@ typedef struct _nvme_device_extension
     STOR_DPC                    RecoveryDpc;
     BOOLEAN                     RecoveryAttemptPossible;
 
+#ifdef COMPLETE_IN_DPC
     /* IO Completion DPC Array Info */
     PVOID                       pDpcArray;
     ULONG                       NumDpc;
+#endif
 
     /* INTx interrupt mask flag */
     BOOLEAN                     IntxMasked;
@@ -967,6 +972,7 @@ BOOLEAN NVMeMapCore2Queue(
     __inout USHORT* pCplQueue
 );
 
+#ifdef COMPLETE_IN_DPC
 VOID
 IoCompletionDpcRoutine(
     IN PSTOR_DPC  pDpc,
@@ -974,6 +980,7 @@ IoCompletionDpcRoutine(
     IN PVOID  pSystemArgument1,
     IN PVOID  pSystemArgument2
     );
+#endif
 
 VOID NVMeInitFreeQ(
     __in PSUB_QUEUE_INFO pSQI,
