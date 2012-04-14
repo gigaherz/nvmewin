@@ -38,7 +38,7 @@
  ** official policies, either expressed or implied, of Intel Corporation,     **
  ** Integrated Device Technology Inc., or Sandforce Corporation.              **
  **                                                                           **
- ******************************************************************************* 
+ *******************************************************************************
 **/
 
 /*
@@ -169,9 +169,10 @@ BOOLEAN NVMeEnumMsiMessages(
 );
 
 ULONG NVMeAllocQueues(
-    PNVME_DEVICE_EXTENSION pAE,
-    USHORT QueueID,
-    USHORT NumaNode
+    __in PNVME_DEVICE_EXTENSION pAE,
+    __in USHORT QueueID,
+    __in ULONG QEntries,
+    __in USHORT NumaNode
 );
 
 ULONG NVMeInitSubQueue(

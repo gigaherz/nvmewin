@@ -549,203 +549,11 @@ BOOLEAN NVMeEnumMsiMessages (
 } /* NVMeEnumMsiMessages */
 
 /*******************************************************************************
- * NVMeSwap
- *
- * @brief Swap helper routine for QuickSort
- *
- * @param X - parameter 1 to swap
- * @param Y - parameter 2 to swap
- *
- * @return VOID
- ******************************************************************************/
-VOID NVMeSwap(
-    PUCHAR X,
-    PUCHAR Y
-)
-{
-    UCHAR Temp;
-
-    Temp = *X;
-    *X = *Y;
-    *Y = Temp;
-} /* NVMeSwap */
-
-/*******************************************************************************
- * NVMeQuickSort
- *
- * @brief QuickSort uses quick sort algorithm to sort the Destination Field of
- *        MSI-X addresses before determining the mapping between CPU cores and
- *        the granted MSI-X messages. In MSI case, all messages interrupt same
- *        CPU core.
- *
- * @param List - Array of address bytes
- * @param Min - first element index
- * @param Max - last element index
- *
- * @return VOID
- ******************************************************************************/
-VOID NVMeQuickSort(
-    UCHAR List[],
-    ULONG Min,
-    ULONG Max
-)
-{
-    ULONG Start;
-    ULONG End;
-    ULONG Mid;
-    UCHAR Key;
-
-    if (Min < Max) {
-        /* Figure out the middle one first */
-        Mid = (Min + Max) / 2;
-
-        NVMeSwap(&List[Min], &List[Mid]);
-
-        Key = List[Min];
-        Start = Min + 1;
-        End = Max;
-
-        while (Start <= End) {
-            while ((Start <= Max) && (List[Start] <= Key))
-                Start++;
-
-            while ((End >= Min) && (List[End] > Key))
-                End--;
-
-            if (Start < End)
-                NVMeSwap(&List[Start], &List[End]);
-        }
-
-        /* Swap two elements */
-        NVMeSwap(&List[Min], &List[End]);
-
-        /* Recursively sort the lesser list */
-        NVMeQuickSort(List, Min, End - 1);
-        NVMeQuickSort(List, End + 1, Max);
-    }
-} /* NVMeQuickSort */
-
-/*******************************************************************************
- * NVMeMsixMapCores
- *
- * @brief NVMeMsixMapCores sorts the Destination Field of the addresses of the
- *        granted MSI-X messages in ascending manner and maps the sorted
- *        messages to the active CPU cores in the current system. In other
- *        words, this function is only called when pAE->ResMapTbl.InterruptType
- *        is INT_TYPE_MSIX
- *
- * @param pAE - Pointer to hardware device extension.
- *
- * @return VOID
- ******************************************************************************/
-VOID NVMeMsixMapCores(
-    PNVME_DEVICE_EXTENSION pAE
-)
-{
-    UCHAR MsgID;
-    ULONG MsgUsed;
-    ULONG Core;
-    UCHAR DestField[MAX_MSIX_MSG_PER_DEVICE] = {0};
-    UCHAR Temp[MAX_MSIX_MSG_PER_DEVICE] = {0};
-    ULONG64 MsgAddr;
-    PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
-    PMSI_MESSAGE_TBL pMMT = NULL;
-    PCORE_TBL pCT = NULL;
-    BOOLEAN logicalMode = FALSE;
-
-    /*
-     * When being granted more messages than the number of active cores,
-     * use the same number of messages as the number of cores + 1
-     */
-    MsgUsed = pRMT->NumActiveCores + 1;
-
-    /*
-     * Need to ensure it's in Physical Mode first by checking bit[3..2].
-     * If not so, all queues share the first message. When message routing is in
-     * Physical mode, both Redirection Hint Indication(RH, bit 3) and
-     * Destination Mode (DM, bit 2) are 0.
-     */
-    pMMT = pRMT->pMsiMsgTbl;
-    MsgAddr = pMMT->Addr.QuadPart;
-
-    StorPortDebugPrint(INFO,
-                       "NVMeMsixMapCores: 1st msg addr=0x%llX\n",
-                       MsgAddr);
-
-    if ((MsgAddr & MSI_ADDR_RH_DM_MASK) != 0) {
-        /*
-         * It's in Logical Mode so we'll just map them 1:1
-         */
-        logicalMode = TRUE;
-    }
-
-    /* Retrieve Destination Field (bit[19..12]) of all used messages first */
-    for (MsgID = 0; MsgID < MsgUsed; MsgID++) {
-        pMMT = pRMT->pMsiMsgTbl + MsgID;
-        MsgAddr = pMMT->Addr.QuadPart;
-
-        /* Retrieve it here and save it other place for now */
-        if (MsgAddr != 0) {
-            if (!logicalMode) {
-            DestField[MsgID] = (UCHAR)GET_DESTINATION_FIELD(MsgAddr);
-            } else {
-                DestField[MsgID] = MsgID;
-                pMMT->LogicalMode = TRUE;
-            }
-            Temp[MsgID] = DestField[MsgID];
-        }
-    }
-
-    /*
-     * Sort the list using quicksort algorithm since Admin queue always use
-     * first message, only sort the rest Each core(0..n) is mapped to different
-     * message(1..n+1) if there are enough messages granted. Message#0 and #n+1
-     * interrupt same core.
-     */
-    NVMeQuickSort(DestField, 1, MsgUsed - 1);
-
-    /* Now we have sorted list, map the cores and messages */
-    for (Core = 0; Core < pRMT->NumActiveCores; Core++) {
-        /* Handle one Core Table at a time */
-        pCT = pRMT->pCoreTbl + Core;
-
-        for (MsgID = 1; MsgID < MsgUsed; MsgID++) {
-            /* Skip first message since it is for Admin queue */
-            if (DestField[Core + 1] == Temp[MsgID])
-                break;
-        }
-
-        /* Mark down the associated message for current core */
-        pCT->MsiMsgID = (USHORT)MsgID;
-
-        /*
-         * On the other side, mark down the associated core number
-         * for the message as well
-         */
-        pMMT = pRMT->pMsiMsgTbl + MsgID;
-
-        /*
-         * When enough MSI messages granted, the associated completion queue
-         * of each message is the associated core number plus 1.
-         */
-        pMMT->CoreNum = (USHORT)Core;
-        pMMT->CplQueueNum = (USHORT)Core + 1;
-
-        StorPortDebugPrint(INFO,
-                           "NVMeMsixMapCores: Core(0x%x)V#(0x%x)Val=0x%x\n",
-                           Core, MsgID, Temp[MsgID]);
-    }
-} /* NVMeMsixMapCores */
-
-/*******************************************************************************
  * NVMeMsiMapCores
  *
- * @brief NVMeMsiMapCores is called to map the granted MSI messages to the
- *        active cores in current system when pAE->ResMapTbl.InterruptType is
- *        INT_TYPE_MSI. Since MSI messages always interrupt same core in the
- *        system, the mapping is more related to queues than cores. In other
- *        words, message#0 is used for Admin queue and the rest for IO queues if
- *        we have enough messages granted
+ * @brief NVMeMsiMapCores is called to setup the initial mapping for MSI or MSIX
+ *        modes.  Initial mapping is just 1:1, learning will happen as each core
+ *        processes an IO and new mappings will be created for optimal use.
  *
  * @param pAE - Pointer to hardware device extension.
  *
@@ -773,8 +581,7 @@ VOID NVMeMsiMapCores(
     }
 
     /*
-     * When it's INT_TYPE_MSI and there are enough messages granted,
-     * loop thru the cores and assign granted messages in sequential manner.
+     * Loop thru the cores and assign granted messages in sequential manner.
      * When requests completed, based on the messagID and look up the
      * associated completion queue for just-completed entries
      */
@@ -782,20 +589,20 @@ VOID NVMeMsiMapCores(
         /* Handle one Core Table at a time */
         pCT = pRMT->pCoreTbl + Core;
 
-        /* Mark down the associated message for current core */
-        pCT->MsiMsgID = Core + 1;
+        /* Mark down the initial associated message + SQ/CQ for this core */
+        pCT->MsiMsgID = pCT->CplQueue;
 
         /*
          * On the other side, mark down the associated core number
          * for the message as well
          */
-        pMMT = pRMT->pMsiMsgTbl + Core + 1;
+        pMMT = pRMT->pMsiMsgTbl + pCT->MsiMsgID;
         pMMT->CoreNum = Core;
-        pMMT->CplQueueNum = (USHORT)Core + 1;
+        pMMT->CplQueueNum = pCT->CplQueue;
 
         StorPortDebugPrint(INFO,
                            "NVMeMsiMapCores: Core(0x%x)Msg#(0x%x)\n",
-                           Core, Core + 1);
+                           Core, pCT->MsiMsgID);
     }
 } /* NVMeMsiMapCores */
 
@@ -816,9 +623,8 @@ VOID NVMeCompleteResMapTbl(
     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
 
     /* The last thing to do is completing Resource Mapping Table. */
-    if (pRMT->InterruptType == INT_TYPE_MSIX) {
-        NVMeMsixMapCores(pAE);
-    } else if (pRMT->InterruptType == INT_TYPE_MSI) {
+    if ( (pRMT->InterruptType == INT_TYPE_MSIX) ||
+         (pRMT->InterruptType == INT_TYPE_MSI) ) {
         NVMeMsiMapCores(pAE);
     }
 
@@ -860,12 +666,18 @@ BOOLEAN NVMeMapCore2Queue(
         return (FALSE);
     }
 
-    /* Locate the target CORE_TBL entry for the specific core number */
-    pCT = pRMT->pCoreTbl + pPN->Number;
-
-    /* Return the queue IDs */
-    *pSubQueue = pCT->SubQueue;
-    *pCplQueue = pCT->CplQueue;
+    /* Locate the target CORE_TBL entry for the specific core number
+     * indexed depending on whether we're still learning the table or not
+     */
+    if (pAE->LearningCores == pRMT->NumActiveCores) {
+        pCT = pRMT->pCoreTbl + pPN->Number;
+        /* Return the queue IDs */
+        *pSubQueue = pCT->SubQueue;
+        *pCplQueue = pCT->CplQueue;
+    } else {
+        *pSubQueue = (USHORT)pAE->LearningCores + 1;
+        *pCplQueue = (USHORT)pAE->LearningCores + 1;
+    }
 
     return (TRUE);
 } /* NVMeMapCore2Queue */
@@ -947,6 +759,7 @@ VOID NVMeInitFreeQ(
  *
  * @param pAE - Pointer to hardware device extension.
  * @param QueueID - Which queue to allocate memory for
+ * @param QEntries - the number of entries to allocate for this queue
  * @param NumaNode - Which NUMA node associated memory to allocate from
  *
  * @return ULONG
@@ -956,11 +769,10 @@ VOID NVMeInitFreeQ(
 ULONG NVMeAllocQueues (
     PNVME_DEVICE_EXTENSION pAE,
     USHORT QueueID,
+    ULONG QEntries,
     USHORT NumaNode
 )
 {
-    /* The number of queue entries to allocate */
-    ULONG QEntries = 0;
 
     /* The number of Submission entries makes up exact one system page size */
     ULONG SysPageSizeInSubEntries;
@@ -976,13 +788,6 @@ ULONG NVMeAllocQueues (
 
     /* Locate the target SUB_QUEUE_STRUCTURE via QueueID */
     pSQI = pQI->pSubQueueInfo + QueueID;
-
-    /*
-     * Based on the QueueID (0 means Admin queue, others are IO queues),
-     * decide number of queue entries to allocate.
-     */
-    QEntries = (QueueID == 0) ? pAE->InitInfo.AdQEntries :
-                                pAE->InitInfo.IoQEntries;
 
     /*
      * To ensure:
@@ -1059,9 +864,9 @@ ULONG NVMeAllocQueues (
 
     /* Mark down the number of entries allocated successfully */
     if (QueueID != 0) {
-        pQI->NumIoQEntriesAllocated = (USHORT)pAE->InitInfo.IoQEntries;
+        pQI->NumIoQEntriesAllocated = (USHORT)QEntries;
     } else {
-        pQI->NumAdQEntriesAllocated = (USHORT)pAE->InitInfo.AdQEntries;
+        pQI->NumAdQEntriesAllocated = (USHORT)QEntries;
     }
 
     return (STOR_STATUS_SUCCESS);
@@ -1308,9 +1113,6 @@ BOOLEAN NVMeResetAdapter(
 )
 {
     NVMe_CONTROLLER_CONFIGURATION CC;
-    NVMe_CONTROLLER_STATUS        CSTS;
-    ULONG PollMax;
-    ULONG PollCount;
 
     /* Need to to ensure the Controller registers are memory-mapped properly */
     if (pAE->pCtrlRegister == NULL)
@@ -1320,18 +1122,14 @@ BOOLEAN NVMeResetAdapter(
      * Immediately reset our start state to indicate that the controller
      * is ont ready
      */
-    pAE->StartState.NextStartState = NVMeWaitOnRDY;
-
-    /* Is the port somehow already stopped?, if so, return immediately */
-    CC.AsUlong = StorPortReadRegisterUlong(pAE,
-                                           (PULONG)(&pAE->pCtrlRegister->CC));
-
     CC.EN = 0;
     CC.MPS = (PAGE_SIZE >> NVME_MEM_PAGE_SIZE_SHIFT);
 
     StorPortWriteRegisterUlong(pAE,
                                (PULONG)(&pAE->pCtrlRegister->CC),
                                CC.AsUlong);
+
+    pAE->DriverState.NextDriverState = NVMeWaitOnRDY;
 
     return (TRUE);
 } /* NVMeResetAdapter */
@@ -1498,26 +1296,24 @@ VOID NVMeSetFeaturesCompletion(
      */
     pSetFeaturesCDW10 = (PADMIN_SET_FEATURES_COMMAND_DW10) &pNVMeCmd->CDW10;
 
-    if (pAE->StartState.InterruptCoalescingSet == FALSE &&
+    if (pAE->DriverState.InterruptCoalescingSet == FALSE &&
         pNVMeCmd->CDW0.OPC == ADMIN_SET_FEATURES        &&
         pSetFeaturesCDW10->FID == INTERRUPT_COALESCING ) {
         if (pCplEntry->DW3.SF.SC != 0) {
-            pAE->StartState.StartErrorStatus |=
-                (1 << START_STATE_INT_COALESCING_FAILURE);
-            NVMeRunningStartFailed( pAE );
+            NVMeDriverFatalError(pAE,
+                                (1 << START_STATE_INT_COALESCING_FAILURE));
         } else {
-            pAE->StartState.InterruptCoalescingSet = TRUE;
+            pAE->DriverState.InterruptCoalescingSet = TRUE;
 
             /* Reset the counter and keep tihs state to set more features */
-            pAE->StartState.StateChkCount = 0;
-            pAE->StartState.NextStartState = NVMeWaitOnSetFeatures;
+            pAE->DriverState.StateChkCount = 0;
+            pAE->DriverState.NextDriverState = NVMeWaitOnSetFeatures;
         }
     } else if (pNVMeCmd->CDW0.OPC == ADMIN_SET_FEATURES &&
                pSetFeaturesCDW10->FID == NUMBER_OF_QUEUES) {
         if (pCplEntry->DW3.SF.SC != 0) {
-            pAE->StartState.StartErrorStatus |=
-                (1 << START_STATE_QUEUE_ALLOC_FAILURE);
-            NVMeRunningStartFailed( pAE );
+            NVMeDriverFatalError(pAE,
+                                (1 << START_STATE_QUEUE_ALLOC_FAILURE));
         } else {
             /*
              * NCQR and NSQR are 0 based values. NumSubIoQAllocFromAdapter and
@@ -1527,16 +1323,15 @@ VOID NVMeSetFeaturesCompletion(
             pQI->NumCplIoQAllocFromAdapter = GET_WORD_1(pCplEntry->DW0) + 1;
 
             /* Reset the counter and keep tihs state to set more features */
-            pAE->StartState.StateChkCount = 0;
-            pAE->StartState.NextStartState = NVMeWaitOnSetFeatures;
+            pAE->DriverState.StateChkCount = 0;
+            pAE->DriverState.NextDriverState = NVMeWaitOnSetFeatures;
         }
-    } else if ((pAE->StartState.LbaRangeExamined <
-                pAE->StartState.IdentifyNamespaceFetched) &&
+    } else if ((pAE->DriverState.LbaRangeExamined <
+                pAE->DriverState.IdentifyNamespaceFetched) &&
                (pSetFeaturesCDW10->FID == LBA_RANGE_TYPE)) {
         if (pCplEntry->DW3.SF.SC != 0) {
-            pAE->StartState.StartErrorStatus |=
-                (1 << START_STATE_LBA_RANGE_CHK_FAILURE);
-            NVMeRunningStartFailed( pAE );
+            NVMeDriverFatalError(pAE,
+                                (1 << START_STATE_LBA_RANGE_CHK_FAILURE));
         } else {
             /*
              * When Get Features command completes, exam the completed data to
@@ -1547,9 +1342,9 @@ VOID NVMeSetFeaturesCompletion(
              */
             pLbaRangeTypeEntry =
                 (PADMIN_SET_FEATURES_COMMAND_LBA_RANGE_TYPE_ENTRY)
-                pAE->StartState.pDataBuffer;
+                pAE->DriverState.pDataBuffer;
 
-            pLunExt = pAE->lunExtensionTable[pAE->StartState.LbaRangeExamined];
+            pLunExt = pAE->lunExtensionTable[pAE->DriverState.LbaRangeExamined];
 
             if (pNVMeCmd->CDW0.OPC == ADMIN_GET_FEATURES) {
                 if (pLbaRangeTypeEntry->NLB == pLunExt->identifyData.NSZE) {
@@ -1559,7 +1354,7 @@ VOID NVMeSetFeaturesCompletion(
                          * issue Set Features to configure it as Filesystem,
                          * set it as visibl and can be overwritten
                          */
-                        pAE->StartState.ConfigLbaRangeNeeded = TRUE;
+                        pAE->DriverState.ConfigLbaRangeNeeded = TRUE;
                     } else if (pLbaRangeTypeEntry->Type ==
                                LBA_TYPE_FILESYSTEM) {
                         /*
@@ -1573,8 +1368,8 @@ VOID NVMeSetFeaturesCompletion(
                             pLbaRangeTypeEntry->Attributes.Overwriteable ?
                                 FALSE:TRUE;
 
-                        pAE->StartState.ConfigLbaRangeNeeded = FALSE;
-                        pAE->StartState.LbaRangeExamined++;
+                        pAE->DriverState.ConfigLbaRangeNeeded = FALSE;
+                        pAE->DriverState.LbaRangeExamined++;
                     } else {
                         /*
                          * Unsupported types. Mark it hidden and set ReadOnly
@@ -1585,8 +1380,8 @@ VOID NVMeSetFeaturesCompletion(
                             pLbaRangeTypeEntry->Attributes.Overwriteable ?
                                 FALSE:TRUE;
 
-                        pAE->StartState.ConfigLbaRangeNeeded = FALSE;
-                        pAE->StartState.LbaRangeExamined++;
+                        pAE->DriverState.ConfigLbaRangeNeeded = FALSE;
+                        pAE->DriverState.LbaRangeExamined++;
                     }
                 } else {
                     /*
@@ -1598,26 +1393,73 @@ VOID NVMeSetFeaturesCompletion(
                         pLbaRangeTypeEntry->Attributes.Overwriteable ?
                             FALSE:TRUE;
 
-                    pAE->StartState.ConfigLbaRangeNeeded = FALSE;
-                    pAE->StartState.LbaRangeExamined++;
+                    pAE->DriverState.ConfigLbaRangeNeeded = FALSE;
+                    pAE->DriverState.LbaRangeExamined++;
                 }
             } else if (pNVMeCmd->CDW0.OPC == ADMIN_SET_FEATURES) {
                 pLunExt->ExposeNamespace = TRUE;
                 pLunExt->ReadOnly = FALSE;
-                pAE->StartState.LbaRangeExamined++;
+                pAE->DriverState.LbaRangeExamined++;
             }
 
             /* Reset the counter and set next state accordingly */
-            pAE->StartState.StateChkCount = 0;
-            if (pAE->StartState.LbaRangeExamined ==
-                pAE->StartState.IdentifyNamespaceFetched) {
-                pAE->StartState.NextStartState = NVMeWaitOnSetupQueues;
+            pAE->DriverState.StateChkCount = 0;
+            if (pAE->DriverState.LbaRangeExamined ==
+                pAE->DriverState.IdentifyNamespaceFetched) {
+                pAE->DriverState.NextDriverState = NVMeWaitOnSetupQueues;
             } else {
-                pAE->StartState.NextStartState = NVMeWaitOnSetFeatures;
+                pAE->DriverState.NextDriverState = NVMeWaitOnSetFeatures;
             }
         }
     }
 } /* NVMeSetFeaturesCompletion */
+
+/*******************************************************************************
+ * NVMeDeleteQueueCallback
+ *
+ * @brief NVMeDeleteQueueCallback is the callback function used to notify
+ *        the caller that a queue deletion has completed
+ *
+ * @param pAE - Pointer to hardware device extension.
+ * @param pSrbExtension - Pointer to the completion entry
+ *
+ * @return BOOLEAN
+ *     TRUE - to indicate we completed fine
+ ******************************************************************************/
+BOOLEAN NVMeDeleteQueueCallback(
+    PVOID pNVMeDevExt,
+    PVOID pSrbExtension
+)
+{
+    PNVME_DEVICE_EXTENSION pAE = (PNVME_DEVICE_EXTENSION)pNVMeDevExt;
+    PNVME_SRB_EXTENSION pSrbExt = (PNVME_SRB_EXTENSION)pSrbExtension;
+    PNVMe_COMMAND pNVMeCmd = (PNVMe_COMMAND)(&pSrbExt->nvmeSqeUnit);
+    PNVMe_COMPLETION_QUEUE_ENTRY pCplEntry = pSrbExt->pCplEntry;
+    PQUEUE_INFO pQI = &pAE->QueueInfo;
+
+    if (pNVMeCmd->CDW0.OPC == ADMIN_DELETE_IO_COMPLETION_QUEUE) {
+        if (pCplEntry->DW3.SF.SC == 0) {
+            PCPL_QUEUE_INFO pCQI = pQI->pCplQueueInfo + pQI->NumCplIoQCreated;
+            pCQI->CurPhaseTag = 0;
+            pCQI->CplQHeadPtr = 0;
+            pQI->NumCplIoQCreated--;
+        } else {
+            NVMeDriverFatalError(pAE,
+                                (1 << FATAL_CPLQ_DELETE_FAILURE));
+        }
+    } else if (pNVMeCmd->CDW0.OPC == ADMIN_DELETE_IO_SUBMISSION_QUEUE) {
+        if (pCplEntry->DW3.SF.SC == 0) {
+            PSUB_QUEUE_INFO pSQI = pQI->pSubQueueInfo + pQI->NumSubIoQCreated;
+            pSQI->SubQTailPtr = 0;
+            pSQI->SubQHeadPtr = 0;
+            pQI->NumSubIoQCreated--;
+        } else {
+            NVMeDriverFatalError(pAE,
+                                (1 << FATAL_SUBQ_DELETE_FAILURE));
+        }
+    }
+    return TRUE;
+}
 
 /*******************************************************************************
  * NVMeInitCallback
@@ -1647,7 +1489,7 @@ BOOLEAN NVMeInitCallback(
     PNVMe_COMPLETION_QUEUE_ENTRY pCplEntry = pSrbExt->pCplEntry;
     PQUEUE_INFO pQI = &pAE->QueueInfo;
 
-    switch (pAE->StartState.NextStartState) {
+    switch (pAE->DriverState.NextDriverState) {
         case NVMeWaitOnIdentifyCtrl:
             /*
              * Mark down Controller structure is retrieved if succeeded
@@ -1656,13 +1498,11 @@ BOOLEAN NVMeInitCallback(
              */
             if (pCplEntry->DW3.SF.SC == 0) {
                 /* Reset the counter and set next state */
-                pAE->StartState.NextStartState = NVMeWaitOnIdentifyNS;
-                pAE->StartState.StateChkCount = 0;
+                pAE->DriverState.NextDriverState = NVMeWaitOnIdentifyNS;
+                pAE->DriverState.StateChkCount = 0;
             } else {
-                pAE->StartState.StartErrorStatus |=
-                    (1 << START_STATE_IDENTIFY_CTRL_FAILURE);
-
-                NVMeRunningStartFailed(pAE);
+                NVMeDriverFatalError(pAE,
+                                    (1 << START_STATE_IDENTIFY_CTRL_FAILURE));
             }
         break;
         case NVMeWaitOnIdentifyNS:
@@ -1673,29 +1513,27 @@ BOOLEAN NVMeInitCallback(
              */
             if (pCplEntry->DW3.SF.SC == 0) {
                 /* Mark down the Namespace ID */
-                pAE->lunExtensionTable[pAE->StartState.IdentifyNamespaceFetched]->namespaceId =
-                    pAE->StartState.IdentifyNamespaceFetched + 1;
-                pAE->StartState.IdentifyNamespaceFetched++;
+                pAE->lunExtensionTable[pAE->DriverState.IdentifyNamespaceFetched]->namespaceId =
+                    pAE->DriverState.IdentifyNamespaceFetched + 1;
+                pAE->DriverState.IdentifyNamespaceFetched++;
 
                 /* Reset the counter and set next state */
-                pAE->StartState.StateChkCount = 0;
+                pAE->DriverState.StateChkCount = 0;
 
-                if (pAE->StartState.IdentifyNamespaceFetched ==
+                if (pAE->DriverState.IdentifyNamespaceFetched ==
                     pAE->controllerIdentifyData.NN) {
                     /*
                      * We have all the info we need, move on to the next
                      * state.
                      */
-                    pAE->StartState.NextStartState = NVMeWaitOnSetFeatures;
+                    pAE->DriverState.NextDriverState = NVMeWaitOnSetFeatures;
                 } else {
                     /* More namespaces to get info for */
-                    pAE->StartState.NextStartState = NVMeWaitOnIdentifyNS;
+                    pAE->DriverState.NextDriverState = NVMeWaitOnIdentifyNS;
                 }
              } else {
-                pAE->StartState.StartErrorStatus |=
-                    (1 << START_STATE_IDENTIFY_NS_FAILURE);
-
-                NVMeRunningStartFailed( pAE );
+                NVMeDriverFatalError(pAE,
+                                    (1 << START_STATE_IDENTIFY_NS_FAILURE));
             }
         break;
         case NVMeWaitOnSetFeatures:
@@ -1704,13 +1542,11 @@ BOOLEAN NVMeInitCallback(
         case NVMeWaitOnAER:
             if (pCplEntry->DW3.SF.SC == 0) {
                 /* Reset the counter and set next state */
-                pAE->StartState.NextStartState = NVMeWaitOnIoCQ;
-                pAE->StartState.StateChkCount = 0;
+                pAE->DriverState.NextDriverState = NVMeWaitOnIoCQ;
+                pAE->DriverState.StateChkCount = 0;
             } else {
-                pAE->StartState.StartErrorStatus |=
-                    (1 << START_STATE_AER_FAILURE);
-
-                NVMeRunningStartFailed(pAE);
+                NVMeDriverFatalError(pAE,
+                                    (1 << START_STATE_AER_FAILURE));
             }
         break;
         case NVMeWaitOnIoCQ:
@@ -1723,17 +1559,15 @@ BOOLEAN NVMeInitCallback(
                 pQI->NumCplIoQCreated++;
 
                 /* Reset the counter and set next state */
-                pAE->StartState.StateChkCount = 0;
+                pAE->DriverState.StateChkCount = 0;
                 if (pQI->NumCplIoQAllocated == pQI->NumCplIoQCreated) {
-                    pAE->StartState.NextStartState = NVMeWaitOnIoSQ;
+                    pAE->DriverState.NextDriverState = NVMeWaitOnIoSQ;
                 } else {
-                    pAE->StartState.NextStartState = NVMeWaitOnIoCQ;
+                    pAE->DriverState.NextDriverState = NVMeWaitOnIoCQ;
                 }
             } else {
-                pAE->StartState.StartErrorStatus |=
-                    (1 << START_STATE_CPLQ_CREATE_FAILURE);
-
-                NVMeRunningStartFailed( pAE );
+                NVMeDriverFatalError(pAE,
+                                    (1 << START_STATE_CPLQ_CREATE_FAILURE));
             }
         break;
         case NVMeWaitOnIoSQ:
@@ -1743,73 +1577,58 @@ BOOLEAN NVMeInitCallback(
              * fail the state machine
              */
             if (pCplEntry->DW3.SF.SC == 0) {
+                PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
                 pQI->NumSubIoQCreated++;
 
                 /* Reset the counter and set next state */
-                pAE->StartState.StateChkCount = 0;
+                pAE->DriverState.StateChkCount = 0;
                 if (pQI->NumSubIoQAllocated == pQI->NumSubIoQCreated) {
-                    pAE->StartState.NextStartState = NVMeStartComplete;
+                    /* if we've learned the cores we're done */
+                    if (pAE->LearningCores < pRMT->NumActiveCores) {
+                        pAE->DriverState.NextDriverState = NVMeWaitOnLearnMapping;
+                    } else {
+                        pAE->DriverState.NextDriverState = NVMeStartComplete;
+                    }
                 } else {
-                    pAE->StartState.NextStartState = NVMeWaitOnIoSQ;
+                    pAE->DriverState.NextDriverState = NVMeWaitOnIoSQ;
                 }
             } else {
-                pAE->StartState.StartErrorStatus |=
-                    (1 << START_STATE_SUBQ_CREATE_FAILURE);
-
-                NVMeRunningStartFailed( pAE );
+                NVMeDriverFatalError(pAE,
+                                    (1 << START_STATE_SUBQ_CREATE_FAILURE));
             }
         break;
-        case NVMeStartComplete:
-            if (pNVMeCmd->CDW0.OPC == ADMIN_DELETE_IO_COMPLETION_QUEUE) {
+        case NVMeWaitOnLearnMapping:
+            if (pCplEntry->DW3.SF.SC == 0) {
+                PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
+
                 /*
-                 * Decrease the number of created completion queues if succeeded
-                 * and free the allocated SRB Extension.
-                 * Otherwise, log the error bit in case of errors
+                 * see if we still have more core/vector mapping to learn
+                 * or if we're ready to redo the queues based on the new map
                  */
-                if (pCplEntry->DW3.SF.SC == 0) {
-                    /* Free the allocated SRB Extension */
-                    if (pSrbExtension != NULL)
-                        StorPortFreePool((PVOID)pAE, pSrbExtension);
-                    else
-                        return (FALSE);
-
-                    pQI->NumCplIoQCreated--;
-
-                    /*
-                     * If everything is deleted then set our state to
-                     * shutdown.
-                     */
-                    if (pQI->NumCplIoQCreated == 0) {
-                        pAE->StartState.NextStartState = NVMeShutdown;
-                    }
+                pAE->DriverState.StateChkCount = 0;
+                if (pAE->LearningCores < pRMT->NumActiveCores) {
+                    pAE->DriverState.NextDriverState = NVMeWaitOnLearnMapping;
                 } else {
-                    pAE->StartState.StartErrorStatus |=
-                        (1 << START_STATE_CPLQ_DELETE_FAILURE);
-
-                        NVMeRunningStartFailed( pAE );
+                    pAE->DriverState.NextDriverState = NVMeWaitOnReSetupQueues;
                 }
-            } else if (pNVMeCmd->CDW0.OPC == ADMIN_DELETE_IO_SUBMISSION_QUEUE) {
-                /*
-                 * Decrease the number of created completion queues if succeeded
-                 * and free the allocated SRB Extension. Otherwise, log the
-                 * error bit in case of errors.
-                 */
-                if (pCplEntry->DW3.SF.SC == 0) {
-                    /* Free the allocated SRB Extension */
-                    if (pSrbExtension != NULL) {
-                        StorPortFreePool((PVOID)pAE, pSrbExtension);
-                    } else {
-                        return (FALSE);
-                    }
-
-                    pQI->NumSubIoQCreated--;
+            } else {
+                NVMeDriverFatalError(pAE,
+                                    (1 << START_STATE_LEARNING_FAILURE));
+            }
+        break;
+        case NVMeWaitOnReSetupQueues:
+            if (TRUE == NVMeDeleteQueueCallback(pAE, pSrbExt)) {
+                /* if we've deleted the last CQ, we rae ready to recreate them */
+                if (0 == pQI->NumCplIoQCreated) {
+                    pAE->DriverState.NextDriverState = NVMeWaitOnIoCQ;
                 } else {
-                    pAE->StartState.StartErrorStatus |=
-                        (1 << START_STATE_SUBQ_DELETE_FAILURE);
-
-                    NVMeRunningStartFailed( pAE );
+                    pAE->DriverState.NextDriverState = NVMeWaitOnReSetupQueues;
                 }
             }
+        break;
+        default:
+            NVMeDriverFatalError(pAE,
+                                (1 << START_STATE_UNKNOWN_STATE_FAILURE));
         break;
     } /* end switch */
 
@@ -1891,7 +1710,7 @@ BOOLEAN NVMeSetIntCoalescing(
 )
 {
     PNVME_SRB_EXTENSION pNVMeSrbExt =
-        (PNVME_SRB_EXTENSION)pAE->StartState.pSrbExt;
+        (PNVME_SRB_EXTENSION)pAE->DriverState.pSrbExt;
     PNVMe_COMMAND pSetFeatures = (PNVMe_COMMAND)(&pNVMeSrbExt->nvmeSqeUnit);
 
     PADMIN_SET_FEATURES_COMMAND_DW10 pSetFeaturesCDW10 = NULL;
@@ -1941,7 +1760,7 @@ BOOLEAN NVMeAllocQueueFromAdapter(
 )
 {
     PNVME_SRB_EXTENSION pNVMeSrbExt =
-        (PNVME_SRB_EXTENSION)pAE->StartState.pSrbExt;
+        (PNVME_SRB_EXTENSION)pAE->DriverState.pSrbExt;
     PNVMe_COMMAND pSetFeatures = (PNVMe_COMMAND)(&pNVMeSrbExt->nvmeSqeUnit);
     PADMIN_SET_FEATURES_COMMAND_DW10 pSetFeaturesCDW10 = NULL;
     PADMIN_SET_FEATURES_COMMAND_NUMBER_OF_QUEUES_DW11 pSetFeaturesCDW11 = NULL;
@@ -2003,13 +1822,13 @@ BOOLEAN NVMeAccessLbaRangeEntry(
 )
 {
     PNVME_SRB_EXTENSION pNVMeSrbExt =
-        (PNVME_SRB_EXTENSION)pAE->StartState.pSrbExt;
+        (PNVME_SRB_EXTENSION)pAE->DriverState.pSrbExt;
     PNVMe_COMMAND pSetFeatures = (PNVMe_COMMAND)(&pNVMeSrbExt->nvmeSqeUnit);
     PADMIN_SET_FEATURES_COMMAND_DW10 pSetFeaturesCDW10 = NULL;
     PADMIN_SET_FEATURES_COMMAND_LBA_RANGE_TYPE_DW11 pSetFeaturesCDW11 = NULL;
     PADMIN_SET_FEATURES_COMMAND_LBA_RANGE_TYPE_ENTRY pLbaRangeEntry = NULL;
-    ULONG NSID = pAE->StartState.LbaRangeExamined + 1;
-    BOOLEAN Query = pAE->StartState.ConfigLbaRangeNeeded;
+    ULONG NSID = pAE->DriverState.LbaRangeExamined + 1;
+    BOOLEAN Query = pAE->DriverState.ConfigLbaRangeNeeded;
 
     /* Fail here if Namespace ID is 0 or out of range */
     if (NSID == 0 || NSID > pAE->controllerIdentifyData.NN)
@@ -2029,25 +1848,25 @@ BOOLEAN NVMeAccessLbaRangeEntry(
      * Prepare the buffer for transferring LBA Range entries
      * Need to zero the buffer out first when retrieving the entries
      */
-    if (pAE->StartState.ConfigLbaRangeNeeded == TRUE) {
+    if (pAE->DriverState.ConfigLbaRangeNeeded == TRUE) {
         pSetFeatures->CDW0.OPC = ADMIN_SET_FEATURES;
 
         /* Prepare new first LBA Range entry */
         pLbaRangeEntry = (PADMIN_SET_FEATURES_COMMAND_LBA_RANGE_TYPE_ENTRY)
-            pAE->StartState.pDataBuffer;
+            pAE->DriverState.pDataBuffer;
         pLbaRangeEntry->Type = LBA_TYPE_FILESYSTEM;
         pLbaRangeEntry->Attributes.Overwriteable = 1;
         pLbaRangeEntry->Attributes.Hidden = 0;
         pLbaRangeEntry->NLB = pAE->lunExtensionTable[NSID-1]->identifyData.NSZE;
     } else {
         pSetFeatures->CDW0.OPC = ADMIN_GET_FEATURES;
-        memset(pAE->StartState.pDataBuffer, 0, PAGE_SIZE);
+        memset(pAE->DriverState.pDataBuffer, 0, PAGE_SIZE);
     }
 
     /* Prepare PRP entries, need at least one PRP entry */
     if (NVMePreparePRPs(pAE,
                         pSetFeatures,
-                        pAE->StartState.pDataBuffer,
+                        pAE->DriverState.pDataBuffer,
                         sizeof(ADMIN_SET_FEATURES_LBA_COMMAND_RANGE_TYPE_ENTRY))
                         == FALSE) {
         return (FALSE);
@@ -2084,7 +1903,7 @@ BOOLEAN NVMeGetIdentifyStructures(
 )
 {
     PNVME_SRB_EXTENSION pNVMeSrbExt =
-        (PNVME_SRB_EXTENSION)pAE->StartState.pSrbExt;
+        (PNVME_SRB_EXTENSION)pAE->DriverState.pSrbExt;
     PNVMe_COMMAND pIdentify = NULL;
     PADMIN_IDENTIFY_CONTROLLER pIdenCtrl = &pAE->controllerIdentifyData;
     PADMIN_IDENTIFY_NAMESPACE pIdenNS = NULL;
@@ -2164,7 +1983,7 @@ UCHAR NVMeIssueAERs(
 {
     PNVME_SRB_EXTENSION pNVMeSrbExt = NULL;
     PNVMe_COMMAND pAER = NULL;
-    UCHAR NumCmdToIssue = NumCmds + pAE->StartState.NumAERsIssued;
+    UCHAR NumCmdToIssue = NumCmds + pAE->DriverState.NumAERsIssued;
     UCHAR CmdIssued = 0;
 
     /*
@@ -2173,7 +1992,7 @@ UCHAR NVMeIssueAERs(
      */
     if (NumCmdToIssue > pAE->controllerIdentifyData.UAERL + 1) {
         NumCmdToIssue = pAE->controllerIdentifyData.UAERL + 1 -
-                        pAE->StartState.NumAERsIssued;
+                        pAE->DriverState.NumAERsIssued;
     } else {
         NumCmdToIssue = NumCmds;
     }
@@ -2210,7 +2029,7 @@ UCHAR NVMeIssueAERs(
             return (CmdIssued);
 
         CmdIssued++;
-        pAE->StartState.NumAERsIssued++;
+        pAE->DriverState.NumAERsIssued++;
     }
 
     return (CmdIssued);
@@ -2238,7 +2057,7 @@ BOOLEAN NVMeCreateCplQueue(
 )
 {
     PNVME_SRB_EXTENSION pNVMeSrbExt =
-        (PNVME_SRB_EXTENSION)pAE->StartState.pSrbExt;
+        (PNVME_SRB_EXTENSION)pAE->DriverState.pSrbExt;
     PQUEUE_INFO pQI = &pAE->QueueInfo;
     PNVMe_COMMAND pCreateCpl = NULL;
     PADMIN_CREATE_IO_COMPLETION_QUEUE_DW10 pCreateCplCDW10 = NULL;
@@ -2303,7 +2122,7 @@ BOOLEAN NVMeCreateSubQueue(
 )
 {
     PNVME_SRB_EXTENSION pNVMeSrbExt =
-        (PNVME_SRB_EXTENSION)pAE->StartState.pSrbExt;
+        (PNVME_SRB_EXTENSION)pAE->DriverState.pSrbExt;
     PQUEUE_INFO pQI = &pAE->QueueInfo;
     PNVMe_COMMAND pCreateSub = NULL;
     PADMIN_CREATE_IO_SUBMISSION_QUEUE_DW10 pCreateSubCDW10 = NULL;
@@ -2350,8 +2169,7 @@ BOOLEAN NVMeCreateSubQueue(
  *
  * @brief NVMeDeleteCplQueues gets called to delete a number of IO completion
  *        queues via issuing Delete IO Completion Queue commands.
- *        NumCplIoQCreated of QUEUE_INFO decides the number of completion
- *        queues to delete.
+ *        For us exclusively by the init state machine
  *
  * @param pAE - Pointer to hardware device extension.
  *
@@ -2363,23 +2181,17 @@ BOOLEAN NVMeDeleteCplQueues(
     PNVME_DEVICE_EXTENSION pAE
 )
 {
-    PNVME_SRB_EXTENSION pNVMeSrbExt = NULL;
+    PNVME_SRB_EXTENSION pNVMeSrbExt =
+        (PNVME_SRB_EXTENSION)pAE->DriverState.pSrbExt;
     PQUEUE_INFO pQI = &pAE->QueueInfo;
     PNVMe_COMMAND pDeleteCpl = NULL;
     PADMIN_DELETE_IO_COMPLETION_QUEUE_DW10 pDeleteCplCDW10 = NULL;
-    USHORT QueueID;
-    USHORT NumQueueToDelete = (USHORT)pQI->NumCplIoQCreated;
+    USHORT QueueID = (USHORT)pQI->NumCplIoQCreated;
 
-    for (QueueID = 1; QueueID <= NumQueueToDelete; QueueID++) {
-        /* Allocate SRB Extension for command submission */
-        pNVMeSrbExt = (PNVME_SRB_EXTENSION)
-            NVMeAllocatePool(pAE, sizeof(NVME_SRB_EXTENSION));
+    if (QueueID > 0) {
 
-        if (pNVMeSrbExt == NULL)
-            return (FALSE);
-
-        /* Populate SRB_EXTENSION fields */
-        pNVMeSrbExt->pNvmeDevExt = pAE;
+        /* init and setup srb ext */
+        NVMeInitSrbExtension(pNVMeSrbExt, pAE, NULL);
         pNVMeSrbExt->pNvmeCompletionRoutine = NVMeInitCallback;
 
         /* Populate submission entry fields */
@@ -2390,8 +2202,9 @@ BOOLEAN NVMeDeleteCplQueues(
         pDeleteCplCDW10->QID = QueueID;
 
         /* Now issue the command via Admin Doorbell register */
-        if (ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN) == FALSE)
+        if (ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN) == FALSE) {
             return (FALSE);
+        }
     }
 
     return (TRUE);
@@ -2402,8 +2215,7 @@ BOOLEAN NVMeDeleteCplQueues(
  *
  * @brief NVMeDeleteSubQueues gets called to delete a number of IO submission
  *        queues via issuing Delete IO Submission Queue commands.
- *        NumSubIoQCreated of QUEUE_INFO decides the number of submission
- *        queues to delete.
+ *        For us exclusively by the init state machine
  *
  * @param pAE - Pointer to hardware device extension.
  *
@@ -2415,23 +2227,17 @@ BOOLEAN NVMeDeleteSubQueues(
     PNVME_DEVICE_EXTENSION pAE
 )
 {
-    PNVME_SRB_EXTENSION pNVMeSrbExt = NULL;
+    PNVME_SRB_EXTENSION pNVMeSrbExt =
+        (PNVME_SRB_EXTENSION)pAE->DriverState.pSrbExt;
     PQUEUE_INFO pQI = &pAE->QueueInfo;
     PNVMe_COMMAND pDeleteSub = NULL;
     PADMIN_DELETE_IO_SUBMISSION_QUEUE_DW10 pDeleteSubCDW10 = NULL;
-    USHORT QueueID;
-    USHORT NumQueueToDelete = (USHORT)pQI->NumSubIoQCreated;
+    USHORT QueueID = (USHORT)pQI->NumSubIoQCreated;
 
-    for (QueueID = 1; QueueID <= NumQueueToDelete; QueueID++) {
-        /* Allocate SRB Extension for command submission */
-        pNVMeSrbExt = (PNVME_SRB_EXTENSION)
-            NVMeAllocatePool(pAE, sizeof(NVME_SRB_EXTENSION));
+    if (QueueID > 0) {
 
-        if (pNVMeSrbExt == NULL)
-            return (FALSE);
-
-        /* Populate SRB_EXTENSION fields */
-        pNVMeSrbExt->pNvmeDevExt = pAE;
+        /* init and setup srb ext */
+        NVMeInitSrbExtension(pNVMeSrbExt, pAE, NULL);
         pNVMeSrbExt->pNvmeCompletionRoutine = NVMeInitCallback;
 
         /* Populate submission entry fields */
@@ -2442,10 +2248,10 @@ BOOLEAN NVMeDeleteSubQueues(
         pDeleteSubCDW10->QID = QueueID;
 
         /* Now issue the command via Admin Doorbell register */
-        if (ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN) == FALSE)
+        if (ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN) == FALSE) {
             return (FALSE);
+        }
     }
-
     return (TRUE);
 } /* NVMeDeleteSubQueues */
 
@@ -2458,7 +2264,7 @@ BOOLEAN NVMeDeleteSubQueues(
  *
  *        1. Set state to NVMeShutdown to prevent taking any new requests
  *        2. Delete all created submisison queues
- *        3. If succeeded, delete all created completion queues
+ *        3. If succeeded, delete all created completion queues (reset device)
  *        4. Set SHN to normal shutdown (01b)
  *        5. Keep reading back CSTS for 100 ms and check if SHST is 01b.
  *        6. If so or timeout, return SRB_STATUS_SUCCESS to Storport
@@ -2484,20 +2290,17 @@ BOOLEAN NVMeNormalShutdown(
 #endif
 
     /* Check for any pending cmds. */
-    if (NVMeDetectPendingCmds(pAE) == TRUE)
+    if (NVMeDetectPendingCmds(pAE) == TRUE) {
         return FALSE;
+    }
 
-    /* Delete all created submisison queues */
-    if (NVMeDeleteSubQueues( pAE ) == FALSE)
-        return (FALSE);
-
-    /* Delete all created completion queues */
-    if (NVMeDeleteCplQueues( pAE ) == FALSE)
-        return (FALSE);
+    /* Delete all queues */
+    NVMeResetAdapter(pAE);
 
     /* Need to to ensure the Controller registers are memory-mapped properly */
-    if ( pAE->pCtrlRegister == FALSE )
+    if ( pAE->pCtrlRegister == FALSE ) {
         return (FALSE);
+    }
 
     /*
      * Read Controller Configuration first before setting SHN bits of
@@ -2560,9 +2363,9 @@ VOID NVMeFreeBuffers (
     PSUB_QUEUE_INFO pSQI = NULL;
 
     /* First, free the Start State Data buffer memory allocated by driver */
-    if (pAE->StartState.pDataBuffer != NULL)
+    if (pAE->DriverState.pDataBuffer != NULL)
         StorPortFreeContiguousMemorySpecifyCache((PVOID)pAE,
-                                                 pAE->StartState.pDataBuffer,
+                                                 pAE->DriverState.pDataBuffer,
                                                  PAGE_SIZE, MmCached);
 
     /* Free the NVME_LUN_EXTENSION memory allocated by driver */
@@ -2621,8 +2424,8 @@ VOID NVMeFreeNonContiguousBuffers (
     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
 
     /* Free the Start State Machine SRB EXTENSION allocated by driver */
-    if (pAE->StartState.pSrbExt != NULL)
-        StorPortFreePool((PVOID)pAE, pAE->StartState.pSrbExt);
+    if (pAE->DriverState.pSrbExt != NULL)
+        StorPortFreePool((PVOID)pAE, pAE->DriverState.pSrbExt);
 
     /* Free the resource mapping tables if allocated */
     if (pRMT->pMsiMsgTbl != NULL)
@@ -2709,7 +2512,7 @@ BOOLEAN NVMeAllocIoQueues(
     PSUB_QUEUE_INFO pSQI = NULL;
     PSUB_QUEUE_INFO pSQIDest = NULL, pSQISrc = NULL;
     PCORE_TBL pCT = NULL;
-    ULONG Core, Node;
+    ULONG Core, Node, QEntries;
     USHORT QueueID, Queue;
 
     /*
@@ -2732,8 +2535,13 @@ BOOLEAN NVMeAllocIoQueues(
                 pCT = pRMT->pCoreTbl + Core;
                 QueueID = (USHORT)(Core + 1);
                 pSQI = pQI->pSubQueueInfo + QueueID;
+                QEntries = pAE->InitInfo.IoQEntries;
 
-                Status = NVMeAllocQueues(pAE, QueueID, (USHORT)Node);
+                Status = NVMeAllocQueues(pAE,
+                                         QueueID,
+                                         QEntries,
+                                         (USHORT)Node);
+
                 /* Fails on allocating */
                 if (Status != STOR_STATUS_SUCCESS) {
                     /*
@@ -2800,12 +2608,15 @@ BOOLEAN NVMeAllocIoQueues(
     } else {
         /*
          * Allocate only one IO queue from NUMA Node #0.
-         * If failed, reduce the number of entries by half and try again
-         * until the number is below the minimum requirement,
          */
         pSQI = pQI->pSubQueueInfo + 1;
+        QEntries = pAE->InitInfo.IoQEntries;
 
-        Status = NVMeAllocQueues(pAE, 1, 0);
+        Status = NVMeAllocQueues(pAE,
+                                 1,
+                                 QEntries,
+                                 0);
+
         if (Status != STOR_STATUS_SUCCESS)
             return (FALSE);
 
@@ -2818,6 +2629,7 @@ BOOLEAN NVMeAllocIoQueues(
 
         pQI->NumSubIoQAllocated = 1;
         pQI->NumCplIoQAllocated = 1;
+
         return (TRUE);
     }
 } /* NVMeAllocIoQueues */

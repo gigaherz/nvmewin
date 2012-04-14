@@ -84,9 +84,8 @@ ProcessIo(
     if (StorStatus != STOR_STATUS_SUCCESS)
         return FALSE;
 
-#if DBG
+    /* save off the usbmitting core info for CT learning purposes */
     pSrbExtension->procNum = ProcNumber;
-#endif
 
     /* 1 - Select Queue based on CPU */
     if (QueueType == NVME_QUEUE_TYPE_IO) {
@@ -207,32 +206,6 @@ ProcessIo(
     StorStatus = NVMeIssueCmd(pAdapterExtension, SubQueue, pNvmeCmd);
     ASSERT(StorStatus == STOR_STATUS_SUCCESS);
 
-    /*
-     * In crashdump we poll on admin command completions
-     * in order to allow our init state machine to function.
-     * We don't poll on IO commands as storport will poll
-     * for us and call our ISR.  This happens for admin cmds
-     * as well however we need sync behavior for the init
-     * state machine and the extra call to our ISR will
-     * simply find nothing to do as we handle it here
-     */
-    if ((pAdapterExtension->ntldrDump == TRUE) &&
-        (QueueType == NVME_QUEUE_TYPE_ADMIN)   &&
-        (StorStatus == STOR_STATUS_SUCCESS)) {
-        ULONG pollCount = 0;
-
-        while (FALSE == NVMeIsrMsix(pAdapterExtension, NVME_ADMIN_MSG_ID)) {
-            NVMeCrashDelay(pAdapterExtension->StartState.CheckbackInterval);
-            if (++pollCount > DUMP_PERSTATE_POLL_CALLS) {
-                NVMeRunningStartFailed(pAdapterExtension);
-
-                return FALSE;
-            }
-        }
-
-        return TRUE;
-    }
-
     if (StorStatus != STOR_STATUS_SUCCESS) {
         NVMeCompleteCmd(pAdapterExtension,
                         SubQueue,
@@ -246,8 +219,37 @@ ProcessIo(
                                     pAdapterExtension,
                                     pSrbExtension->pSrb);
         }
-
         return FALSE;
+    }
+
+    /*
+     * In crashdump we poll on admin command completions
+     * in order to allow our init state machine to function.
+     * We don't poll on IO commands as storport will poll
+     * for us and call our ISR.
+     */
+    if ((pAdapterExtension->ntldrDump == TRUE) &&
+        (QueueType == NVME_QUEUE_TYPE_ADMIN)   &&
+        (StorStatus == STOR_STATUS_SUCCESS)) {
+        ULONG pollCount = 0;
+
+        while (FALSE == NVMeIsrMsix(pAdapterExtension, NVME_ADMIN_MSG_ID)) {
+            NVMeCrashDelay(pAdapterExtension->DriverState.CheckbackInterval);
+            if (++pollCount > DUMP_POLL_CALLS) {
+                /* a polled admin command timeout is considered fatal */
+                pAdapterExtension->DriverState.DriverErrorStatus |=
+                    (1 << FATAL_POLLED_ADMIN_CMD_FAILURE);
+                pAdapterExtension->DriverState.NextDriverState = NVMeStateFailed;
+                /*
+                 * depending on whether the timer driven thread is dead or not
+                 * this error may get loggged twice
+                 */
+                NVMeLogError(pAdapterExtension,
+                    (ULONG)pAdapterExtension->DriverState.DriverErrorStatus);
+                    return FALSE;
+            }
+        }
+        return TRUE;
     }
 
     return TRUE;

@@ -45,15 +45,14 @@ TARGETPATH=$(TARGETNAME)\obj$(BUILD_ALT_DIR)
 
 # -DDBL_BUFF:  Used ONLY FOR DEBUG.  Double buffers all IOs, handy for any debug
 #              situation where control over all host side buffers is needed
-#              (alingment issues, etc)
+#              (alingment issues, etc).  Be sure to step through before use,
+#              doesn't get used/tested often!
 
 # -DCHATHAM:  Required for use with Chatham hardware
 
-# -DQEMU:  Required for use with QEMU emulator
-
 # -DCOMPLETE_IN_DPC:  Controls whether IOs are completed in the ISR ot in DPCs
 
-C_DEFINES = $(C_DEFINES) -D__KERNEL_ -D__MSWINDOWS__ -DQEMU -DCOMPLETE_IN_DPC
+C_DEFINES = $(C_DEFINES) -D__KERNEL_ -D__MSWINDOWS__ -DCOMPLETE_IN_DPC -DCHATHAM
 
 TARGETLIBS=$(DDK_LIB_PATH)\storport.lib \
            $(DDK_LIB_PATH)\Ntoskrnl.lib \

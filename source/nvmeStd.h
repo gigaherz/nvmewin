@@ -85,8 +85,13 @@ ULONG ChathamNlb; /* Number of logical blocks */
 #define IDEN_CONTROLLER             0
 #define IDEN_NAMESPACE              1
 
+#if DBG
+#define STATE_MACHINE_TIMEOUT_CALLS 5000
+#else
 #define STATE_MACHINE_TIMEOUT_CALLS 500 /* 2.5s (500 callbacks w/ .005 delay) */
-#define DUMP_PERSTATE_POLL_CALLS    1 /* only one poll per call in crashdump */
+#endif
+
+#define DUMP_POLL_CALLS             3
 #define STORPORT_TIMER_CB_us        5000 /* .005 seconds */
 #define MAX_STATE_STALL_us          STORPORT_TIMER_CB_us
 #define MILLI_TO_MICRO              1000
@@ -216,23 +221,35 @@ typedef enum _NVME_QUEUE_TYPE
 #define NO_SQ_HEAD_CHANGE (-1)
 
 /*
- * Adapter Start Error Status
+ * Adapter Error Status; can occur during init state machine
+ * or otherwise as the init state machine mechanism is used
+ * to effectively halt the controller at any time by changing
+ * the state to shutdown and flagging the error with this enum
+ *
+ * Errors in the state machine start with START_STATE_ otherweise
+ * they should start with FATAL_
  *
  * Each bit is used for error situation indicators
  */
+
 enum
 {
     START_STATE_RDY_FAILURE = 0,
     START_STATE_INT_COALESCING_FAILURE,
     START_STATE_QUEUE_ALLOC_FAILURE,
+    START_STATE_QUEUE_INIT_FAILURE,
+    START_STATE_SET_FEATURE_FAILURE,
     START_STATE_LBA_RANGE_CHK_FAILURE,
     START_STATE_IDENTIFY_CTRL_FAILURE,
     START_STATE_IDENTIFY_NS_FAILURE,
     START_STATE_SUBQ_CREATE_FAILURE,
     START_STATE_CPLQ_CREATE_FAILURE,
-    START_STATE_SUBQ_DELETE_FAILURE,
-    START_STATE_CPLQ_DELETE_FAILURE,
+    FATAL_SUBQ_DELETE_FAILURE,
+    FATAL_CPLQ_DELETE_FAILURE,
+    START_STATE_LEARNING_FAILURE,
     START_STATE_AER_FAILURE,
+    FATAL_POLLED_ADMIN_CMD_FAILURE,
+    START_STATE_UNKNOWN_STATE_FAILURE,
     START_STATE_TIMEOUT_FAILURE = 31
 };
 
@@ -247,16 +264,17 @@ enum
     NVMeWaitOnAER,
     NVMeWaitOnIoCQ,
     NVMeWaitOnIoSQ,
+    NVMeWaitOnLearnMapping,
+    NVMeWaitOnReSetupQueues,
     NVMeStartComplete = 0x88,
     NVMeShutdown,
-    NVMeStartFailed = 0xFF
+    NVMeStateFailed = 0xFF
 };
-
 
 #define ALL_NAMESPACES_APPLIED 0xFFFFFFFF
 
 /* Format NVM State Machine states */
-enum 
+enum
 {
     FORMAT_NVM_NO_ACTIVITY = 0,
     FORMAT_NVM_RECEIVED = 0x90,
@@ -269,7 +287,7 @@ enum
 /*******************************************************************************
  * Format NVM command specific structure.
  ******************************************************************************/
-typedef struct _FORMAT_NVM_INFO 
+typedef struct _FORMAT_NVM_INFO
 {
     /* Current state after receiving Format NVM request */
     ULONG               State;
@@ -283,8 +301,8 @@ typedef struct _FORMAT_NVM_INFO
     /* Bit-wise indicator, which Identify Namespace structures is obsolete. */
     ULONG               ObsoleteNS;
 
-    /* 
-     * Flag to indicate calling StorPortNotification with BusChangeDetected 
+    /*
+     * Flag to indicate calling StorPortNotification with BusChangeDetected
      * is required to add back the formatted namespace(s)
      */
     BOOLEAN             AddNamespaceNeeded;
@@ -301,16 +319,16 @@ typedef struct _FORMAT_NVM_INFO
 typedef struct _START_STATE
 {
     /* Starting status, including error status */
-    ULONG64 StartErrorStatus;
+    ULONG64 DriverErrorStatus;
 
     /* Interval in us for Storport to check back */
     ULONG CheckbackInterval;
 
     /* Next state to proceed */
-    UCHAR NextStartState;
+    UCHAR NextDriverState;
 
     /* Overall state machine timeout counter */
-    UCHAR TimeoutCounter;
+    UINT32 TimeoutCounter;
 
     /* State Polling counter */
     ULONG StateChkCount;
@@ -332,7 +350,7 @@ typedef struct _START_STATE
      * the callback function is invoked to examine the completion results.
      * If no error:
      * For Namespace structures, IdentifyNamespaceFetched is increased by 1.
-     * START_STATE_IDENTIFY_CTRL/NS_FAILURE bit of StartErrorStatus is set to 1
+     * START_STATE_IDENTIFY_CTRL/NS_FAILURE bit of DriverErrorStatus is set to 1
      * in the case of errors
      */
     ULONG IdentifyNamespaceFetched;
@@ -648,13 +666,11 @@ typedef struct _CORE_TBL
     /* Its processor group number */
     USHORT Group;
 
-    /* The associated MSI msg number granted from the host */
+    /* The vector associated with this core's QP */
     USHORT MsiMsgID;
 
-    /* The associated sub queue to use to issue commands */
+    /* The associated queue pair info for this core */
     USHORT SubQueue;
-
-    /* The associated comp queue for completed requests */
     USHORT CplQueue;
 } CORE_TBL, *PCORE_TBL;
 
@@ -687,8 +703,6 @@ typedef struct _MSI_MESSAGE_TBL
     /* Indicates MSI message is shared by multiple completion queues */
     BOOLEAN Shared;
 
-    /* Indicates whether our core mapping is physical or logical */
-    BOOLEAN LogicalMode;
 } MSI_MESSAGE_TBL, *PMSI_MESSAGE_TBL;
 
 /*******************************************************************************
@@ -810,7 +824,7 @@ typedef struct _nvme_device_extension
     /* General Device Extension info */
 
     /* State Machine structure */
-    START_STATE                 StartState;
+    START_STATE                 DriverState;
 
     /* Used to determine if we are in NT context */
     BOOLEAN                     InNTContext;
@@ -841,6 +855,9 @@ typedef struct _nvme_device_extension
 
     /* Format NVM State Machine information */
     FORMAT_NVM_INFO             FormatNvmInfo;
+
+    /* counter used to determine in learning the vector/core table */
+    ULONG                       LearningCores;
 
 #ifdef CHATHAM
     PVOID                       pChathamRegs;
@@ -883,10 +900,8 @@ typedef struct _nvme_srb_extension
     PVOID                        pChildIo;
     PVOID                        pParentIo;
 
-    /* for debug builds, this allows for extra checking on perf optimizations */
-#if DBG
+    /* used for learning the vector/core mappings */
     PROCESSOR_NUMBER             procNum;
-#endif
 
 #ifdef DBL_BUFF
     PVOID pDblVir;     // this cmd's dbl buffer virtual address
@@ -953,10 +968,6 @@ VOID NVMeCallArbiter(
     PNVME_DEVICE_EXTENSION pAE
 );
 
-VOID NVMeMsixMapCores(
-    __in PNVME_DEVICE_EXTENSION pAE
-);
-
 VOID NVMeMsiMapCores(
     __in PNVME_DEVICE_EXTENSION pAE
 );
@@ -985,12 +996,6 @@ IoCompletionDpcRoutine(
 VOID NVMeInitFreeQ(
     __in PSUB_QUEUE_INFO pSQI,
     __in PNVME_DEVICE_EXTENSION pAE
-);
-
-ULONG NVMeAllocQueues(
-    __in PNVME_DEVICE_EXTENSION pAE,
-    __in USHORT QueueID,
-    __in USHORT NumaNode
 );
 
 ULONG NVMeInitSubQueue(
@@ -1188,8 +1193,17 @@ VOID NVMeRunningWaitOnIoSQ(
     PNVME_DEVICE_EXTENSION pAE
 );
 
-VOID NVMeRunningStartFailed(
+VOID NVMeRunningWaitOnLearnMapping(
     PNVME_DEVICE_EXTENSION pAE
+);
+
+VOID NVMeRunningWaitOnReSetupQueues(
+    PNVME_DEVICE_EXTENSION pAE
+);
+
+VOID NVMeDriverFatalError(
+    PNVME_DEVICE_EXTENSION pAE,
+    ULONG ErrorNum
 );
 
 BOOLEAN NvmeReset(
@@ -1205,6 +1219,13 @@ ULONG NVMeFindAdapter(
     __in PCSTR ArgumentString,
     __inout PPORT_CONFIGURATION_INFORMATION ConfigInfo,
     __out PUCHAR Again
+);
+
+ULONG NVMeAllocQueues(
+    __in PNVME_DEVICE_EXTENSION pAE,
+    __in USHORT QueueID,
+    __in ULONG QEntries,
+    __in USHORT NumaNode
 );
 
 BOOLEAN NVMePassiveInitialize(
@@ -1307,6 +1328,11 @@ BOOLEAN NVMeProcessIoctl(
 
 ULONG NVMeInitAdminQueues(
     PNVME_DEVICE_EXTENSION pAE
+);
+
+VOID NVMeLogError(
+    __in PNVME_DEVICE_EXTENSION pAE,
+    __in ULONG ErrorNum
 );
 
 #if DBG

@@ -38,7 +38,7 @@
  ** official policies, either expressed or implied, of Intel Corporation,     **
  ** Integrated Device Technology Inc., or Sandforce Corporation.              **
  **                                                                           **
- ******************************************************************************* 
+ *******************************************************************************
 **/
 
 /*

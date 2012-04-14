@@ -52,10 +52,6 @@ HW_INITIALIZATION_DATA gHwInitializationData;
 /* NVMe Vendor String */
 const char vendorIdString[] = "NVME    ";
 
-#if DBG
-extern int gSurfaceLUN;
-#endif /* DBG */
-
 /* Current Mode Parameter Block Descriptor Values */
 MODE_PARAMETER_BLOCK g_modeParamBlock;
 
@@ -546,8 +542,8 @@ SNTI_TRANSLATION_STATUS SntiTranslateInquiry(
 
     /*
      * Set SRB status to success to indicate the command will complete
-     * successfully (assuming no errors occur during translation) and reset the 
-     * status value to use below. 
+     * successfully (assuming no errors occur during translation) and reset the
+     * status value to use below.
      */
     pSrb->SrbStatus = SRB_STATUS_SUCCESS;
 
@@ -902,7 +898,7 @@ VOID SntiTranslateStandardInquiryPage(
 
     /*
      * Handling bus re-enumeration driven by Format NVM command
-     * Only do this checking when Format NVM state is FORMAT_NVM_NS_ADDED 
+     * Only do this checking when Format NVM state is FORMAT_NVM_NS_ADDED
      */
     pFormatNvmInfo = &pDevExt->FormatNvmInfo;
 
@@ -911,7 +907,7 @@ VOID SntiTranslateStandardInquiryPage(
          * If the namespace indicated in FormattedLun matches the current Lun,
          * clear the associated bit.
          */
-        if (((pFormatNvmInfo->FormattedLun) & (1 << pSrb->Lun)) == 
+        if (((pFormatNvmInfo->FormattedLun) & (1 << pSrb->Lun)) ==
             (1 << pSrb->Lun)) {
             pFormatNvmInfo->FormattedLun &= ~(1 << pSrb->Lun);
         }
@@ -923,12 +919,12 @@ VOID SntiTranslateStandardInquiryPage(
             if ((pFormatNvmInfo->pOrgSrb != NULL) &&
                 (pFormatNvmInfo->AddNamespaceNeeded == TRUE)){
                 pFormatNvmInfo->pOrgSrb->SrbStatus = SRB_STATUS_SUCCESS;
-                IO_StorPortNotification(RequestComplete, 
+                IO_StorPortNotification(RequestComplete,
                                         pDevExt,
                                         pFormatNvmInfo->pOrgSrb);
             }
             /*
-             * Reset FORMAT_NVM_INFO structure to zero 
+             * Reset FORMAT_NVM_INFO structure to zero
              * since the request is completed
              */
             memset((PVOID)pFormatNvmInfo, 0, sizeof(FORMAT_NVM_INFO));
@@ -1013,7 +1009,6 @@ SNTI_TRANSLATION_STATUS SntiTranslateReportLuns(
     PNVME_DEVICE_EXTENSION pDevExt = NULL;
     PNVME_SRB_EXTENSION pSrbExt = NULL;
     PUCHAR pResponseBuffer = NULL;
-
     UINT32 numberOfNamespaces;
     UINT32 lunListLength;
     UINT32 allocLength;
@@ -1059,12 +1054,6 @@ SNTI_TRANSLATION_STATUS SntiTranslateReportLuns(
          * (starting with 0) and packed sequentially.
          */
         numberOfNamespaces = pDevExt->controllerIdentifyData.NN;
-
-#if DBG
-        if (gSurfaceLUN == 0) {
-            numberOfNamespaces = 0;
-        }
-#endif
 
         lunListLength = numberOfNamespaces * LUN_ENTRY_SIZE;
 
@@ -1115,7 +1104,6 @@ SNTI_TRANSLATION_STATUS SntiTranslateReportLuns(
 
     return returnStatus;
 } /* SntiTranslateReportLuns */
-
 /******************************************************************************
  * SntiTranslateReadCapacity
  *
@@ -1259,14 +1247,14 @@ SNTI_TRANSLATION_STATUS SntiTranslateReadCapacity10(
     } else {
         memset(pReadCapacityData, 0, sizeof(READ_CAPACITY_DATA));
 
-        /* 
+        /*
          * NOTE: SCSI Compliance Suite 2.0 incorrect failure happens since
          *       there is no checking of the PMI bit and LBA. Older revisions
          *       of the SBC spec (i.e. SBC-2 r16) support PMI, however, SBC-3
          *       r27, obsoletes PMI and checking for PMI. Refer to comments.
          */
 
-        /* 
+        /*
          * Last LBA - If the NSZE is greater than a DWORD, set to all F's...
          *
          * From SBC-3 r27:
@@ -1443,7 +1431,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateWrite(
      * Need to block IOs when a pending Format NVM command applies to
      * the target Lun.
      */
-    if ((pDevExt->FormatNvmInfo.TargetLun & (1 << pSrb->Lun)) == 
+    if ((pDevExt->FormatNvmInfo.TargetLun & (1 << pSrb->Lun)) ==
         (1 << pSrb->Lun)) {
         pSrb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
         return SNTI_FAILURE_CHECK_RESPONSE_DATA;
@@ -1791,12 +1779,12 @@ SNTI_TRANSLATION_STATUS SntiTranslateRead(
      * Need to block IOs when a pending Format NVM command applies to
      * the target Lun.
      */
-    if ((pDevExt->FormatNvmInfo.TargetLun & (1 << pSrb->Lun)) == 
+    if ((pDevExt->FormatNvmInfo.TargetLun & (1 << pSrb->Lun)) ==
         (1 << pSrb->Lun)) {
         pSrb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
         return SNTI_FAILURE_CHECK_RESPONSE_DATA;
     }
-    
+
     status = GetLunExtension(pSrbExt, &pLunExt);
     if (status != SNTI_SUCCESS) {
         /* Map the translation error to a SCSI error */
@@ -2378,7 +2366,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateStartStopUnit(
 
 /******************************************************************************
  * SntiTransitionPowerState
- * 
+ *
  * @brief Transitions power state based on SCSI START/STOP unit command.
  *
  * @param pSrbExt - Pointer to SRB extension
@@ -2673,10 +2661,10 @@ SNTI_TRANSLATION_STATUS SntiTranslateTestUnitReady(
     pSrbExt->pNvmeCompletionRoutine = NULL;
 
     /*
-     * Look at GenNextStartStat and ensure that the asynchronous state machine 
+     * Look at GenNextStartStat and ensure that the asynchronous state machine
      * has been successfully started.
      */
-    if (pDevExt->StartState.NextStartState != NVMeStartComplete) {
+    if (pDevExt->DriverState.NextDriverState != NVMeStartComplete) {
         SntiSetScsiSenseData(pSrb,
                              SCSISTAT_CHECK_CONDITION,
                              SCSI_SENSE_NOT_READY,
@@ -2931,7 +2919,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateLogSense(
             case LOG_PAGE_TEMPERATURE_PAGE:
                 SntiTranslateTemperature(pSrb);
 
-                /* 
+                /*
                  * Fall through to finish setting up the PRP entries and GET LOG
                  * PAGE command
                  */
@@ -3221,7 +3209,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeSense(
                     returnStatus = SNTI_TRANSLATION_SUCCESS;
                     pSrb->SrbStatus = SRB_STATUS_PENDING;
 
-                    /* 
+                    /*
                      * Override the completion routine - translation necessary
                      * on completion
                      */
@@ -3282,7 +3270,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeSense(
                         pSrb->SrbStatus = SRB_STATUS_PENDING;
                         returnStatus = SNTI_TRANSLATION_SUCCESS;
 
-                    /* 
+                    /*
                      * Override the completion routine - translation necessary
                      * on completion
                      */
@@ -4412,10 +4400,6 @@ BOOLEAN SntiSetScsiSenseData(
    return status;
 }
 
-#if DBG
-int gSurfaceLUN = 1;
-#endif
-
 /******************************************************************************
  * GetLunExtension
  *
@@ -4443,13 +4427,6 @@ SNTI_STATUS GetLunExtension(
 
     ASSERT(pDevExt != NULL);
     ASSERT(pSrb != NULL);
-
-#if DBG
-    if (gSurfaceLUN == 0) {
-        *ppLunExt = NULL;
-        return SNTI_INVALID_PATH_TARGET_ID;;
-    }
-#endif
 
     if ((pSrb->PathId != VALID_NVME_PATH_ID) ||
         (pSrb->TargetId != VALID_NVME_TARGET_ID)) {
@@ -4692,9 +4669,9 @@ VOID SntiBuildGetLogPageCmd(
 /******************************************************************************
  * SntiBuildFirmwareImageDownloadCmd
  *
- * Builds an internal NVMe FIRMWARE IMAGE DOWNLOAD command. 
+ * Builds an internal NVMe FIRMWARE IMAGE DOWNLOAD command.
  *
- * @param pSrbExt - This parameter specifies the SRB Extension and the 
+ * @param pSrbExt - This parameter specifies the SRB Extension and the
  *                  associated SRB with P/T/L nexus.
  * @param dword10 - DWORD 10 of the FIRMWARE IMAGE DOWNLOAD command
  * @param dword11 - DWORD 11 of the FIRMWARE IMAGE DOWNLOAD command
@@ -5181,7 +5158,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateTemperatureResponse(
     pDevExt = (PNVME_DEVICE_EXTENSION)pSrbExt->pNvmeDevExt;
     pBuf = pSrbExt->pDataBuffer;
 
-    /* 
+    /*
      * The SCSI Log Page (Temperature page) is being stored in the SRB data
      * buffer
      */
@@ -5189,7 +5166,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateTemperatureResponse(
 
     /* Check which phase of sequence by checking the SQE unit opcode */
     if (pSrbExt->nvmeSqeUnit.CDW0.OPC == ADMIN_GET_LOG_PAGE) {
-        /* 
+        /*
          * Parse the SMART/Health Information Log Page. Must convert temperature
          * from Kelvin to Celsius.
          */
@@ -5960,7 +5937,7 @@ VOID SntiDpcRoutine(
  *
  * @param pSrbExt - Pointer to SRB extension
  * @param bufferSize - Size of buffer to allcoate
- * 
+ *
  * @return BOOLEAN
  *     Indicates if the memory allocation was successful.
  ******************************************************************************/
