@@ -53,6 +53,7 @@
 #define SNTI_STORPORT_QUEUE_DEPTH (254)
 #define MODE_BLOCK_DESC_MAX (0xFFFFFF)
 #define MODE_BLOCK_DESC_MAX_BYTE (0xFF)
+#define NVME_MAX_NUM_BLOCKS_PER_READ_WRITE (0xFFFF)
 
 /*******************************************************************************
  * VPD_EXTENDED_INQUIRY_DATA
@@ -584,7 +585,7 @@ VOID SntiCreateControlModePage(
     BOOLEAN modeSense10
 );
 
-#ifdef CHATHAM
+#if defined(CHATHAM)
 VOID SntiHardCodeCacheModePage(
     PNVME_SRB_EXTENSION pSrbExt,
     PNVME_LUN_EXTENSION pLunExt,

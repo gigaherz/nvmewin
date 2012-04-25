@@ -310,6 +310,14 @@ VOID NVMeCompleteCmd(
      */
     ASSERT(pCmdEntry->Context != NULL);
 
+    if ((pCmdEntry->Pending == FALSE) || (pCmdEntry->Context == NULL)) {
+        /*
+         * Something bad happened so reset the adapter and hope for the best
+         */
+        NVMeResetController(pAE, NULL);
+        return;
+    }
+
     *((ULONG_PTR *)pContext) = (ULONG_PTR)pCmdEntry->Context;
 
 #ifdef DBL_BUFF

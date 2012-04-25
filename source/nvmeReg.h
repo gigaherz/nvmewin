@@ -48,6 +48,19 @@
 #ifndef __NVME_REG_H__
 #define __NVME_REG_H__
 
+/* Various NVME register fields */
+#define NVME_AQA_CQS_LSB            16
+#define NVME_CC_EN_LSB              0
+#define NVME_CC_MPS_LSB             7
+#define NVME_CSTS_RDY_MSK           1
+#define NVME_MEM_PAGE_SIZE_SHIFT    13 /* When MPS is 0, means 4KB */
+#define NVME_DB_START               0x1000
+#define NVME_CC_NVM_CMD (0)
+#define NVME_CC_SHUTDOWN_NONE (0)
+#define NVME_CC_ROUND_ROBIN (0)
+#define NVME_CC_IOSQES (6 << 16)
+#define NVME_CC_IOCQES (4 << 20)
+
 /* NVMe CONTROLLER */
 
 #pragma pack(push, regs, 1)

@@ -83,10 +83,10 @@ ULONG DriverEntry(
     /* Specifiy adapter specific information. */
     hwInitData.AutoRequestSense = TRUE;
     hwInitData.NeedPhysicalAddresses = TRUE;
-#ifndef CHATHAM
-    hwInitData.NumberOfAccessRanges = NVME_ACCESS_RANGES;
-#else
+#if defined(CHATHAM) || defined(CHATHAM2)
     hwInitData.NumberOfAccessRanges = 2;
+#else
+    hwInitData.NumberOfAccessRanges = NVME_ACCESS_RANGES;
 #endif
     hwInitData.AdapterInterfaceType = PCIBus;
     hwInitData.MapBuffers = STOR_MAP_NON_READ_WRITE_BUFFERS;
@@ -192,7 +192,7 @@ NVMeFindAdapter(
                            pAE->pCtrlRegister);
     }
 
-#ifdef CHATHAM
+#if defined(CHATHAM) || defined(CHATHAM2)
     pAE->pChathamRegs = (PVOID)pAE->pCtrlRegister;
     pMM_Range = &(*(pPCI->AccessRanges))[1];
     pAE->pCtrlRegister = StorPortGetDeviceBase(pAE,
@@ -242,6 +242,9 @@ NVMeFindAdapter(
     if (pAE->ntldrDump == FALSE) {
         /* Call NVMeFetchRegistry to retrieve all designated values */
         NVMeFetchRegistry(pAE);
+
+        /* updte in case someone used the registry to change MaxTxSie */
+        pAE->PRPListSize = ((pAE->InitInfo.MaxTxSize / PAGE_SIZE) * sizeof(UINT64));
 
         /*
          * Get the CPU Affinity of current system and construct NUMA table,
@@ -533,11 +536,17 @@ BOOLEAN NVMeInitialize(
         Status = StorPortInitializePerfOpts(pAE, FALSE, &perfData);
         ASSERT(STOR_STATUS_SUCCESS == Status);
     }
-    /* Zero controller config, toggle EN */
+
+    /* Set EN to 1 (all others zero) */
     CC.EN = 1;
     StorPortWriteRegisterUlong(pAE,
                                (PULONG)(&pAE->pCtrlRegister->CC),
                                CC.AsUlong);
+    /* Read it back */
+    CC.AsUlong =
+        StorPortReadRegisterUlong(pAE, (PULONG)(&pAE->pCtrlRegister->CC));
+
+    /* Now reset */
     CC.EN = 0;
     StorPortWriteRegisterUlong(pAE,
                                (PULONG)(&pAE->pCtrlRegister->CC),
@@ -1223,7 +1232,7 @@ BOOLEAN NVMeIsrIntx(
     InterruptClaimed = NVMeIsrMsix(pAE, 0);
 
     /* Un-mask interrupt if it had been masked */
-#ifndef CHATHAM
+#if !defined(CHATHAM) && !defined(CHATHAM2)
     if (pAE->IntxMasked == TRUE) {
         StorPortWriteRegisterUlong(pAE, &pAE->pCtrlRegister->INTMC, 1);
         pAE->IntxMasked = FALSE;
@@ -1312,7 +1321,7 @@ IoCompletionDpcRoutine(
         do {
             entryStatus = NVMeGetCplEntry(pAE, pCQI, &pCplEntry);
             if (entryStatus == STOR_STATUS_SUCCESS) {
-#ifndef CHATHAM
+#if !defined(CHATHAM) && !defined(CHATHAM2)
                 /*
                  * Mask the interrupt only when first pending completed entry
                  * found.
@@ -1518,7 +1527,7 @@ NVMeIsrMsix (
         do {
             entryStatus = NVMeGetCplEntry(pAE, pCQI, &pCplEntry);
             if (entryStatus == STOR_STATUS_SUCCESS) {
-#ifndef CHATHAM
+#if !defined(CHATHAM) && !defined(CHATHAM2)
                 /*
                  * Mask the interrupt only when first pending completed entry
                  * found.
@@ -3245,18 +3254,6 @@ BOOLEAN NVMeProcessIoctl(
 
                             return IOCTL_COMPLETED;
                         }
-
-                        /*
-                         * Check if AVSCC bit is set as 1, indicating support of
-                         * ADMIN vendor specific command handling via Pass
-                         * Through.
-                         */
-                        if (pDevExt->controllerIdentifyData.AVSCC == 0) {
-                            pSrbIoCtrl->ReturnCode =
-                                NVME_IOCTL_ADMIN_VENDOR_SPECIFIC_NOT_SUPPORTED;
-
-                            return IOCTL_COMPLETED;
-                        }
                     break;
                 } /* end switch */
                 /* Process ADMIN commands ends */
@@ -3298,17 +3295,6 @@ BOOLEAN NVMeProcessIoctl(
                         if (pNvmeCmdDW0->OPC < NVM_VENDOR_SPECIFIC_START) {
                             pSrbIoCtrl->ReturnCode =
                                 NVME_IOCTL_INVALID_NVM_VENDOR_SPECIFIC_OPCODE;
-
-                            return IOCTL_COMPLETED;
-                        }
-
-                        /*
-                         * Check if NVSCC bit is set as 1, indicating support of
-                         * NVM vendor specific command handling via Pass Through
-                         */
-                        if (pDevExt->controllerIdentifyData.NVSCC == 0) {
-                            pSrbIoCtrl->ReturnCode =
-                                NVME_IOCTL_NVM_VENDOR_SPECIFIC_NOT_SUPPORTED;
 
                             return IOCTL_COMPLETED;
                         }
@@ -3414,7 +3400,7 @@ ULONG NVMeInitAdminQueues(
      */
     NVMeEnableAdapter(pAE);
 
-#ifdef CHATHAM
+#if defined(CHATHAM) || defined(CHATHAM2)
     NVMeChathamSetup(pAE);
 #endif
 
@@ -3427,7 +3413,8 @@ ULONG NVMeInitAdminQueues(
  * @brief Logs error to storport.
  *
  * @param pAE - Pointer to device extension
- * @param ErrorNum - Code to log
+ * @param ErrorNum - Code to log.  The error code will show up in the 4th DWORD
+ *        (starting with 0) inthe system event log detailed data
  *
  * @return VOID
  ******************************************************************************/
@@ -3487,7 +3474,7 @@ VOID IO_StorPortNotification(
 }
 #endif
 
-#ifdef CHATHAM
+#if defined(CHATHAM) || defined(CHATHAM2)
 /*******************************************************************************
  * RegisterWriteAddrU64
  *
@@ -3533,7 +3520,6 @@ VOID NVMeChathamSetup(
 )
 {
     PUCHAR pBar = (PUCHAR)pAE->pChathamRegs;
-    ULONG ver = 0;
     ULONGLONG reg1 = 0;
     ULONGLONG reg2 = 0;
     ULONGLONG reg3 = 0;
@@ -3542,12 +3528,12 @@ VOID NVMeChathamSetup(
     ULONG temp3 = 0;
 
     NVMeStallExecution(pAE,10000);
-    ver = StorPortReadRegisterUlong(pAE, (PULONG)(pBar + 0x8080));
+    pAE->FwVer = StorPortReadRegisterUlong(pAE, (PULONG)(pBar + 0x8080));
 
-    DbgPrint("Chatham Version: 0x%x\n", ver);
+    DbgPrint("Chatham Version: 0x%x\n", pAE->FwVer);
 
     ChathamNlb = StorPortReadRegisterUlong(pAE, (PULONG)(pBar + 0x8068));
-    ChathamNlb = ChathamNlb - 0x100;
+    ChathamNlb = ChathamNlb - 0x110;
     ChathamSize = ChathamNlb * 512;
 
     DbgPrint("ChathamSize: 0x%x\n", ChathamSize);
@@ -3557,6 +3543,10 @@ VOID NVMeChathamSetup(
 
  //   temp1 = ((ULONGLONG)0x1b58 << 32) | 0x7d0;
  //   temp2 = ((ULONGLONG)0xcb << 32) | 0x131;
+    temp1 = ((ULONGLONG)pAE->InitInfo.Parm1 << 32) |
+     pAE->InitInfo.Parm2;
+    temp2 = ((ULONGLONG)pAE->InitInfo.Parm3 << 32) |
+     pAE->InitInfo.Parm4;
 
     RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8000), reg1);
     RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8008), reg2);

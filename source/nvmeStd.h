@@ -52,7 +52,7 @@
 #define DBL_BUFF_SZ (1024 * 64)
 #endif
 
-#ifdef CHATHAM
+#if defined(CHATHAM) || defined(CHATHAM2)
 ULONGLONG ChathamSize; /* Size of device in bytes */
 ULONG ChathamNlb; /* Number of logical blocks */
 #define CHATHAM_NR_QUEUES (8)
@@ -74,19 +74,11 @@ ULONG ChathamNlb; /* Number of logical blocks */
 #define DFT_ASYNC_EVENT_REQ_NUMBER  4
 #define NVME_ADMIN_MSG_ID           0
 
-/* NVME register fields, should be moved to NVMeReg.h later */
-#define NVME_AQA_CQS_LSB            16
-#define NVME_CC_EN_LSB              0
-#define NVME_CC_MPS_LSB             7
-#define NVME_CSTS_RDY_MSK           1
-#define NVME_MEM_PAGE_SIZE_SHIFT    13 /* When MPS is 0, means 4KB */
-#define NVME_DB_START               0x1000
-
 #define IDEN_CONTROLLER             0
 #define IDEN_NAMESPACE              1
 
 #if DBG
-#define STATE_MACHINE_TIMEOUT_CALLS 5000
+#define STATE_MACHINE_TIMEOUT_CALLS 1000
 #else
 #define STATE_MACHINE_TIMEOUT_CALLS 500 /* 2.5s (500 callbacks w/ .005 delay) */
 #endif
@@ -130,8 +122,8 @@ ULONG ChathamNlb; /* Number of logical blocks */
 #define MAX_INT_COALESCING_TIME     255
 
 #define DFT_INT_COALESCING_ENTRY    16
-#define MIN_INT_COALESCING_ENTRY    1
-#define MAX_INT_COALESCING_ENTRY    256
+#define MIN_INT_COALESCING_ENTRY    0
+#define MAX_INT_COALESCING_ENTRY    255
 
 #define MASK_INT                    0xFFFFFFFF
 #define CLEAR_INT                   0
@@ -401,6 +393,16 @@ typedef struct _INIT_INFO
 
     /* Aggregation entries per interrupt vector */
     ULONG IntCoalescingEntry;
+
+#if defined(CHATHAM) || defined(CHATHAM2)
+    ULONGLONG Parm1;
+    ULONGLONG Parm2;
+    ULONGLONG Parm3;
+    ULONGLONG Parm4;
+    ULONG NsSize;
+    ULONG HardCodeIdData;
+#endif
+
 } INIT_INFO, *PINIT_INFO;
 
 /*******************************************************************************
@@ -859,9 +861,11 @@ typedef struct _nvme_device_extension
     /* counter used to determine in learning the vector/core table */
     ULONG                       LearningCores;
 
-#ifdef CHATHAM
+#if defined(CHATHAM) || defined(CHATHAM2)
     PVOID                       pChathamRegs;
+    ULONG                       FwVer;
 #endif
+
 } NVME_DEVICE_EXTENSION, *PNVME_DEVICE_EXTENSION;
 
 /* SRB Extension */
@@ -1345,7 +1349,7 @@ VOID IO_StorPortNotification(
 #define IO_StorPortNotification StorPortNotification
 #endif
 
-#ifdef CHATHAM
+#if defined(CHATHAM) || defined(CHATHAM2)
 VOID NVMeChathamSetup(
     PNVME_DEVICE_EXTENSION pAE
 );

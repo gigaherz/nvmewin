@@ -514,6 +514,8 @@ SNTI_TRANSLATION_STATUS SntiTranslateInquiry(
     PNVME_SRB_EXTENSION pSrbExt = NULL;
     UINT8 pageCode;
     BOOLEAN evpd;
+    PNVME_LUN_EXTENSION pLunExt = NULL;
+    SNTI_STATUS status;
 
     /* Default the translation status to command completed */
     SNTI_TRANSLATION_STATUS returnStatus = SNTI_COMMAND_COMPLETED;
@@ -538,6 +540,19 @@ SNTI_TRANSLATION_STATUS SntiTranslateInquiry(
         pSrb->SrbStatus |= SRB_STATUS_INVALID_REQUEST;
         pSrb->DataTransferLength = 0;
         return SNTI_FAILURE_CHECK_RESPONSE_DATA;
+    }
+
+    /*
+     * Don't surface any hidden LUNs
+     */
+    status = GetLunExtension(pSrbExt, &pLunExt);
+    if (status != SNTI_SUCCESS) {
+        SntiMapInternalErrorStatus(pSrb, status);
+        return SNTI_FAILURE_CHECK_RESPONSE_DATA;
+    }
+    if (FALSE == pLunExt->ExposeNamespace) {
+        SntiMapInternalErrorStatus(pSrb, SNTI_INVALID_PATH_TARGET_ID);
+        return SNTI_INVALID_PATH_TARGET_ID;
     }
 
     /*
@@ -1057,25 +1072,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateReportLuns(
 
         lunListLength = numberOfNamespaces * LUN_ENTRY_SIZE;
 
-        /*
-         * If the number of namespaces is more than one and the data buffer is
-         * only for one LUN reporting, terminate with CHECK CONDITION
-         */
-        if (allocLength < (lunListLength + LUN_DATA_HEADER_SIZE)) {
-            SntiSetScsiSenseData(pSrb,
-                                 SCSISTAT_CHECK_CONDITION,
-                                 SCSI_SENSE_ILLEGAL_REQUEST,
-                                 SCSI_ADSENSE_INVALID_CDB,
-                                 SCSI_ADSENSE_NO_SENSE);
-
-            pSrb->SrbStatus |= SRB_STATUS_INVALID_REQUEST;
-            pSrb->DataTransferLength = 0;
-
-            returnStatus = SNTI_FAILURE_CHECK_RESPONSE_DATA;
-            return returnStatus;
-        }
-
-        memset(pResponseBuffer, 0, (lunListLength + LUN_DATA_HEADER_SIZE));
+        memset(pResponseBuffer, 0, allocLength);
         lunIdDataOffset = REPORT_LUNS_FIRST_LUN_OFFSET;
 
         /* The first LUN Id will always be 0 per the SAM spec */
@@ -1086,6 +1083,9 @@ SNTI_TRANSLATION_STATUS SntiTranslateReportLuns(
              */
             pResponseBuffer[lunIdDataOffset] = lunId;
             lunIdDataOffset += LUN_ENTRY_SIZE;
+            if (lunIdDataOffset >= allocLength) {
+                break;
+            }
         }
 
         /* Set the LUN LIST LENGTH field */
@@ -1480,10 +1480,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateWrite(
             status = SntiTranslateWrite12(pSrbExt, pLunExt);
         break;
         case SCSIOP_WRITE16:
-            /* Not supported due to the failure in SCSI Compliance test */
-            pSrb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
-            status = SNTI_FAILURE;
-            //status = SntiTranslateWrite16(pSrbExt, pLunExt);
+            status = SntiTranslateWrite16(pSrbExt, pLunExt);
         break;
         default:
             ASSERT(FALSE);
@@ -1665,8 +1662,11 @@ SNTI_TRANSLATION_STATUS SntiTranslateWrite12(
         /* Command DWORD 12 - LR/FUA/PRINFO/NLB */
         pSrbExt->nvmeSqeUnit.CDW12 |= (fua ? FUA_ENABLED : FUA_DISABLED);
 
-        /* NVMe Translation Spec ERRATA... NLB is only 16 bits!!! */
+#ifdef CHATHAM
         pSrbExt->nvmeSqeUnit.CDW12 |= (length & DWORD_BIT_MASK);
+#else
+        pSrbExt->nvmeSqeUnit.CDW12 |= (length & DWORD_BIT_MASK) - 1; /* 0's based */
+#endif /* CHATHAM */
     }
 
 #if DBG
@@ -1728,8 +1728,11 @@ SNTI_TRANSLATION_STATUS SntiTranslateWrite16(
         /* Command DWORD 12 - LR/FUA/PRINFO/NLB */
         pSrbExt->nvmeSqeUnit.CDW12 |= (fua ? FUA_ENABLED : FUA_DISABLED);
 
-        /* NVMe Translation Spec ERRATA... NLB is only 16 bits!!! */
+#ifdef CHATHAM
         pSrbExt->nvmeSqeUnit.CDW12 |= (length & DWORD_BIT_MASK);
+#else
+        pSrbExt->nvmeSqeUnit.CDW12 |= (length & DWORD_BIT_MASK) - 1; /* 0's based */
+#endif /* CHATHAM */
     }
 
 #if DBG
@@ -1826,10 +1829,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateRead(
             status = SntiTranslateRead12(pSrbExt, pLunExt);
         break;
         case SCSIOP_READ16:
-            /* Not supported due to the failure in SCSI Compliance test */
-            pSrb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
-            status = SNTI_FAILURE;
-            //status = SntiTranslateRead16(pSrbExt, pLunExt);
+            status = SntiTranslateRead16(pSrbExt, pLunExt);
         break;
         default:
             ASSERT(FALSE);
@@ -2013,7 +2013,12 @@ SNTI_TRANSLATION_STATUS SntiTranslateRead12(
         pSrbExt->nvmeSqeUnit.CDW12 |= (fua ? FUA_ENABLED : FUA_DISABLED);
 
         /* NVMe Translation Spec ERRATA... NLB is only 16 bits!!! */
+#ifdef CHATHAM
         pSrbExt->nvmeSqeUnit.CDW12 |= (length & DWORD_BIT_MASK);
+#else
+        pSrbExt->nvmeSqeUnit.CDW12 |= (length & DWORD_BIT_MASK) - 1; /* 0's based */
+#endif /* CHATHAM */
+
     }
 
 #if DBG
@@ -2075,8 +2080,11 @@ SNTI_TRANSLATION_STATUS SntiTranslateRead16(
         /* Command DWORD 12 - LR/FUA/PRINFO/NLB */
         pSrbExt->nvmeSqeUnit.CDW12 |= (fua ? FUA_ENABLED : FUA_DISABLED);
 
-        /* NVMe Translation Spec ERRATA... NLB is only 16 bits!!! */
+#ifdef CHATHAM
         pSrbExt->nvmeSqeUnit.CDW12 |= (length & DWORD_BIT_MASK);
+#else
+        pSrbExt->nvmeSqeUnit.CDW12 |= (length & DWORD_BIT_MASK) - 1; /* 0's based */
+#endif /* CHATHAM */
     }
 
 #if DBG
@@ -3183,7 +3191,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeSense(
         } else {
             switch (pageCode) {
                 case MODE_PAGE_CACHING:
-#ifdef CHATHAM
+#if defined(CHATHAM)
                     SntiHardCodeCacheModePage(pSrbExt,
                                               pLunExt,
                                               allocLength,
@@ -3262,7 +3270,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeSense(
                                            disableBlockDesc,
                                            modeSense10);
 
-#ifdef CHATHAM
+#if defined(CHATHAM)
                     pSrb->SrbStatus = SRB_STATUS_SUCCESS;
                     returnStatus = SNTI_COMMAND_COMPLETED;
 #else
@@ -3416,7 +3424,7 @@ VOID SntiCreateControlModePage(
     pSrb->DataTransferLength = min(modeDataLength, allocLength);
 } /* SntiCreateControlModePage*/
 
-#ifdef CHATHAM
+#if defined(CHATHAM)
 VOID SntiHardCodeCacheModePage(
     PNVME_SRB_EXTENSION pSrbExt,
     PNVME_LUN_EXTENSION pLunExt,
@@ -3817,7 +3825,7 @@ VOID SntiReturnAllModePages(
             WORD_LOW_BYTE_MASK);
     }
 
-#ifndef CHATHAM
+#if !defined(CHATHAM) && !defined(CHATHAM2)
     /* Finally, make sure we issue the GET FEATURES command */
     SntiBuildGetFeaturesCmd(pSrbExt, VOLATILE_WRITE_CACHE);
 #endif
@@ -4196,6 +4204,7 @@ VOID SntiTranslateSglToPrp(
     ULONG offset;
     PULONGLONG pPrp1 = &pSrbExt->nvmeSqeUnit.PRP1;
     PULONGLONG pPrp2 = &pSrbExt->nvmeSqeUnit.PRP2;
+    ULONG modulo;
 
 #if DBL_BUFF
         return;
@@ -4233,16 +4242,25 @@ VOID SntiTranslateSglToPrp(
          * multiple entries per SG element are required to be multiples of
          * the page size.
          */
-        if (sgElementSize <= PAGE_SIZE) {
-            /* Must transfer at least one full page */
-            numImplicitEntries = 1; /* Must have at least one full page */
-        } else {
-            /* Check to see if there is residual data past a page boundary */
-            numImplicitEntries = (sgElementSize / PAGE_SIZE);
-            numImplicitEntries += (((sgElementSize % PAGE_SIZE) != 0) ? 1 : 0);
-        }
-
         physicalAddress.QuadPart = pSgl->List[index].PhysicalAddress.QuadPart;
+
+        /* calc number of whole pages, if any */
+        numImplicitEntries = sgElementSize / PAGE_SIZE;
+        /* calc the leftover size minus whole pages */
+        modulo = sgElementSize % PAGE_SIZE;
+        /* determine if our start is aligned or not */
+        offset = physicalAddress.LowPart % PAGE_SIZE;
+
+        /*
+         * if we have a length modulo or we're not aligned then
+         * we treat this like an unaligned < page size case where
+         * we we're definately taking up one page and depending
+         * on the size of the leftovers (mod + alignment offset)
+         * we may need to account for one more page
+         */
+        if (modulo || offset) {
+            numImplicitEntries += 1 + (modulo + offset - 1) / PAGE_SIZE;
+        }
 
         /* For each SG element */
         for (subIndex = 0; subIndex < numImplicitEntries; subIndex++) {
@@ -4330,6 +4348,18 @@ SNTI_STATUS SntiValidateLbaAndLength(
     SNTI_STATUS status = SNTI_SUCCESS;
 
     if ((lba + length) > (pLunExt->identifyData.NSZE + 1)) {
+        SntiSetScsiSenseData(pSrb,
+                             SCSISTAT_CHECK_CONDITION,
+                             SCSI_SENSE_ILLEGAL_REQUEST,
+                             SCSI_ADSENSE_ILLEGAL_BLOCK,
+                             SCSI_ADSENSE_NO_SENSE);
+
+        pSrb->SrbStatus |= SRB_STATUS_INVALID_REQUEST;
+        pSrb->DataTransferLength = 0;
+        status = SNTI_INVALID_PARAMETER;
+    }
+
+    if (length > NVME_MAX_NUM_BLOCKS_PER_READ_WRITE) {
         SntiSetScsiSenseData(pSrb,
                              SCSISTAT_CHECK_CONDITION,
                              SCSI_SENSE_ILLEGAL_REQUEST,

@@ -905,8 +905,6 @@ ULONG NVMeInitSubQueue(
                                          pQI->NumAdQEntriesAllocated;
     pSQI->SubQueueID = QueueID;
     pSQI->FreeSubQEntries = pSQI->SubQEntries;
-    pSQI->SubQTailPtr = 0;
-    pSQI->SubQHeadPtr = 0;
     pSQI->pSubTDBL = (QueueID != 0) ?
         (PULONG)(&pAE->pCtrlRegister->IOQP[QueueID - 1].SQ_TDBL) :
         (PULONG)(&pAE->pCtrlRegister->AdminQP.SQ_TDBL);
@@ -1000,8 +998,6 @@ ULONG NVMeInitCplQueue(
     pCQI->CplQueueID = QueueID;
     pCQI->CplQEntries = pSQI->SubQEntries;
 
-    pCQI->CurPhaseTag = 0;
-    pCQI->CplQHeadPtr = 0;
     pCQI->pCplHDBL = (QueueID != 0) ?
         (PULONG)(&pAE->pCtrlRegister->IOQP[QueueID - 1].CQ_HDBL) :
         (PULONG)(&pAE->pCtrlRegister->AdminQP.CQ_HDBL);
@@ -1122,8 +1118,9 @@ BOOLEAN NVMeResetAdapter(
      * Immediately reset our start state to indicate that the controller
      * is ont ready
      */
+    CC.AsUlong= StorPortReadRegisterUlong(pAE,
+                                          (PULONG)(&pAE->pCtrlRegister->CC));
     CC.EN = 0;
-    CC.MPS = (PAGE_SIZE >> NVME_MEM_PAGE_SIZE_SHIFT);
 
     StorPortWriteRegisterUlong(pAE,
                                (PULONG)(&pAE->pCtrlRegister->CC),
@@ -1226,12 +1223,17 @@ VOID NVMeEnableAdapter(
         (ULONG)(pQI->pCplQueueInfo->CplQStart.HighPart));
 
     /*
-     * Set up Controller Configuration fields:
-     *   1. EN = 1 to enable the adapter
-     *   2. MPS specifies system memory page size (4KB-based, i.e., 2^(12+MPS))
+     * Set up Controller Configuration Register
      */
     CC.EN = 1;
+    CC.CSS = NVME_CC_NVM_CMD;
     CC.MPS = (PAGE_SIZE >> NVME_MEM_PAGE_SIZE_SHIFT);
+    CC.AMS = NVME_CC_ROUND_ROBIN;
+#if !defined(CHATHAM)
+    CC.SHN = NVME_CC_SHUTDOWN_NONE;
+    CC.IOSQES = NVME_CC_IOSQES;
+    CC.IOCQES = NVME_CC_IOCQES;
+#endif
 
     StorPortWriteRegisterUlong(pAE,
                                (PULONG)(&pAE->pCtrlRegister->CC),
@@ -1347,8 +1349,18 @@ VOID NVMeSetFeaturesCompletion(
             pLunExt = pAE->lunExtensionTable[pAE->DriverState.LbaRangeExamined];
 
             if (pNVMeCmd->CDW0.OPC == ADMIN_GET_FEATURES) {
-                if (pLbaRangeTypeEntry->NLB == pLunExt->identifyData.NSZE) {
-                    if (pLbaRangeTypeEntry->Type == 0) {
+                /* # of LBA ranges is zero based */
+                if (pCplEntry->DW0 == 0) {
+                    if (pLbaRangeTypeEntry->NLB == 0) {
+                        /*
+                         * Assume for now this means that the device
+                         * doesn't support LBA ranges so just expose it
+                         */
+                        pLunExt->ExposeNamespace = TRUE;
+                        pLunExt->ReadOnly = FALSE;
+                        pAE->DriverState.ConfigLbaRangeNeeded = FALSE;
+                        pAE->DriverState.LbaRangeExamined++;
+                    } else if (pLbaRangeTypeEntry->Type == 0) {
                         /*
                          * It's not yet being configured,
                          * issue Set Features to configure it as Filesystem,
@@ -1461,6 +1473,68 @@ BOOLEAN NVMeDeleteQueueCallback(
     return TRUE;
 }
 
+#if defined(CHATHAM2)
+void HardCodeChatham2Data(
+    PNVME_DEVICE_EXTENSION pAE,
+    ULONG structId
+)
+{
+
+    if (pAE->InitInfo.HardCodeIdData == 0) {
+        return;
+    }
+
+    if (structId == 0) {
+        RtlZeroMemory(&pAE->controllerIdentifyData,
+            sizeof(ADMIN_IDENTIFY_CONTROLLER));
+        pAE->controllerIdentifyData.VID = 0x8086;
+        pAE->controllerIdentifyData.SSVID = 0x2011;
+#define CHATHAM2_SERIAL "2012"
+        RtlCopyMemory((UINT8*)&pAE->controllerIdentifyData.SN[0],
+                      CHATHAM2_SERIAL,
+                      strlen(CHATHAM2_SERIAL));
+#define CHATHAM2_MN "CHATHAM2"
+        RtlCopyMemory((UINT8*)&pAE->controllerIdentifyData.MN[0],
+                      CHATHAM2_MN,
+                      strlen(CHATHAM2_MN));
+#define CHATHAM2_FR "0"
+        RtlCopyMemory((UINT8*)&pAE->controllerIdentifyData.FR[0],
+                      CHATHAM2_FR,
+                      strlen(CHATHAM2_FR));
+        pAE->controllerIdentifyData.SSVID = 0x2011;
+        pAE->controllerIdentifyData.RAB = 8;
+        pAE->controllerIdentifyData.UAERL = 3;
+        pAE->controllerIdentifyData.IEEMAC.IEEE = 0x423;
+        pAE->controllerIdentifyData.LPA.SupportsSMART_HealthInformationLogPage = 1;
+        pAE->controllerIdentifyData.SQES.RequiredSubmissionQueueEntrySize = (UCHAR)NVME_CC_IOSQES;
+        pAE->controllerIdentifyData.CQES.RequiredCompletionQueueEntrySize = (UCHAR)NVME_CC_IOCQES;
+        pAE->controllerIdentifyData.NN = 1;
+    } else {
+        PADMIN_IDENTIFY_NAMESPACE pIdenNS = NULL;
+        ADMIN_IDENTIFY_FORMAT_DATA fData = {0};
+
+        pIdenNS = &pAE->lunExtensionTable[0]->identifyData;
+        RtlZeroMemory(pIdenNS,
+            sizeof(ADMIN_IDENTIFY_NAMESPACE));
+
+        if ((pAE->InitInfo.NsSize > 0) &&
+            (pAE->InitInfo.NsSize <= ChathamNlb)) {
+            pIdenNS->NSZE = pAE->InitInfo.NsSize;
+            pIdenNS->NCAP = pAE->InitInfo.NsSize;
+            pIdenNS->NUSE = pAE->InitInfo.NsSize;
+        } else {
+            pIdenNS->NSZE = ChathamNlb;
+            pIdenNS->NCAP = ChathamNlb;
+            pIdenNS->NUSE = ChathamNlb;
+        }
+
+        pIdenNS->NSFEAT.SupportsThinProvisioning = 1;
+        fData.LBADS = 9;
+        pIdenNS->LBAFx[0] = fData;
+    }
+}
+#endif
+
 /*******************************************************************************
  * NVMeInitCallback
  *
@@ -1496,10 +1570,14 @@ BOOLEAN NVMeInitCallback(
              * Otherwise, log the error bit in case of errors and fail the state
              * machine.
              */
-            if (pCplEntry->DW3.SF.SC == 0) {
+            if ((pCplEntry->DW3.SF.SC == 0) &&
+                (pCplEntry->DW3.SF.SCT == 0)) {
                 /* Reset the counter and set next state */
                 pAE->DriverState.NextDriverState = NVMeWaitOnIdentifyNS;
                 pAE->DriverState.StateChkCount = 0;
+#if defined(CHATHAM2)
+                HardCodeChatham2Data(pAE,0);
+#endif
             } else {
                 NVMeDriverFatalError(pAE,
                                     (1 << START_STATE_IDENTIFY_CTRL_FAILURE));
@@ -1511,9 +1589,17 @@ BOOLEAN NVMeInitCallback(
              * Otherwise, log the error bit in case of errors and
              * fail the state machine
              */
-            if (pCplEntry->DW3.SF.SC == 0) {
+            if ((pCplEntry->DW3.SF.SC == 0) &&
+                (pCplEntry->DW3.SF.SCT == 0)) {
+
+                PNVME_LUN_EXTENSION pLunExt =
+                    pAE->lunExtensionTable[pAE->DriverState.IdentifyNamespaceFetched];
+
+#if defined(CHATHAM2)
+                HardCodeChatham2Data(pAE,1);
+#endif
                 /* Mark down the Namespace ID */
-                pAE->lunExtensionTable[pAE->DriverState.IdentifyNamespaceFetched]->namespaceId =
+                pLunExt->namespaceId =
                     pAE->DriverState.IdentifyNamespaceFetched + 1;
                 pAE->DriverState.IdentifyNamespaceFetched++;
 
@@ -1540,7 +1626,8 @@ BOOLEAN NVMeInitCallback(
             NVMeSetFeaturesCompletion(pAE, pNVMeCmd, pCplEntry);
         break;
         case NVMeWaitOnAER:
-            if (pCplEntry->DW3.SF.SC == 0) {
+            if ((pCplEntry->DW3.SF.SC == 0) &&
+                (pCplEntry->DW3.SF.SCT == 0)) {
                 /* Reset the counter and set next state */
                 pAE->DriverState.NextDriverState = NVMeWaitOnIoCQ;
                 pAE->DriverState.StateChkCount = 0;
@@ -1555,7 +1642,8 @@ BOOLEAN NVMeInitCallback(
              * Otherwise, log the error bit in case of errors and
              * fail the state machine
              */
-            if (pCplEntry->DW3.SF.SC == 0) {
+            if ((pCplEntry->DW3.SF.SC == 0) &&
+                (pCplEntry->DW3.SF.SCT == 0)) {
                 pQI->NumCplIoQCreated++;
 
                 /* Reset the counter and set next state */
@@ -1576,7 +1664,8 @@ BOOLEAN NVMeInitCallback(
              * Otherwise, log the error bit in case of errors and
              * fail the state machine
              */
-            if (pCplEntry->DW3.SF.SC == 0) {
+            if ((pCplEntry->DW3.SF.SC == 0) &&
+                (pCplEntry->DW3.SF.SCT == 0)) {
                 PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
                 pQI->NumSubIoQCreated++;
 
@@ -1598,7 +1687,8 @@ BOOLEAN NVMeInitCallback(
             }
         break;
         case NVMeWaitOnLearnMapping:
-            if (pCplEntry->DW3.SF.SC == 0) {
+            if ((pCplEntry->DW3.SF.SC == 0) &&
+                (pCplEntry->DW3.SF.SCT == 0)) {
                 PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
 
                 /*
@@ -2082,6 +2172,8 @@ BOOLEAN NVMeCreateCplQueue(
         /* Populate submission entry fields */
         pCreateCpl->CDW0.OPC = ADMIN_CREATE_IO_COMPLETION_QUEUE;
         pCQI = pQI->pCplQueueInfo + QueueID;
+        pCQI->CurPhaseTag = 0;
+        pCQI->CplQHeadPtr = 0;
         pCreateCpl->PRP1 = pCQI->CplQStart.QuadPart;
         pCreateCplCDW10->QID = QueueID;
 #ifdef CHATHAM
@@ -2147,6 +2239,8 @@ BOOLEAN NVMeCreateSubQueue(
         /* Populate submission entry fields */
         pCreateSub->CDW0.OPC = ADMIN_CREATE_IO_SUBMISSION_QUEUE;
         pSQI = pQI->pSubQueueInfo + QueueID;
+        pSQI->SubQTailPtr = 0;
+        pSQI->SubQHeadPtr = 0;
         pCreateSub->PRP1 = pSQI->SubQStart.QuadPart;
         pCreateSubCDW10->QID = QueueID;
 #ifdef CHATHAM
@@ -3085,7 +3179,7 @@ BOOLEAN NVMeFetchRegistry(
                          Type,
                          pBuf,
                          (ULONG*)&Len ) == TRUE ) {
-        if (RANGE_CHK(*(PULONG)pBuf,
+        if (RANGE_CHK(*(PLONG)pBuf,
                       MIN_INT_COALESCING_ENTRY,
                       MAX_INT_COALESCING_ENTRY) == TRUE) {
             memcpy((PVOID)(&pAE->InitInfo.IntCoalescingEntry),
@@ -3093,6 +3187,86 @@ BOOLEAN NVMeFetchRegistry(
                    sizeof(ULONG));
         }
     }
+
+#if defined(CHATHAM) || defined(CHATHAM2)
+    {
+        UCHAR PARM1[] = "Parm1";
+        UCHAR PARM2[] = "Parm2";
+        UCHAR PARM3[] = "Parm3";
+        UCHAR PARM4[] = "Parm4";
+        UCHAR NS[] = "NsSize";
+        UCHAR ID[] = "HardCodeIdData";
+
+        memset(pBuf, 0, sizeof(ULONG));
+        if (NVMeReadRegistry(pAE,
+                             NS,
+                             Type,
+                             pBuf,
+                             (ULONG*)&Len ) == TRUE ) {
+                memcpy((PVOID)(&pAE->InitInfo.NsSize),
+                       (PVOID)pBuf,
+                       sizeof(ULONGLONG));
+        }
+
+        memset(pBuf, 0, sizeof(ULONG));
+        if (NVMeReadRegistry(pAE,
+                             ID,
+                             Type,
+                             pBuf,
+                             (ULONG*)&Len ) == TRUE ) {
+                memcpy((PVOID)(&pAE->InitInfo.HardCodeIdData),
+                       (PVOID)pBuf,
+                       sizeof(ULONGLONG));
+        }
+
+        memset(pBuf, 0, sizeof(ULONG));
+        if (NVMeReadRegistry(pAE,
+                             PARM1,
+                             Type,
+                             pBuf,
+                             (ULONG*)&Len ) == TRUE ) {
+                memcpy((PVOID)(&pAE->InitInfo.Parm1),
+                       (PVOID)pBuf,
+                       sizeof(ULONGLONG));
+        }
+
+        memset(pBuf, 0, sizeof(ULONG));
+        if (NVMeReadRegistry(pAE,
+                             PARM2,
+                             Type,
+                             pBuf,
+                             (ULONG*)&Len ) == TRUE ) {
+                memcpy((PVOID)(&pAE->InitInfo.Parm2),
+                       (PVOID)pBuf,
+                       sizeof(ULONGLONG));
+        }
+
+        memset(pBuf, 0, sizeof(ULONG));
+        if (NVMeReadRegistry(pAE,
+                             PARM3,
+                             Type,
+                             pBuf,
+                             (ULONG*)&Len ) == TRUE ) {
+                memcpy((PVOID)(&pAE->InitInfo.Parm3),
+                       (PVOID)pBuf,
+                       sizeof(ULONGLONG));
+        }
+
+        memset(pBuf, 0, sizeof(ULONG));
+        if (NVMeReadRegistry(pAE,
+                             PARM4,
+                             Type,
+                             pBuf,
+                             (ULONG*)&Len ) == TRUE ) {
+                memcpy((PVOID)(&pAE->InitInfo.Parm4),
+                       (PVOID)pBuf,
+                       sizeof(ULONGLONG));
+        }
+
+    }
+
+#endif
+
 
     /* Release the buffer before returning */
     StorPortFreeRegistryBuffer( pAE, pBuf );

@@ -7,7 +7,9 @@ Signature="$Windows NT$"
 Provider=%COMM%
 ClassGUID={4D36E97B-E325-11CE-BFC1-08002BE10318}
 Class=SCSIAdapter
-DriverVer=02/01/2012, 0.8.2.0
+DriverVer=04/24/2012, 1.0.0.0
+CatalogFile.NTAMD64 = nvme64.cat
+CatalogFile.NTx8664 = nvme86.cat
 
 [PackageInfo]
 Name=NVMe
@@ -50,12 +52,14 @@ HKR, Interrupt Management\Affinity Policy, 0x00000010
 HKR, Interrupt Management\Affinity Policy, DevicePolicy, %REG_DWORD%, 5 ;IrqPolicySpreadMessagesAcrossAllProcessors
 
 [Parameters]
-HKR, Parameters\Device, Namespaces,         %REG_TYPE_DWORD%, 0x00000010
-HKR, Parameters\Device, MaxTXSize,          %REG_TYPE_DWORD%, 0x00020000
-HKR, Parameters\Device, AdQEntries,         %REG_TYPE_DWORD%, 0x00000080
-HKR, Parameters\Device, IoQEntries,         %REG_TYPE_DWORD%, 0x00000400
-HKR, Parameters\Device, IntCoalescingTime,      %REG_TYPE_DWORD%, 0x00000050
-HKR, Parameters\Device, IntCoalescingEntries,       %REG_TYPE_DWORD%, 0x00000010
+HKR, Parameters\Device, Namespaces,         %REG_DWORD%, 0x00000010 ; max number of namespaces supported
+HKR, Parameters\Device, MaxTXSize,          %REG_DWORD%, 0x00020000 ; max trasnfer size
+HKR, Parameters\Device, AdQEntries,         %REG_DWORD%, 0x00000080 ; admin queue size (num of entries)
+HKR, Parameters\Device, IoQEntries,         %REG_DWORD%, 0x00000400 ; IO queue size (num of entries)
+HKR, Parameters\Device, IntCoalescingTime,      %REG_DWORD%, 0x00000000 ; time threshold for INT coalescing
+HKR, Parameters\Device, IntCoalescingEntries,       %REG_DWORD%, 0x00000000 ; # of entries threadhold for INT coalescing
+HKR, Parameters\Device, HardCodeIdData,       %REG_DWORD%, 0x00000001 ; for chatham2, whether idetnify data is hardcoded
+HKR, Parameters\Device, NsSize,       %REG_DWORD%, 0x3FFFDF0 ; for chatham2, ability to specufy a lower namespace size
 
 ;******************************************************************************
 ;*

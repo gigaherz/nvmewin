@@ -49,10 +49,11 @@ TARGETPATH=$(TARGETNAME)\obj$(BUILD_ALT_DIR)
 #              doesn't get used/tested often!
 
 # -DCHATHAM:  Required for use with Chatham hardware
+# -DCHATHAM2:  Required for use with Chatham2 hardware
 
 # -DCOMPLETE_IN_DPC:  Controls whether IOs are completed in the ISR ot in DPCs
 
-C_DEFINES = $(C_DEFINES) -D__KERNEL_ -D__MSWINDOWS__ -DCOMPLETE_IN_DPC -DCHATHAM
+C_DEFINES = $(C_DEFINES) -D__KERNEL_ -D__MSWINDOWS__ -DCOMPLETE_IN_DPC
 
 TARGETLIBS=$(DDK_LIB_PATH)\storport.lib \
            $(DDK_LIB_PATH)\Ntoskrnl.lib \

@@ -46,6 +46,10 @@
  */
 
 #include "precomp.h"
+#if defined(CHATHAM) || defined(CHATHAM2)
+#include <string.h>
+#include <stdlib.h>
+#endif
 
 /*******************************************************************************
  * NVMeCallArbiter
@@ -353,26 +357,30 @@ VOID NVMeRunningWaitOnIdentifyCtrl(
     PADMIN_IDENTIFY_NAMESPACE pIdenNS = NULL;
     ADMIN_IDENTIFY_FORMAT_DATA fData = {0};
     PNVME_LUN_EXTENSION pLunExt = NULL;
+    char fw[8] = {0};
 
     memset(&pAE->controllerIdentifyData, 0, sizeof(ADMIN_IDENTIFY_CONTROLLER));
 
     pAE->controllerIdentifyData.VID = 0x8086;
+    pAE->controllerIdentifyData.IEEMAC.IEEE = 0x423;
     pAE->controllerIdentifyData.NN = 1;
     pAE->DriverState.IdentifyNamespaceFetched = 1;
 
 #define CHATHAM_SERIAL "S123"
-#define CHATHAM_MODEL "M123"
-#define CHATHAM_FWREV "F123"
+#define CHATHAM_MODEL "CHATHAM"
 
     RtlCopyMemory((UINT8*)&pAE->controllerIdentifyData.SN[0],
                   CHATHAM_SERIAL,
                   strlen(CHATHAM_SERIAL));
+
     RtlCopyMemory((UINT8*)&pAE->controllerIdentifyData.MN[0],
                   CHATHAM_MODEL,
                   strlen(CHATHAM_MODEL));
+
+    _itoa(pAE->FwVer, fw, 16);
     RtlCopyMemory((UINT8*)&pAE->controllerIdentifyData.FR[0],
-                  CHATHAM_FWREV,
-                  strlen(CHATHAM_FWREV));
+                  fw,
+                  strnlen(fw, _countof(fw)));
 
     pIdenNS = &pAE->lunExtensionTable[0]->identifyData;
 
@@ -755,7 +763,7 @@ VOID NVMeRunningWaitOnLearnMapping(
         pCmd->CDW0.OPC = NVME_READ;
         pCmd->PRP1 = (ULONGLONG)PhysAddr.QuadPart;
         pCmd->NSID = 1;
-#ifdef CHATHAM
+#if defined(CHATHAM)
         pCmd->CDW12 = 1;
 #endif
 
@@ -794,7 +802,7 @@ VOID NVMeRunningWaitOnReSetupQueues(
     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
     PQUEUE_INFO pQI = &pAE->QueueInfo;
 
-#ifdef CHATHAM
+#if defined(CHATHAM) || defined(CHATHAM2)
     if (NVMeResetAdapter(pAE) == TRUE) {
         /* 10 msec "settle" delay post reset */
         NVMeStallExecution(pAE, 10000);
