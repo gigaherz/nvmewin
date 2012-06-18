@@ -895,6 +895,8 @@ typedef struct _nvme_srb_extension
 
     /* Temp PRP List */
     UINT64                       prpList[MAX_TX_SIZE / PAGE_SIZE];
+
+    /* Keep track of the total number of PRPs */
     UINT32                       numberOfPrpEntries;
 
     /* Data buffer pointer for internally allocated memory */

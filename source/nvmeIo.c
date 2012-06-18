@@ -194,6 +194,19 @@ ProcessIo(
      * stack var but contains a to the pre allocated mem which is what we're
      * updating.
      */
+    if (pSrbExtension->numberOfPrpEntries > 2) {
+        pNvmeCmd->PRP2 = pCmdInfo->prpListPhyAddr.QuadPart;
+
+        /* 
+         * Copy the PRP list pointed to by PRP2. Size of the copy is total num
+         * of PRPs -1 because PRP1 is not in the PRP list pointed to by PRP2.
+         */
+        StorPortMoveMemory(
+            (PVOID)pCmdInfo->pPRPList,
+            (PVOID)&pSrbExtension->prpList[0],
+            ((pSrbExtension->numberOfPrpEntries - 1) * sizeof(UINT64)));
+    }
+
     if (pSrbExtension->prpList[0] != 0) {
         pNvmeCmd->PRP2 = pCmdInfo->prpListPhyAddr.QuadPart;
         StorPortMoveMemory((PVOID)pCmdInfo->pPRPList,
