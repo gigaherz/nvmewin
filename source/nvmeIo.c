@@ -206,13 +206,6 @@ ProcessIo(
             (PVOID)&pSrbExtension->prpList[0],
             ((pSrbExtension->numberOfPrpEntries - 1) * sizeof(UINT64)));
     }
-
-    if (pSrbExtension->prpList[0] != 0) {
-        pNvmeCmd->PRP2 = pCmdInfo->prpListPhyAddr.QuadPart;
-        StorPortMoveMemory((PVOID)pCmdInfo->pPRPList,
-                           (PVOID)&pSrbExtension->prpList[0],
-                           (pSrbExtension->numberOfPrpEntries*sizeof(UINT64)));
-    }
 #endif /* DBL_BUFF */
 
     /* 4 - Issue the Command */
