@@ -199,7 +199,7 @@ ProcessIo(
 
         /* 
          * Copy the PRP list pointed to by PRP2. Size of the copy is total num
-         * of PRPs -1 because PRP1 is not in the PRP list pointed to by PRP2.
+         * of PRPs -1 because PRP1 is not in the PRP list pointed to by PRP 2.
          */
         StorPortMoveMemory(
             (PVOID)pCmdInfo->pPRPList,
