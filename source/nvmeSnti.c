@@ -342,6 +342,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateCommand(
 )
 {
     SNTI_TRANSLATION_STATUS returnStatus = SNTI_SUCCESS;
+    BOOLEAN supportsVwc = pAdapterExtension->controllerIdentifyData.VWC.Present;
 
     /* DEBUG ONLY - Turn off for main I/O */
 #if DBG
@@ -392,7 +393,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateCommand(
         case SCSIOP_MODE_SELECT:
         case SCSIOP_MODE_SELECT10:
 #ifndef CHATHAM
-            returnStatus = SntiTranslateModeSelect(pSrb);
+            returnStatus = SntiTranslateModeSelect(pSrb, supportsVwc);
 #else /* CHATHAM */
             SntiSetScsiSenseData(pSrb,
                                  SCSISTAT_CHECK_CONDITION,
@@ -406,7 +407,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateCommand(
         break;
         case SCSIOP_MODE_SENSE:
         case SCSIOP_MODE_SENSE10:
-            returnStatus = SntiTranslateModeSense(pSrb);
+            returnStatus = SntiTranslateModeSense(pSrb, supportsVwc);
         break;
         case SCSIOP_READ_CAPACITY:
         case SCSIOP_READ_CAPACITY16:
@@ -542,17 +543,10 @@ SNTI_TRANSLATION_STATUS SntiTranslateInquiry(
         return SNTI_FAILURE_CHECK_RESPONSE_DATA;
     }
 
-    /*
-     * Don't surface any hidden LUNs
-     */
     status = GetLunExtension(pSrbExt, &pLunExt);
     if (status != SNTI_SUCCESS) {
         SntiMapInternalErrorStatus(pSrb, status);
         return SNTI_FAILURE_CHECK_RESPONSE_DATA;
-    }
-    if (FALSE == pLunExt->ExposeNamespace) {
-        SntiMapInternalErrorStatus(pSrb, SNTI_INVALID_PATH_TARGET_ID);
-        return SNTI_INVALID_PATH_TARGET_ID;
     }
 
     /*
@@ -853,7 +847,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateExtendedInquiryDataPage(
         pExtInqData->NonVolatileCacheSupported   =
             NON_VOLATILE_CACHE_UNSUPPORTED;
         pExtInqData->VolatileCacheSupported      =
-            pDevExt->controllerIdentifyData.VWC.VolatileWriteCachePresent;
+            pDevExt->controllerIdentifyData.VWC.Present;
         pExtInqData->Reserved4                   =
             RESERVED_FIELDS;
 
@@ -1024,12 +1018,14 @@ SNTI_TRANSLATION_STATUS SntiTranslateReportLuns(
     PNVME_DEVICE_EXTENSION pDevExt = NULL;
     PNVME_SRB_EXTENSION pSrbExt = NULL;
     PUCHAR pResponseBuffer = NULL;
-    UINT32 numberOfNamespaces;
-    UINT32 lunListLength;
-    UINT32 allocLength;
-    UINT8 lunIdDataOffset;
-    UINT8 selectReport;
-    UINT8 lunId;
+    UINT32 numberOfLuns = 0;
+    UINT32 numberOfLunsFound = 0;
+    UINT32 lunListLength = 0;
+    UINT32 allocLength = 0;
+    UINT8 lunIdDataOffset = 0;
+    UINT8 selectReport = 0;
+    UCHAR lunExtIdx = 0;
+    PNVME_LUN_EXTENSION pLunExt = NULL;
 
     /* Default to a successful command completion */
     SNTI_TRANSLATION_STATUS returnStatus = SNTI_COMMAND_COMPLETED;
@@ -1068,24 +1064,31 @@ SNTI_TRANSLATION_STATUS SntiTranslateReportLuns(
          * Per the NVM Express spec, namespaces ids shall be allocated in order
          * (starting with 0) and packed sequentially.
          */
-        numberOfNamespaces = pDevExt->controllerIdentifyData.NN;
+        numberOfLuns = pDevExt->visibleLuns;
 
-        lunListLength = numberOfNamespaces * LUN_ENTRY_SIZE;
+        lunListLength = numberOfLuns * LUN_ENTRY_SIZE;
 
         memset(pResponseBuffer, 0, allocLength);
         lunIdDataOffset = REPORT_LUNS_FIRST_LUN_OFFSET;
 
         /* The first LUN Id will always be 0 per the SAM spec */
-        for (lunId = 0; lunId < numberOfNamespaces; lunId++) {
+        for (lunExtIdx = 0; lunExtIdx < MAX_NAMESPACES; lunExtIdx++) {
+
+             pLunExt = pDevExt->pLunExtensionTable[lunExtIdx];
+             if ((pLunExt->slotStatus == ONLINE) &&
+                 (++numberOfLunsFound <= numberOfLuns)) {
             /*
              * Set the LUN Id and then increment to the next LUN location in
-             * the paramter data (8 byte offset each time)
+             * the paramter data (8 byte offset each time),
+             * lunNum position is at byte 1 in the resp buffer per SAM3
              */
-            pResponseBuffer[lunIdDataOffset] = lunId;
+            #define SINGLE_LVL_LUN_OFFSET (1)
+                    pResponseBuffer[lunIdDataOffset + SINGLE_LVL_LUN_OFFSET] = lunExtIdx;
             lunIdDataOffset += LUN_ENTRY_SIZE;
             if (lunIdDataOffset >= allocLength) {
                 break;
             }
+        }
         }
 
         /* Set the LUN LIST LENGTH field */
@@ -3113,12 +3116,14 @@ VOID SntiTranslateTemperature(
  *               resulting in sense data, then SNTI will call the appropriate
  *               internal error handling code and set the status info/data and
  *               pass the pSrb pointer as a parameter.
+ * @param supportsVwc - the ID data that indicates if its legal to sent a VWC
  *
  * @return SNTI_TRANSLATION_STATUS
  *     Indicate translation status.
  ******************************************************************************/
 SNTI_TRANSLATION_STATUS SntiTranslateModeSense(
-    PSCSI_REQUEST_BLOCK pSrb
+    PSCSI_REQUEST_BLOCK pSrb,
+    BOOLEAN supportsVwc
 )
 {
     PNVME_SRB_EXTENSION pSrbExt = NULL;
@@ -3191,7 +3196,8 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeSense(
         } else {
             switch (pageCode) {
                 case MODE_PAGE_CACHING:
-#if defined(CHATHAM)
+                    /* Per NVMe we can't send VWC commands if its not supported */
+                    if (supportsVwc == FALSE) {
                     SntiHardCodeCacheModePage(pSrbExt,
                                               pLunExt,
                                               allocLength,
@@ -3201,7 +3207,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeSense(
 
                     pSrb->SrbStatus = SRB_STATUS_SUCCESS;
                     returnStatus = SNTI_COMMAND_COMPLETED;
-#else
+                    } else {
                     /*
                      * This mode page requires a paramter from Get Features.
                      * Must send Get Features w/ Volatile Write Cache Feature
@@ -3223,7 +3229,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeSense(
                      */
                     pSrbExt->pNvmeCompletionRoutine =
                         SntiCompletionCallbackRoutine;
-#endif
+                    }
                 break;
                 case MODE_PAGE_CONTROL:
                     SntiCreateControlModePage(pSrbExt,
@@ -3268,12 +3274,14 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeSense(
                                            allocLength,
                                            longLbaAccepted,
                                            disableBlockDesc,
-                                           modeSense10);
+                                           modeSense10,
+                                           supportsVwc);
 
-#if defined(CHATHAM)
+                    if (supportsVwc == FALSE) {
+                        /* Command now because we don't set the VWC cmd */
                     pSrb->SrbStatus = SRB_STATUS_SUCCESS;
                     returnStatus = SNTI_COMMAND_COMPLETED;
-#else
+                    } else {
                         /* Command is completed in Build I/O phase */
                         pSrb->SrbStatus = SRB_STATUS_PENDING;
                         returnStatus = SNTI_TRANSLATION_SUCCESS;
@@ -3284,7 +3292,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeSense(
                      */
                     pSrbExt->pNvmeCompletionRoutine =
                         SntiCompletionCallbackRoutine;
-#endif
+                    }
                 break;
                 default:
                     SntiSetScsiSenseData(pSrb,
@@ -3424,7 +3432,6 @@ VOID SntiCreateControlModePage(
     pSrb->DataTransferLength = min(modeDataLength, allocLength);
 } /* SntiCreateControlModePage*/
 
-#if defined(CHATHAM)
 VOID SntiHardCodeCacheModePage(
     PNVME_SRB_EXTENSION pSrbExt,
     PNVME_LUN_EXTENSION pLunExt,
@@ -3495,7 +3502,6 @@ VOID SntiHardCodeCacheModePage(
 
     pSrb->DataTransferLength = min(modeDataLength, allocLength);
 } /* SntiHardCodeCacheModePage */
-#endif
 
 /******************************************************************************
  * SntiCreatePowerConditionControlModePage
@@ -3685,6 +3691,7 @@ VOID SntiCreateInformationalExceptionsControlModePage(
  * @param longLbaAccepted - LLBAA bit from Mode Sense CDB
  * @param disableBlockDesc - DBD bit from Mode Sense CDB
  * @param modeSense10 - Boolean to determine Mode Sense 10
+ * @param supportsVwc - From ID data, tells us if we can send VWC cmds or not
  *
  * @return VOID
  ******************************************************************************/
@@ -3694,7 +3701,8 @@ VOID SntiReturnAllModePages(
     UINT16 allocLength,
     UINT8 longLbaAccepted,
     UINT8 disableBlockDesc,
-    BOOLEAN modeSense10
+    BOOLEAN modeSense10,
+    BOOLEAN supportsVwc
 )
 {
     PMODE_PARAMETER_HEADER pModeHeader6 = NULL;
@@ -3825,10 +3833,10 @@ VOID SntiReturnAllModePages(
             WORD_LOW_BYTE_MASK);
     }
 
-#if !defined(CHATHAM) && !defined(CHATHAM2)
+    if (supportsVwc == TRUE) {
     /* Finally, make sure we issue the GET FEATURES command */
     SntiBuildGetFeaturesCmd(pSrbExt, VOLATILE_WRITE_CACHE);
-#endif
+    }
 
     pSrb->DataTransferLength = min(modeDataLength, allocLength);
 } /* SntiReturnAllModePages */
@@ -3844,12 +3852,14 @@ VOID SntiReturnAllModePages(
  *               resulting in sense data, then SNTI will call the appropriate
  *               internal error handling code and set the status info/data and
  *               pass the pSrb pointer as a parameter.
+ * @param supportsVwc - the ID data that indicates if its legal to sent a VWC
  *
  * @return SNTI_TRANSLATION_STATUS
  *     Indicates translation status
  ******************************************************************************/
 SNTI_TRANSLATION_STATUS SntiTranslateModeSelect(
-    PSCSI_REQUEST_BLOCK pSrb
+    PSCSI_REQUEST_BLOCK pSrb,
+    BOOLEAN supportsVwc
 )
 {
     PNVME_SRB_EXTENSION pSrbExt = NULL;
@@ -3908,7 +3918,8 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeSelect(
             returnStatus = SntiTranslateModeData(pSrbExt,
                                                  pLunExt,
                                                  paramListLength,
-                                                 isModeSelect10);
+                                                 isModeSelect10,
+                                                 supportsVwc);
         }
     }
 
@@ -3926,6 +3937,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeSelect(
  * @param pLunExt - Pointer to LUN extension
  * @param paramListLength - Length of parameter list
  * @param isModeSelect10 - Boolean to determine Mode Select 10
+ * @param supportsVwc - From ID data, tells us if we can send VWC cmds or not
  *
  * @return SNTI_TRANSLATION_STATUS
  *     Indicates translation status
@@ -3934,7 +3946,8 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeData(
     PNVME_SRB_EXTENSION pSrbExt,
     PNVME_LUN_EXTENSION pLunExt,
     UINT16 paramListLength,
-    BOOLEAN isModeSelect10
+    BOOLEAN isModeSelect10,
+    BOOLEAN supportsVwc
 )
 {
     PMODE_PARAMETER_HEADER pModeHeader6 = NULL;
@@ -4011,6 +4024,11 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeData(
 
     switch (pageCode) {
         case MODE_PAGE_CACHING:
+            /* Per NVMe we can't send VWC commands if its not supported */
+            if (supportsVwc == FALSE) {
+                pSrb->SrbStatus = SRB_STATUS_SUCCESS;
+                returnStatus = SNTI_COMMAND_COMPLETED;
+            } else {
             /* Command requires NVMe Get Features to adapter - build DWORD 11 */
             pCacheModePage = (PMODE_CACHING_PAGE)pModePagePtr;
             dword11 &= (pCacheModePage->WriteCacheEnable ? 1 : 0);
@@ -4019,6 +4037,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeData(
 
             returnStatus = SNTI_TRANSLATION_SUCCESS;
             pSrb->SrbStatus = SRB_STATUS_PENDING;
+            }
         break;
         case MODE_PAGE_CONTROL:
             /* Command is completed in Build I/O phase */
@@ -4206,18 +4225,12 @@ VOID SntiTranslateSglToPrp(
     PULONGLONG pPrp2 = &pSrbExt->nvmeSqeUnit.PRP2;
     ULONG modulo;
 
-#if DBL_BUFF
+#if DUMB_DRIVER
         return;
 #endif
 
     pSrbExt->numberOfPrpEntries = 0;
     ASSERT(pSgl->NumberOfElements != 0);
-
-#if DBG
-    StorPortDebugPrint(INFO,
-                       "Number of SG Elements = 0x%x\n",
-                       pSgl->NumberOfElements);
-#endif
 
     /* There may not always be a 1:1 ratio of SG elements to PRP entries... */
     pPrpList = &pSrbExt->prpList[0];
@@ -4284,13 +4297,6 @@ VOID SntiTranslateSglToPrp(
                  * out the 2nd entry, it will be updated in the StartIo path
                  * wiht pre-allcoated list memory.
                  */
-
-#if DBG
-                /* Zero the list */
-                memset((PVOID)pPrpList,
-                       0,
-                       (MAX_TX_SIZE / PAGE_SIZE) * sizeof(UINT64));
-#endif
 
                 *pPrpList = *pPrp2;
                  pPrpList++;
@@ -4459,11 +4465,12 @@ SNTI_STATUS GetLunExtension(
     ASSERT(pSrb != NULL);
 
     if ((pSrb->PathId != VALID_NVME_PATH_ID) ||
-        (pSrb->TargetId != VALID_NVME_TARGET_ID)) {
+        (pSrb->TargetId != VALID_NVME_TARGET_ID) ||
+        (pDevExt->pLunExtensionTable[pSrb->Lun]->slotStatus != ONLINE)) {
         *ppLunExt = NULL;
         returnStatus = SNTI_INVALID_PATH_TARGET_ID;
     } else {
-        *ppLunExt = pDevExt->lunExtensionTable[pSrb->Lun];
+        *ppLunExt = pDevExt->pLunExtensionTable[pSrb->Lun];
     }
 
     return returnStatus;
@@ -5231,7 +5238,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateTemperatureResponse(
             pSrb->SrbStatus = SRB_STATUS_PENDING;
 
             /* Issue the command internally */
-            ioStarted = ProcessIo(pDevExt, pSrbExt, NVME_QUEUE_TYPE_ADMIN);
+            ioStarted = ProcessIo(pDevExt, pSrbExt, NVME_QUEUE_TYPE_ADMIN, TRUE);
             if (ioStarted == FALSE)
                 ASSERT(FALSE);
         }
@@ -5558,7 +5565,8 @@ SNTI_TRANSLATION_STATUS SntiTranslateStartStopUnitResponse(
          */
         ioStarted = ProcessIo(pSrbExt->pNvmeDevExt,
                               pSrbExt,
-                              NVME_QUEUE_TYPE_ADMIN);
+                              NVME_QUEUE_TYPE_ADMIN,
+                              TRUE);
 
         if (ioStarted == FALSE)
             ASSERT(FALSE);

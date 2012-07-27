@@ -573,7 +573,8 @@ VOID SntiTranslateTemperature(
 );
 
 SNTI_TRANSLATION_STATUS SntiTranslateModeSense(
-    PSCSI_REQUEST_BLOCK pSrb
+    PSCSI_REQUEST_BLOCK pSrb,
+    BOOLEAN supportsVwc
 );
 
 VOID SntiCreateControlModePage(
@@ -585,7 +586,6 @@ VOID SntiCreateControlModePage(
     BOOLEAN modeSense10
 );
 
-#if defined(CHATHAM)
 VOID SntiHardCodeCacheModePage(
     PNVME_SRB_EXTENSION pSrbExt,
     PNVME_LUN_EXTENSION pLunExt,
@@ -594,7 +594,6 @@ VOID SntiHardCodeCacheModePage(
     UINT8 disableBlockDesc,
     BOOLEAN modeSense10
 );
-#endif
 
 VOID SntiCreatePowerConditionControlModePage(
     PNVME_SRB_EXTENSION pSrbExt,
@@ -620,18 +619,21 @@ VOID SntiReturnAllModePages(
     UINT16 allocLength,
     UINT8 longLbaAccepted,
     UINT8 disableBlockDesc,
-    BOOLEAN modeSense10
+    BOOLEAN modeSense10,
+    BOOLEAN supportsVwc
 );
 
 SNTI_TRANSLATION_STATUS SntiTranslateModeSelect(
-    PSCSI_REQUEST_BLOCK pSrb
+    PSCSI_REQUEST_BLOCK pSrb,
+    BOOLEAN supportsVwc
 );
 
 SNTI_TRANSLATION_STATUS SntiTranslateModeData(
     PNVME_SRB_EXTENSION pSrbExt,
     PNVME_LUN_EXTENSION pLunExt,
     UINT16 paramListLength,
-    BOOLEAN isModeSelect10
+    BOOLEAN isModeSelect10,
+    BOOLEAN supportsVwc
 );
 
 VOID SntiCreateModeDataHeader(

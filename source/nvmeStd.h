@@ -48,8 +48,8 @@
 #ifndef __NVME_STD_H__
 #define __NVME_STD_H__
 
-#ifdef DBL_BUFF
-#define DBL_BUFF_SZ (1024 * 64)
+#ifdef DUMB_DRIVER
+#define DUMB_DRIVER_SZ (1024 * 64)
 #endif
 
 #if defined(CHATHAM) || defined(CHATHAM2)
@@ -77,26 +77,23 @@ ULONG ChathamNlb; /* Number of logical blocks */
 #define IDEN_CONTROLLER             0
 #define IDEN_NAMESPACE              1
 
-#if DBG
-#define STATE_MACHINE_TIMEOUT_CALLS 1000
-#else
-#define STATE_MACHINE_TIMEOUT_CALLS 500 /* 2.5s (500 callbacks w/ .005 delay) */
-#endif
-
 #define DUMP_POLL_CALLS             3
 #define STORPORT_TIMER_CB_us        5000 /* .005 seconds */
 #define MAX_STATE_STALL_us          STORPORT_TIMER_CB_us
+#define QUIESCE_TIMEOUT             100 /* 500ms */
 #define MILLI_TO_MICRO              1000
 #define MICRO_TO_NANO               1000
 #define MSI_ADDR_RH_DM_MASK         0xC
+#define MICRO_TO_SEC                1000
 
 /* Default, minimum, maximum values of Registry keys */
 #define DFT_NAMESPACES              16
 #define MIN_NAMESPACES              1
 #define MAX_NAMESPACES              16
+#define MAX_TTL_NAMESPACES          MAX_NAMESPACES // to account for some hidden NS
 
-#ifdef DBL_BUFF
-#define MIN_TX_SIZE                 (64*1024)
+#ifdef DUMB_DRIVER
+#define MIN_TX_SIZE                 DUMB_DRIVER_SZ
 #define DFT_TX_SIZE                 MIN_TX_SIZE
 #define MAX_TX_SIZE                 MIN_TX_SIZE
 #else
@@ -105,17 +102,26 @@ ULONG ChathamNlb; /* Number of logical blocks */
 #define MAX_TX_SIZE                 (1024*1024)
 #endif
 
-#define DFT_AD_QUEUE_ENTRIES        128
+#ifdef DUMB_DRIVER
+#define DFT_AD_QUEUE_ENTRIES        16
+#define MIN_AD_QUEUE_ENTRIES        DFT_AD_QUEUE_ENTRIES
+#define MAX_AD_QUEUE_ENTRIES        DFT_AD_QUEUE_ENTRIES
+#else
+#define DFT_AD_QUEUE_ENTRIES        256
 #define MIN_AD_QUEUE_ENTRIES        2
 #define MAX_AD_QUEUE_ENTRIES        4096
+#endif
 
-#ifdef DBL_BUFF
-#define DFT_IO_QUEUE_ENTRIES        128
+#ifdef DUMB_DRIVER
+#define DFT_IO_QUEUE_ENTRIES        256
+#define MIN_IO_QUEUE_ENTRIES        DFT_IO_QUEUE_ENTRIES
+#define MAX_IO_QUEUE_ENTRIES        DFT_IO_QUEUE_ENTRIES
 #else
 #define DFT_IO_QUEUE_ENTRIES        1024
-#endif
 #define MIN_IO_QUEUE_ENTRIES        2
 #define MAX_IO_QUEUE_ENTRIES        4096
+#endif
+
 
 #define DFT_INT_COALESCING_TIME     80
 #define MIN_INT_COALESCING_TIME     0
@@ -163,7 +169,7 @@ ULONG ChathamNlb; /* Number of logical blocks */
 #define IS_SYS_PAGE_ALIGNED(Address) \
     (((Address & (PAGE_SIZE-1)) == 0) ? TRUE : FALSE)
 
-#ifdef DBL_BUFF
+#ifdef DUMB_DRIVER
 #define DATA_OUT_BIT (1 << 0)
 #define DATA_IN_BIT (1 << 1)
 #define IS_CMD_DATA_IN(cmd)  \
@@ -171,6 +177,74 @@ ULONG ChathamNlb; /* Number of logical blocks */
 #define IS_CMD_DATA_OUT(cmd) \
     (((cmd & DATA_OUT_BIT) == DATA_OUT_BIT) ? TRUE : FALSE)
 #endif
+
+#ifdef HISTORY
+#define HISTORY_DEPTH (100)
+
+typedef enum _HISTORY_TAG
+{
+    NO_ENTRY = 0, // always first in the enum
+    GETCMD_RETURN_BUSY,
+    PRE_ISSUE,
+    ISSUE_RETURN_BUSY,
+    ISSUE,
+    COMPPLETE_CMD,
+    SRB_RESET,
+    DPC_RESET,
+    HISTORY_MARKER = 255 // always last in the enum
+} HISTORY_TAG;
+
+typedef struct _HISTORY_SUBMIT
+{
+    HISTORY_TAG tag;
+    ULONG queueId;
+    ULONG NSID;
+    NVMe_COMMAND_DWORD_0 CDW0;
+    ULONGLONG parm1;
+    ULONGLONG parm2;
+    ULONGLONG parm3;
+} HISTORY_SUBMIT;
+HISTORY_SUBMIT SubmitHistory[HISTORY_DEPTH];
+
+typedef struct _HISTORY_COMPLETE
+{
+    HISTORY_TAG tag;
+    ULONG queueId;
+    ULONG CID;
+    ULONG SQHD;
+    NVMe_COMPLETION_QUEUE_ENTRY_DWORD_3 DW3;
+    ULONGLONG parm2;
+    ULONGLONG parm3;
+} HISTORY_COMPLETE;
+HISTORY_COMPLETE CompleteHistory[HISTORY_DEPTH];
+
+typedef struct _HISTORY_EVENT
+{
+    HISTORY_TAG tag;
+    ULONG queueId;
+    ULONG CID;
+    ULONG parm0;
+    ULONGLONG parm1;
+    ULONGLONG parm2;
+    ULONGLONG parm3;
+} HISTORY_EVENT;
+HISTORY_EVENT EventHistory[HISTORY_DEPTH];
+
+ULONG SubmitIndex;
+ULONG CompleteIndex;
+ULONG EventIndex;
+
+void TracePathSubmit(HISTORY_TAG tag, ULONG queueId, ULONG NSID,
+        NVMe_COMMAND_DWORD_0 CDW0, ULONGLONG parm1, ULONGLONG parm2, ULONGLONG parm3);
+
+void TracePathComplete(HISTORY_TAG tag, ULONG queueId, ULONG CID,
+        ULONG SQHD, NVMe_COMPLETION_QUEUE_ENTRY_DWORD_3 DW3, ULONGLONG parm2, ULONGLONG parm3);
+
+void TraceEvent(HISTORY_TAG tag, ULONG queueId, ULONG CID,
+        ULONG parm0, ULONGLONG parm1, ULONGLONG parm2, ULONGLONG parm3);
+
+#endif
+
 
 /* Callback function prototype for internal request completions */
 typedef BOOLEAN (*PNVME_COMPLETION_ROUTINE) (PVOID param1, PVOID param2);
@@ -211,6 +285,14 @@ typedef enum _NVME_QUEUE_TYPE
 } NVME_QUEUE_TYPE;
 
 #define NO_SQ_HEAD_CHANGE (-1)
+
+/* Used when decoding the LBA Range tpye after get features on LBA type */
+typedef enum _NS_VISBILITY
+{
+    VISIBLE = 0,
+    HIDDEN,
+    IGNORED
+} NS_VISBILITY;
 
 /*
  * Adapter Error Status; can occur during init state machine
@@ -365,10 +447,14 @@ typedef struct _START_STATE
      *   2. if it's a ready-only drive when supported?
      *   3. if it needs to be reported to host when supported?
      */
-    ULONG LbaRangeExamined;
+    ULONG TtlLbaRangeExamined;
 
     /* Number of Asynchronous Event Requests commands issued */
     UCHAR NumAERsIssued;
+
+    /* Number of exposed namespaces found at init */
+    ULONG VisibleNamespacesExamined;
+
 } START_STATE, *PSTART_STATE;
 
 /*******************************************************************************
@@ -418,12 +504,15 @@ typedef struct _CMD_INFO
 
     STOR_PHYSICAL_ADDRESS prpListPhyAddr;
 
-#ifdef DBL_BUFF
+#ifdef DUMB_DRIVER
     /* this cmd's dbl buffer physical address */
     STOR_PHYSICAL_ADDRESS dblPhy;
 
     /* this cmd's dbl buffer virtual address */
     PVOID pDblVir;
+
+    STOR_PHYSICAL_ADDRESS dblPrpListPhy; // this commands PRP list
+    PVOID pDblPrpListVir; // this commands PRP list
 #endif
 } CMD_INFO, *PCMD_INFO;
 
@@ -524,10 +613,14 @@ typedef struct _SUB_QUEUE_INFO
     /* Current accumulated, issued requests */
     LONG64 Requests;
 
-#ifdef DBL_BUFF
+#ifdef DUMB_DRIVER
     PVOID pDblBuffAlloc;
-    ULONG pDblBuffSz;
+    ULONG dblBuffSz;
     PVOID pDlbBuffStartVa;
+
+    PVOID pDblBuffListAlloc;
+    ULONG dblBuffListSz;
+    PVOID pDlbBuffStartListVa;
 #endif
 } SUB_QUEUE_INFO, *PSUB_QUEUE_INFO;
 
@@ -740,16 +833,20 @@ typedef struct _RES_MAPPING_TBL
 } RES_MAPPING_TBL, *PRES_MAPPING_TBL;
 
 /* LUN Extension */
+typedef enum _LUN_SLOT_STATUS
+{
+    FREE,
+    ONLINE,
+    OFFLINE
+} LUN_SLOT_STATUS;
+
 typedef struct _nvme_lun_extension
 {
     ADMIN_IDENTIFY_NAMESPACE     identifyData;
     UINT32                       namespaceId;
     UINT32                       reserved;
-    BOOLEAN                      ExposeNamespace;
     BOOLEAN                      ReadOnly;
-
-    /* What other fields are necessary??? */
-
+    LUN_SLOT_STATUS              slotStatus;
 } NVME_LUN_EXTENSION, *PNVME_LUN_EXTENSION;
 
 /* Submission Queue Entry Unit - 64 Bytes */
@@ -788,8 +885,6 @@ typedef struct _submission_queue_entry_unit
 /* NVMe Miniport Device Extension */
 typedef struct _nvme_device_extension
 {
-    /* PCI Info */
-    PVOID                       pPciBar[MAX_PCI_BAR];
 
     /* Controller register base address */
     PNVMe_CONTROLLER_REGISTERS  pCtrlRegister;
@@ -817,8 +912,9 @@ typedef struct _nvme_device_extension
     /* Tables */
     ULONG                       LunExtSize;
 
-    /* Reference by LUN Id*/
-    PNVME_LUN_EXTENSION         lunExtensionTable[MAX_NAMESPACES];
+    /* Reference by LUN Id and current number of visible NSs */
+    PNVME_LUN_EXTENSION         pLunExtensionTable[MAX_NAMESPACES];
+    ULONG                       visibleLuns;
 
     /* Controller Identify Data */
     ADMIN_IDENTIFY_CONTROLLER   controllerIdentifyData;
@@ -834,7 +930,9 @@ typedef struct _nvme_device_extension
     /* Used to determine if we are in crashdump mode */
     BOOLEAN                     ntldrDump;
 
+    /* saved a few calc'd values based on CAP fields */
     ULONG                       uSecCrtlTimeout;
+    ULONG                        strideSz;
 
     /* DPCs needed for SNTI, AER, and error recovery */
     STOR_DPC                    SntiDpc;
@@ -895,8 +993,6 @@ typedef struct _nvme_srb_extension
 
     /* Temp PRP List */
     UINT64                       prpList[MAX_TX_SIZE / PAGE_SIZE];
-
-    /* Keep track of the total number of PRPs */
     UINT32                       numberOfPrpEntries;
 
     /* Data buffer pointer for internally allocated memory */
@@ -909,7 +1005,7 @@ typedef struct _nvme_srb_extension
     /* used for learning the vector/core mappings */
     PROCESSOR_NUMBER             procNum;
 
-#ifdef DBL_BUFF
+#ifdef DUMB_DRIVER
     PVOID pDblVir;     // this cmd's dbl buffer virtual address
     PVOID pSrbDataVir; // this cmd's SRB databuffer virtual address
     ULONG dataLen;     // dbl buff data length
@@ -982,7 +1078,7 @@ VOID NVMeCompleteResMapTbl(
     __in PNVME_DEVICE_EXTENSION pAE
 );
 
-BOOLEAN NVMeMapCore2Queue(
+ULONG NVMeMapCore2Queue(
     __in PNVME_DEVICE_EXTENSION pAE,
     __in PPROCESSOR_NUMBER pPN,
     __inout USHORT* pSubQueue,

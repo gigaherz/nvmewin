@@ -58,8 +58,8 @@
 #define NVME_CC_NVM_CMD (0)
 #define NVME_CC_SHUTDOWN_NONE (0)
 #define NVME_CC_ROUND_ROBIN (0)
-#define NVME_CC_IOSQES (6 << 16)
-#define NVME_CC_IOCQES (4 << 20)
+#define NVME_CC_IOSQES (6)
+#define NVME_CC_IOCQES (4)
 
 /* NVMe CONTROLLER */
 
@@ -115,8 +115,11 @@ typedef union _NVMe_CONTROLLER_CAPABILITIES
          */
         UCHAR TO;
 
-        /* Bits 32-36 */
-        USHORT Reserved2 :5;
+        /* Bits 32-35 */
+        USHORT DSTRD :4;
+
+        /* Bit 36 */
+        USHORT Reserved2 :1;
 
         /* 
          * [Command Sets Supported] This field indicates the command set(s) that 
@@ -483,58 +486,20 @@ typedef union _NVMe_COMPLETION_QUEUE_BASE
     };
 } NVMe_COMPLETION_QUEUE_BASE, *PNVMe_COMPLETION_QUEUE_BASE;
 
-/* Table 3.1.10 */
-typedef union _NVMe_SUBMISSION_QUEUE_Y_TAIL_DOORBELL
-{
-    struct
-    {
-        /* 
-         * [Submission Queue Tail] Indicates the new value of the Submission 
-         * Queue Tail entry pointer. This value shall overwrite any previous 
-         * Submission Queue Tail entry pointer value provided. The difference 
-         * between the last SQT write and the current SQT write indicates the 
-         * number of commands added to the Submission Queue; note that queue 
-         * rollover needs to be accounted for.
-         */
-        USHORT  SQT; 
-
-        /* Bits 16-31 */
-        USHORT  Reserved;
-    };
-
-    ULONG AsUlong;
-} NVMe_SUBMISSION_QUEUE_Y_TAIL_DOORBELL,
-  *PNVMe_SUBMISSION_QUEUE_Y_TAIL_DOORBELL;
-
 /* Table 3.1.11 */
-typedef union _NVMe_COMPLETION_QUEUE_Y_HEAD_DOORBELL
+typedef union _NVMe_QUEUE_Y_DOORBELL
 {
     struct
     {
-        /* 
-         * [Completion Queue Head] Indicates the new value of the Completion 
-         * Queue Head entry pointer. This value shall overwrite any previous 
-         * Completion Queue Head value provided. The difference between the last 
-         * CQH write and the current CQH entry pointer write indicates the 
-         * number of entries that are now available for re-use by the controller 
-         * in the Completion Queue; note that queue rollover needs to be 
-         * accounted for.
-         */
-        USHORT  CQH; 
+        USHORT  QHT;
 
         /* Bits 16-31 */
         USHORT  Reserved;
     };
 
     ULONG AsUlong;
-} NVMe_COMPLETION_QUEUE_Y_HEAD_DOORBELL,
-  *PNVMe_COMPLETION_QUEUE_Y_HEAD_DOORBELL;
-
-typedef struct _NVMe_QUEUE_PAIR
-{
-    NVMe_SUBMISSION_QUEUE_Y_TAIL_DOORBELL SQ_TDBL;
-    NVMe_COMPLETION_QUEUE_Y_HEAD_DOORBELL CQ_HDBL;
-} NVMe_QUEUE_PAIR, *PNVMe_QUEUE_PAIR;
+} NVMe_QUEUE_Y_DOORBELL,
+  *PNVMe_QUEUE_Y_DOORBELL;
 
 /* Table 3.1 */
 #ifdef CHATHAM
@@ -550,8 +515,7 @@ typedef struct _NVMe_CONTROLLER_REGISTERS
     NVMe_SUBMISSION_QUEUE_BASE    ASQ;
     NVMe_COMPLETION_QUEUE_BASE    ACQ;
     ULONG                         Reserved2[0x3f4];
-    NVMe_QUEUE_PAIR               AdminQP;
-    NVMe_QUEUE_PAIR               IOQP[0x1000];
+    NVMe_QUEUE_Y_DOORBELL         IODB[1];
 } NVMe_CONTROLLER_REGISTERS, *PNVMe_CONTROLLER_REGISTERS;
 #else /* CHATHAM */
 typedef struct _NVMe_CONTROLLER_REGISTERS
@@ -593,10 +557,8 @@ typedef struct _NVMe_CONTROLLER_REGISTERS
     /* Bytes 0xF00 - 0xFFF */
     ULONG                         CommandSetSpecific[0x40];
 
-    NVMe_QUEUE_PAIR               AdminQP;
-
-    /* 64K was suggested.  64K == 0x10000.  Too big for crashdump. */
-    NVMe_QUEUE_PAIR               IOQP[0x1000];
+    /* variable sized array limited by the BAR size */
+    NVMe_QUEUE_Y_DOORBELL           IODB[1];
 } NVMe_CONTROLLER_REGISTERS, *PNVMe_CONTROLLER_REGISTERS;
 
 #endif /* CHATHAM */

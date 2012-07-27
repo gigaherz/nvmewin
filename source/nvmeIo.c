@@ -47,6 +47,153 @@
 
 #include "precomp.h"
 
+#if DBG
+BOOLEAN gResetTest = FALSE;
+ULONG gResetCounter = 0;
+ULONG gResetCount = 20000;
+#endif
+/*******************************************************************************
+ * NVMeIssueCmd
+ *
+ * @brief NVMeIssueCmd can be called to issue one command at a time by ringing
+ *        the specific doorbell register with the updated Submission Queue Tail
+ *        Pointer. This routine copies the caller prepared submission entry data
+ *        pointed by pTempSubEntry to next available submission entry of the
+ *        specific queue before issuing the command.
+ *
+ * @param pAE - Pointer to hardware device extension.
+ * @param QueueID - Which submission queue to issue the command
+ * @param pTempSubEntry - The caller prepared Submission entry data
+ *
+ * @return ULONG
+ *     STOR_STATUS_SUCCESS - If the command is issued successfully
+ *     Otherwise - If anything goes wrong
+ ******************************************************************************/
+ULONG NVMeIssueCmd(
+    PNVME_DEVICE_EXTENSION pAE,
+    USHORT QueueID,
+    PVOID pTempSubEntry
+)
+{
+    PQUEUE_INFO pQI = &pAE->QueueInfo;
+    PSUB_QUEUE_INFO pSQI = NULL;
+    PCMD_ENTRY pCmdEntry = NULL;
+    PNVMe_COMMAND pNVMeCmd = NULL;
+    USHORT tempSqTail = 0;
+
+    /* Make sure the parameters are valid */
+    if (QueueID > pQI->NumSubIoQCreated || pTempSubEntry == NULL)
+        return (STOR_STATUS_INVALID_PARAMETER);
+
+    /*
+     * Locate the current submission entry and
+     * copy the fields from the temp buffer
+     */
+    pSQI = pQI->pSubQueueInfo + QueueID;
+
+    /* First make sure FW is draining this SQ */
+    tempSqTail = ((pSQI->SubQTailPtr + 1) == pSQI->SubQEntries)
+        ? 0 : pSQI->SubQTailPtr + 1;
+
+    if (tempSqTail == pSQI->SubQHeadPtr) {
+#ifdef HISTORY
+        TracePathSubmit(ISSUE_RETURN_BUSY, QueueID, ((PNVMe_COMMAND)pTempSubEntry)->NSID,
+            ((PNVMe_COMMAND)pTempSubEntry)->CDW0, 0, 0, 0);
+#endif
+        return (STOR_STATUS_INSUFFICIENT_RESOURCES);
+    }
+
+    pNVMeCmd = (PNVMe_COMMAND)pSQI->pSubQStart;
+    pNVMeCmd += pSQI->SubQTailPtr;
+
+    memcpy((PVOID)pNVMeCmd, pTempSubEntry, sizeof(NVMe_COMMAND));
+
+    /* Increase the tail pointer by 1 and reset it if needed */
+    pSQI->SubQTailPtr = tempSqTail;
+
+    /*
+     * Track # of outstanding requests for this SQ
+     */
+    pSQI->Requests++;
+
+#ifdef HISTORY
+        TracePathSubmit(ISSUE, QueueID, ((PNVMe_COMMAND)pTempSubEntry)->NSID,
+            ((PNVMe_COMMAND)pTempSubEntry)->CDW0, pSQI->SubQTailPtr, 0, 0);
+#endif
+    /* Now issue the command via Doorbell register */
+    StorPortWriteRegisterUlong(pAE, pSQI->pSubTDBL, (ULONG)pSQI->SubQTailPtr);
+
+#if DBG
+    if (gResetTest && (gResetCounter++ > gResetCount)) {
+        gResetCounter = 0;
+
+        /* quick hack for testing internally driven resets */
+        NVMeResetController(pAE, NULL);
+        return STOR_STATUS_SUCCESS;
+    }
+#endif /* DBG */
+
+    /*
+     * This is for polling mode, Chatham2 doesn't supoort legacy INT
+     * and windows doesn't support MSI/X during install so we poll
+     * leveraging much of the INTX path in the driver.  This code can
+     * potentially be updated to implement polling for othre situations
+     * as well keeping in mind that its implmented to account for the
+     * fact that Chatham doesn't have line INTs
+     */
+#if defined(CHATHAM2) || defined(ALL_POLLING)
+    if (pAE->ResMapTbl.NumMsiMsgGranted == 0) {
+        ULONG entryStatus = STOR_STATUS_UNSUCCESSFUL;
+        PNVMe_COMPLETION_QUEUE_ENTRY pCplEntry = NULL;
+        PNVME_SRB_EXTENSION pSrbExtension = NULL;
+        PCPL_QUEUE_INFO pCQI = pQI->pCplQueueInfo + QueueID;
+        PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
+        BOOLEAN learning;
+
+        while (entryStatus != STOR_STATUS_SUCCESS) {
+            entryStatus = NVMeGetCplEntry(pAE, pCQI, &pCplEntry);
+            if (entryStatus == STOR_STATUS_SUCCESS) {
+
+                NVMeCompleteCmd(pAE,
+                    pCplEntry->DW2.SQID,
+                    pCplEntry->DW2.SQHD,
+                    pCplEntry->DW3.CID,
+                    (PVOID)&pSrbExtension);
+
+                if (pSrbExtension != NULL) {
+
+                    pSrbExtension->pCplEntry = pCplEntry;
+                    learning = ((pAE->LearningCores < pRMT->NumActiveCores) &&
+                            (QueueID > 0)) ? TRUE : FALSE;
+                    if (learning) {
+                        pAE->LearningCores++;
+                    }
+                }
+
+                if ((pSrbExtension->pNvmeCompletionRoutine == NULL) &&
+                    (SntiMapCompletionStatus(pSrbExtension) == TRUE)) {
+                    IO_StorPortNotification(RequestComplete,
+                                            pAE,
+                                            pSrbExtension->pSrb);
+
+                } else if ((pSrbExtension->pNvmeCompletionRoutine(pAE,
+                            (PVOID)pSrbExtension) == TRUE) &&
+                            (pSrbExtension->pSrb != NULL)) {
+                    IO_StorPortNotification(RequestComplete,
+                                            pAE,
+                                            pSrbExtension->pSrb);
+                }
+                StorPortWriteRegisterUlong(pAE,
+                                           pCQI->pCplHDBL,
+                                           (ULONG)pCQI->CplQHeadPtr);
+             }
+        }
+    }
+#endif /* CHATHAM2 */
+
+    return STOR_STATUS_SUCCESS;
+} /* NVMeIssueCmd */
+
 /*******************************************************************************
  * ProcessIo
  *
@@ -57,6 +204,7 @@
  * @param AdapterExtension - pointer to device extension
  * @param SrbExtension - SRB extension for this command
  * @param QueueType - type of queue (admin or I/O)
+ * @param AcquireLock - if the caller needs the StartIO lock acquired or not
  *
  * @return BOOLEAN
  *     TRUE - command was processed successfully
@@ -66,23 +214,36 @@ BOOLEAN
 ProcessIo(
     __in PNVME_DEVICE_EXTENSION pAdapterExtension,
     __in PNVME_SRB_EXTENSION pSrbExtension,
-    __in NVME_QUEUE_TYPE QueueType
+    __in NVME_QUEUE_TYPE QueueType,
+    __in BOOLEAN AcquireLock
 )
 {
     PNVMe_COMMAND pNvmeCmd;
     ULONG StorStatus;
-    BOOLEAN returnStatus;
+    IO_SUBMIT_STATUS IoStatus = SUBMITTED;
     PCMD_INFO pCmdInfo = NULL;
     PROCESSOR_NUMBER ProcNumber;
     USHORT SubQueue = 0;
     USHORT CplQueue = 0;
     PQUEUE_INFO pQI = &pAdapterExtension->QueueInfo;
     PSUB_QUEUE_INFO pSQI = pQI->pSubQueueInfo;
+    STOR_LOCK_HANDLE hStartIoLock;
+
+     __try {
+
+        if (AcquireLock == TRUE) {
+            StorPortAcquireSpinLock(pAdapterExtension,
+                                    StartIoLock,
+                                    NULL,
+                                    &hStartIoLock);
+        }
 
     StorStatus = StorPortGetCurrentProcessorNumber((PVOID)pAdapterExtension,
                                                    &ProcNumber);
-    if (StorStatus != STOR_STATUS_SUCCESS)
-        return FALSE;
+        if (StorStatus != STOR_STATUS_SUCCESS) {
+            IoStatus = NOT_SUBMITTED;
+            __leave;
+        }
 
     /* save off the usbmitting core info for CT learning purposes */
     pSrbExtension->procNum = ProcNumber;
@@ -90,17 +251,18 @@ ProcessIo(
     /* 1 - Select Queue based on CPU */
     if (QueueType == NVME_QUEUE_TYPE_IO) {
 
-        returnStatus = NVMeMapCore2Queue(pAdapterExtension,
+            StorStatus =  NVMeMapCore2Queue(pAdapterExtension,
                                          &ProcNumber,
                                          &SubQueue,
                                          &CplQueue);
-        if (returnStatus == FALSE)
-            return FALSE;
 
+            if (StorStatus != STOR_STATUS_SUCCESS) {
+                IoStatus = NOT_SUBMITTED;
+                __leave;
+            }
     } else {
         /* It's an admin queue */
-        SubQueue = 0;
-        CplQueue = 0;
+            SubQueue = CplQueue = 0;
     }
 
     /* 2 - Choose CID for the CMD_ENTRY */
@@ -108,22 +270,17 @@ ProcessIo(
                                  SubQueue,
                                  (PVOID)pSrbExtension,
                                  &pCmdInfo);
-    if (StorStatus != STOR_STATUS_SUCCESS) {
-        if (pSrbExtension->pSrb != NULL) {
-            pSrbExtension->pSrb->SrbStatus = SRB_STATUS_BUSY;
-            IO_StorPortNotification(RequestComplete,
-                                    pAdapterExtension,
-                                    pSrbExtension->pSrb);
-        }
 
-        return FALSE;
+    if (StorStatus != STOR_STATUS_SUCCESS) {
+            IoStatus = BUSY;
+            __leave;
     }
 
     pNvmeCmd = &pSrbExtension->nvmeSqeUnit;
 #pragma prefast(suppress:6011,"This pointer is not NULL")
     pNvmeCmd->CDW0.CID = (USHORT)pCmdInfo->CmdID;
 
-#ifdef DBL_BUFF
+#ifdef DUMB_DRIVER
     /*
      * For reads/writes, create PRP list in pre-allocated
      * space describing the dbl buff location... make sure that
@@ -133,9 +290,9 @@ ProcessIo(
         (pNvmeCmd->CDW0.OPC != NVM_FLUSH)) {
         LONG len = pSrbExtension->pSrb->DataTransferLength;
         ULONG i = 1;
-        PUINT64 pPrpList = (PUINT64)pCmdInfo->pPRPList;
+        PUINT64 pPrpList = (PUINT64)pCmdInfo->pDblPrpListVir;
 
-        ASSERT(len <= DBL_BUFF_SZ);
+        ASSERT(len <= DUMB_DRIVER_SZ);
 
         if (len <= (PAGE_SIZE * 2)) {
             pNvmeCmd->PRP1 = pCmdInfo->dblPhy.QuadPart;
@@ -147,7 +304,7 @@ ProcessIo(
         } else {
             pNvmeCmd->PRP1 = pCmdInfo->dblPhy.QuadPart;
             len -= PAGE_SIZE;
-            pNvmeCmd->PRP2 = pCmdInfo->prpListPhyAddr.QuadPart;
+            pNvmeCmd->PRP2 = pCmdInfo->dblPrpListPhy.QuadPart;
 
             while (len > 0) {
                 *pPrpList = pCmdInfo->dblPhy.QuadPart + (PAGE_SIZE * i);
@@ -156,9 +313,9 @@ ProcessIo(
                 i++;
             }
         }
-
         /* Pre-allacted so this had better be true! */
         ASSERT(IS_SYS_PAGE_ALIGNED(pNvmeCmd->PRP1));
+        ASSERT(IS_SYS_PAGE_ALIGNED(pNvmeCmd->PRP2));
 
         // Get Virtual address, only for read or write
         if (IS_CMD_DATA_IN(pNvmeCmd->CDW0.OPC) ||
@@ -187,7 +344,7 @@ ProcessIo(
             }
         }
     }
-#else /* DBL_BUFF */
+#else /* DUMB_DRIVER */
     /*
      * 3 - If a PRP list is used, copy the buildIO prepared list to the
      * preallocated memory location and update the entry not the pCmdInfo is a
@@ -199,7 +356,7 @@ ProcessIo(
 
         /* 
          * Copy the PRP list pointed to by PRP2. Size of the copy is total num
-         * of PRPs -1 because PRP1 is not in the PRP list pointed to by PRP 2.
+         * of PRPs -1 because PRP1 is not in the PRP list pointed to by PRP2.
          */
         StorPortMoveMemory(
             (PVOID)pCmdInfo->pPRPList,
@@ -207,10 +364,13 @@ ProcessIo(
             ((pSrbExtension->numberOfPrpEntries - 1) * sizeof(UINT64)));
     }
 #endif /* DBL_BUFF */
+#ifdef HISTORY
+            TracePathSubmit(PRE_ISSUE, SubQueue, pNvmeCmd->NSID, pNvmeCmd->CDW0,
+                pNvmeCmd->PRP1, pNvmeCmd->PRP2, pSrbExtension->numberOfPrpEntries);
+#endif
 
     /* 4 - Issue the Command */
     StorStatus = NVMeIssueCmd(pAdapterExtension, SubQueue, pNvmeCmd);
-    ASSERT(StorStatus == STOR_STATUS_SUCCESS);
 
     if (StorStatus != STOR_STATUS_SUCCESS) {
         NVMeCompleteCmd(pAdapterExtension,
@@ -218,14 +378,8 @@ ProcessIo(
                         NO_SQ_HEAD_CHANGE,
                         pNvmeCmd->CDW0.CID,
                         (PVOID)pSrbExtension);
-
-        if (pSrbExtension->pSrb != NULL) {
-            pSrbExtension->pSrb->SrbStatus = SRB_STATUS_BUSY;
-            IO_StorPortNotification(RequestComplete,
-                                    pAdapterExtension,
-                                    pSrbExtension->pSrb);
-        }
-        return FALSE;
+            IoStatus = BUSY;
+            __leave;
     }
 
     /*
@@ -252,13 +406,36 @@ ProcessIo(
                  */
                 NVMeLogError(pAdapterExtension,
                     (ULONG)pAdapterExtension->DriverState.DriverErrorStatus);
-                    return FALSE;
+                    IoStatus = NOT_SUBMITTED;
+                    __leave;
+                }
             }
         }
-        return TRUE;
+
+    } finally {
+
+        if (AcquireLock == TRUE) {
+            StorPortReleaseSpinLock(pAdapterExtension, &hStartIoLock);
+        }
+
+        if (IoStatus == BUSY) {
+#ifdef HISTORY
+            TracePathSubmit(GETCMD_RETURN_BUSY, SubQueue,
+                ((PNVMe_COMMAND)(&pSrbExtension->nvmeSqeUnit))->NSID,
+                ((PNVMe_COMMAND)(&pSrbExtension->nvmeSqeUnit))->CDW0,
+                0, 0, 0);
+#endif
+             if (pSrbExtension->pSrb != NULL) {
+                pSrbExtension->pSrb->SrbStatus = SRB_STATUS_BUSY;
+                IO_StorPortNotification(RequestComplete,
+                                        pAdapterExtension,
+                                        pSrbExtension->pSrb);
+            }
+        }
     }
 
-    return TRUE;
+    return (IoStatus == SUBMITTED) ? TRUE : FALSE;
+
 } /* ProcessIo */
 
 /*******************************************************************************
@@ -288,11 +465,6 @@ VOID NVMeCompleteCmd(
     PSUB_QUEUE_INFO pSQI = NULL;
     PCMD_ENTRY pCmdEntry = NULL;
 
-#ifdef DBL_BUFF
-    UCHAR opcode = 0;
-    opcode = ((PNVME_SRB_EXTENSION)pCmdEntry->Context)->nvmeSqeUnit.CDW0.OPC;
-#endif /* DBL_BUFF */
-
     /* Make sure the parameters are valid */
     ASSERT((QueueID <= pQI->NumSubIoQCreated) && (pContext != NULL));
 
@@ -302,10 +474,11 @@ VOID NVMeCompleteCmd(
      */
     pSQI = pQI->pSubQueueInfo + QueueID;
 
-    if (NewHead != NO_SQ_HEAD_CHANGE)
-        pSQI->SubQHeadPtr = NewHead;
-
     pCmdEntry = ((PCMD_ENTRY)pSQI->pCmdEntry) + CmdID;
+
+    if (NewHead != NO_SQ_HEAD_CHANGE) {
+        pSQI->SubQHeadPtr = NewHead;
+    }
 
     /* Ensure the command entry had been acquired */
     ASSERT(pCmdEntry->Pending == TRUE);
@@ -326,12 +499,13 @@ VOID NVMeCompleteCmd(
 
     *((ULONG_PTR *)pContext) = (ULONG_PTR)pCmdEntry->Context;
 
-#ifdef DBL_BUFF
+#ifdef DUMB_DRIVER
     /*
      * For non admin command read, need to copy from the dbl buff to the
      * SRB data buff
      */
-    if ((QueueID > 0) && IS_CMD_DATA_IN(opcode)) {
+    if ((QueueID > 0) &&
+        IS_CMD_DATA_IN(((PNVME_SRB_EXTENSION)pCmdEntry->Context)->nvmeSqeUnit.CDW0.OPC)) {
         PNVME_SRB_EXTENSION pSrbExt = (PNVME_SRB_EXTENSION)pCmdEntry->Context;
 
         ASSERT(pSrbExt);
@@ -340,7 +514,7 @@ VOID NVMeCompleteCmd(
                            pSrbExt->pDblVir,
                            pSrbExt->dataLen);
     }
-#endif /* DBL_BUFF */
+#endif /* DUMB_DRIVER */
 
     /* Clear the fields of CMD_ENTRY before appending back to free list */
     pCmdEntry->Pending = FALSE;

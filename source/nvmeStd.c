@@ -47,6 +47,63 @@
 
 #include "precomp.h"
 
+#ifdef HISTORY
+void TracePathSubmit(HISTORY_TAG tag, ULONG queueId, ULONG NSID,
+        NVMe_COMMAND_DWORD_0 CDW0, ULONGLONG parm1, ULONGLONG parm2, ULONGLONG parm3)
+{
+
+    SubmitHistory[SubmitIndex].tag = tag;
+    SubmitHistory[SubmitIndex].queueId = queueId;
+    SubmitHistory[SubmitIndex].NSID = NSID;
+    SubmitHistory[SubmitIndex].CDW0 = CDW0;
+    SubmitHistory[SubmitIndex].parm1 = parm1;
+    SubmitHistory[SubmitIndex].parm2 = parm2;
+    SubmitHistory[SubmitIndex].parm3 = parm3;
+
+    if((++SubmitIndex) >= HISTORY_DEPTH)
+        SubmitIndex = 0;
+
+    SubmitHistory[SubmitIndex].tag = HISTORY_MARKER;
+}
+
+void TracePathComplete(HISTORY_TAG tag, ULONG queueId, ULONG CID,
+        ULONG SQHD,NVMe_COMPLETION_QUEUE_ENTRY_DWORD_3 DW3, ULONGLONG parm2, ULONGLONG parm3)
+{
+
+    CompleteHistory[CompleteIndex].tag = tag;
+    CompleteHistory[CompleteIndex].queueId = queueId;
+    CompleteHistory[CompleteIndex].CID = CID;
+    CompleteHistory[CompleteIndex].SQHD = SQHD;
+    CompleteHistory[CompleteIndex].DW3 = DW3;
+    CompleteHistory[CompleteIndex].parm2 = parm2;
+    CompleteHistory[CompleteIndex].parm3 = parm3;
+
+    if((++CompleteIndex) >= HISTORY_DEPTH)
+        CompleteIndex = 0;
+
+    CompleteHistory[CompleteIndex].tag = HISTORY_MARKER;
+}
+
+void TraceEvent(HISTORY_TAG tag, ULONG queueId, ULONG CID,
+        ULONG parm0, ULONGLONG parm1, ULONGLONG parm2, ULONGLONG parm3)
+{
+
+    EventHistory[EventIndex].tag = tag;
+    EventHistory[EventIndex].queueId = queueId;
+    EventHistory[EventIndex].CID = CID;
+    EventHistory[EventIndex].parm0 = parm0;
+    EventHistory[EventIndex].parm1 = parm1;
+    EventHistory[EventIndex].parm2 = parm2;
+    EventHistory[EventIndex].parm3 = parm3;
+
+    if((++EventIndex) >= HISTORY_DEPTH)
+        EventIndex = 0;
+
+    EventHistory[EventIndex].tag = HISTORY_MARKER;
+}
+
+#endif
+
 /*******************************************************************************
  * DriverEntry
  *
@@ -142,6 +199,7 @@ NVMeFindAdapter(
     PNVME_DEVICE_EXTENSION pAE = Context;
     PACCESS_RANGE pMM_Range;
     PRES_MAPPING_TBL pRMT = NULL;
+    ULONG pciStatus = 0;
 
     UNREFERENCED_PARAMETER( Reserved1 );
     UNREFERENCED_PARAMETER( Reserved2 );
@@ -157,21 +215,7 @@ NVMeFindAdapter(
      */
     pMM_Range = NULL;
     pMM_Range = &(*(pPCI->AccessRanges))[0];
-
-    /*
-     * If desired access range is not available or
-     * RangeLength isn't enough to cover all regisgters, including
-     * one Admin queue pair and one IO queue pair, or
-     * it's not memory-mapped, return now with SP_RETURN_NOT_FOUND
-     */
-    if ((pMM_Range == NULL)                             ||
-        (pMM_Range->RangeLength <
-         (NVME_DB_START + 2 * sizeof(NVMe_QUEUE_PAIR))) ||
-        (pMM_Range->RangeInMemory == FALSE)) {
-        /*
-         * If no access range granted, treat it as error case and return
-         * Otherwise, jump out of the loop
-         */
+    if (pMM_Range == NULL) {
         return (SP_RETURN_NOT_FOUND);
     }
 
@@ -183,7 +227,8 @@ NVMeFindAdapter(
                           pMM_Range->RangeLength,
                           FALSE);
 
-    if (pAE->pCtrlRegister == NULL) {
+    if (pAE->pCtrlRegister == NULL ||
+        pMM_Range->RangeInMemory == FALSE) {
         return (SP_RETURN_NOT_FOUND);
     } else {
         /* Print out where it is */
@@ -210,6 +255,33 @@ NVMeFindAdapter(
      */
     if (NVMeStrCompare("dump=1", ArgumentString) == TRUE)
         pAE->ntldrDump = TRUE;
+
+    /* setup ctrl timeout and stride info */
+    pAE->uSecCrtlTimeout = (ULONG)(pAE->pCtrlRegister->CAP.TO * MIN_WAIT_TIMEOUT);
+    pAE->uSecCrtlTimeout = (pAE->uSecCrtlTimeout == 0) ?
+        MIN_WAIT_TIMEOUT : pAE->uSecCrtlTimeout;
+    pAE->uSecCrtlTimeout *= MILLI_TO_MICRO;
+
+    /* save off the DB Stride Size */
+    pAE->strideSz = 1 << (2 + pAE->pCtrlRegister->CAP.DSTRD);
+    StorPortDebugPrint(INFO, "NVMeFindAdapter: Stride Size set to 0x%x\n", pAE->strideSz);
+
+    /*
+     * If desired access range is not available or
+     * RangeLength isn't enough to cover all regisgters, including
+     * one Admin queue pair and one IO queue pair, or
+     * it's not memory-mapped, return now with SP_RETURN_NOT_FOUND
+     */
+    #define NUM_DB_PER_QP (2)
+    if ((pMM_Range->RangeLength <
+        (NVME_DB_START + 2 * sizeof(NVMe_QUEUE_Y_DOORBELL)
+          + 2 * NUM_DB_PER_QP * pAE->strideSz))) {
+        /*
+         * If no access range granted, treat it as error case and return
+         * Otherwise, jump out of the loop
+         */
+        return (SP_RETURN_NOT_FOUND);
+    }
 
     /*
      * Pre-program with default values in case of failure in accessing Registry
@@ -242,6 +314,13 @@ NVMeFindAdapter(
     if (pAE->ntldrDump == FALSE) {
         /* Call NVMeFetchRegistry to retrieve all designated values */
         NVMeFetchRegistry(pAE);
+
+        /* regardless of hardcoded or reg overrides, IOQ is limited by CAP */
+        if (pAE->InitInfo.IoQEntries > (ULONG)(pAE->pCtrlRegister->CAP.MQES + 1)) {
+            StorPortDebugPrint(INFO, "IO Q size limited by HW to 0x%x\n",
+                (pAE->pCtrlRegister->CAP.MQES + 1));
+            pAE->InitInfo.IoQEntries = pAE->pCtrlRegister->CAP.MQES + 1;
+        }
 
         /* updte in case someone used the registry to change MaxTxSie */
         pAE->PRPListSize = ((pAE->InitInfo.MaxTxSize / PAGE_SIZE) * sizeof(UINT64));
@@ -312,6 +391,8 @@ NVMeFindAdapter(
     /* Specify NVMe MSI/MSI-X ISR here */
     pPCI->HwMSInterruptRoutine = NVMeIsrMsix;
 
+    pPCI->WmiDataProvider = FALSE;
+
     /* Confirm with Storport that device is found */
     return(SP_RETURN_FOUND);
 } /* NVMeFindAdapter */
@@ -346,6 +427,7 @@ BOOLEAN NVMePassiveInitialize(
     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
     ULONG Lun;
     ULONG i;
+    ULONG passiveTimeout;
 
     /* Ensure the Context is valid first */
     if (pAE == NULL)
@@ -411,10 +493,10 @@ BOOLEAN NVMePassiveInitialize(
 
     /* Allocate memory for LUN extensions */
     pAE->LunExtSize = MAX_NAMESPACES * sizeof(NVME_LUN_EXTENSION);
-    pAE->lunExtensionTable[0] =
+    pAE->pLunExtensionTable[0] =
         (PNVME_LUN_EXTENSION)NVMeAllocateMem(pAE, pAE->LunExtSize, 0);
 
-    if (pAE->lunExtensionTable[0] == NULL) {
+    if (pAE->pLunExtensionTable[0] == NULL) {
         /* Free the allocated buffers before returning */
         NVMeFreeBuffers (pAE);
         return (FALSE);
@@ -422,7 +504,7 @@ BOOLEAN NVMePassiveInitialize(
 
     /* Populate each LUN extension table with a valid address */
     for (Lun = 1; Lun < MAX_NAMESPACES; Lun++)
-        pAE->lunExtensionTable[Lun] = pAE->lunExtensionTable[0] + Lun;
+        pAE->pLunExtensionTable[Lun] = pAE->pLunExtensionTable[0] + Lun;
 
     /*
      * Allocate buffer for data transfer in Start State Machine before State
@@ -434,6 +516,15 @@ BOOLEAN NVMePassiveInitialize(
         NVMeFreeBuffers(pAE);
         return (FALSE);
     }
+
+#ifdef HISTORY
+    SubmitIndex = 0;
+    CompleteIndex = 0;
+    EventIndex = 0;
+    memset(&SubmitHistory, 0, sizeof(HISTORY_SUBMIT) * HISTORY_DEPTH);
+    memset(&CompleteHistory, 0, sizeof(HISTORY_COMPLETE) * HISTORY_DEPTH);
+    memset(&EventHistory, 0, sizeof(HISTORY_EVENT) * HISTORY_DEPTH);
+#endif
 
     /* Initialize a DPC for command completions that need to free memory */
     StorPortInitializeDpc(pAE, &pAE->SntiDpc, SntiDpcRoutine);
@@ -472,10 +563,17 @@ BOOLEAN NVMePassiveInitialize(
       * Check timeout, if we fail to start (or recover from reset) then
       * we leave the controller in this state (NextDriverState) and we
       * won't accept any IO.  We'll also log an error.
+      *
       */
+
+     /* TO val is based on CAP registre plus a few, 5, seconds to init post RDY */
+     passiveTimeout = pAE->uSecCrtlTimeout + (STORPORT_TIMER_CB_us * MICRO_TO_SEC);
      while ((pAE->DriverState.NextDriverState != NVMeStartComplete) &&
             (pAE->DriverState.NextDriverState != NVMeStateFailed)){
-        if (++pAE->DriverState.TimeoutCounter == STATE_MACHINE_TIMEOUT_CALLS) {
+
+        /* increment 5000us (timer callback val */
+        pAE->DriverState.TimeoutCounter += pAE->DriverState.CheckbackInterval;
+        if (pAE->DriverState.TimeoutCounter > passiveTimeout) {
             NVMeDriverFatalError(pAE,
                                 (1 << START_STATE_TIMEOUT_FAILURE));
             break;
@@ -519,7 +617,6 @@ BOOLEAN NVMeInitialize(
     ULONG QEntries;
     ULONG Lun;
     NVMe_CONTROLLER_CONFIGURATION CC = {0};
-    NVMe_CONTROLLER_CAPABILITIES CAP;
     PERF_CONFIGURATION_DATA perfData = {0};
 
     /* Ensure the Context is valid first */
@@ -553,25 +650,12 @@ BOOLEAN NVMeInitialize(
                                CC.AsUlong);
 
     /*
-     * Find out the Timeout value from Controller Capability register, which is
-     * in 500 ms. In case the read back unit is 0, make it 1, i.e., 500 ms wait.
-     * we'll store it in microseconds.
-     */
-    CAP.LowPart = StorPortReadRegisterUlong(pAE,
-                                            (PULONG)(&pAE->pCtrlRegister->CAP));
-
-    pAE->uSecCrtlTimeout = (ULONG)(CAP.TO * MIN_WAIT_TIMEOUT);
-    pAE->uSecCrtlTimeout = (pAE->uSecCrtlTimeout == 0) ?
-        MIN_WAIT_TIMEOUT : pAE->uSecCrtlTimeout;
-    pAE->uSecCrtlTimeout *= MILLI_TO_MICRO;
-
-    /*
      * NULLify all to-be-allocated buffer pointers. In failure cases we need to
      * free the buffers in NVMeFreeBuffers, it has not yet been allocated. If
      * it's NULL, nothing needs to be done.
      */
     pAE->DriverState.pSrbExt = NULL;
-    pAE->lunExtensionTable[0] = NULL;
+    pAE->pLunExtensionTable[0] = NULL;
     pAE->QueueInfo.pSubQueueInfo = NULL;
     pAE->QueueInfo.pCplQueueInfo = NULL;
 
@@ -695,9 +779,9 @@ BOOLEAN NVMeInitialize(
 
         /* Allocate memory for LUN extensions */
         pAE->LunExtSize = MAX_NAMESPACES * sizeof(NVME_LUN_EXTENSION);
-        pAE->lunExtensionTable[0] =
+        pAE->pLunExtensionTable[0] =
             (PNVME_LUN_EXTENSION)NVMeAllocateMem(pAE, pAE->LunExtSize, 0);
-        if (pAE->lunExtensionTable[0] == NULL) {
+        if (pAE->pLunExtensionTable[0] == NULL) {
             /* Free the allocated buffers before returning */
             NVMeFreeBuffers(pAE);
             return (FALSE);
@@ -705,7 +789,7 @@ BOOLEAN NVMeInitialize(
 
         /* Populate each LUN extension table with valid an address */
         for (Lun = 1; Lun < MAX_NAMESPACES; Lun++)
-            pAE->lunExtensionTable[Lun] = pAE->lunExtensionTable[0] + Lun;
+            pAE->pLunExtensionTable[Lun] = pAE->pLunExtensionTable[0] + Lun;
 
         /*
          * Allocate buffer for data transfer in Start State Machine before State
@@ -830,8 +914,7 @@ BOOLEAN NVMeBuildIo(
      * controller before processing the request.
      */
     if ((Srb->PathId != 0)   ||
-        (Srb->TargetId != 0) ||
-        (Srb->Lun >= pAdapterExtension->controllerIdentifyData.NN)) {
+        (Srb->TargetId != 0)) {
         Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
         IO_StorPortNotification(RequestComplete, AdapterExtension, Srb);
         return FALSE;
@@ -1105,6 +1188,10 @@ BOOLEAN NVMeStartIo(
         case SRB_FUNCTION_RESET_DEVICE:
         case SRB_FUNCTION_RESET_LOGICAL_UNIT:
         case SRB_FUNCTION_RESET_BUS:
+            ASSERT(FALSE);
+#ifdef HISTORY
+            TraceEvent(SRB_RESET, 0,0,0,Srb->Lun, 0,0);
+#endif
             status = NVMeResetController(pAdapterExtension, Srb);
             if (status == FALSE) {
                 Srb->SrbStatus = SRB_STATUS_ERROR;
@@ -1117,9 +1204,10 @@ BOOLEAN NVMeStartIo(
             pNvmeCmd = (PNVMe_COMMAND)pNvmePtIoctl->NVMeCmd;
             pNvmeCmdDW0 = (PNVMe_COMMAND_DWORD_0)&pNvmePtIoctl->NVMeCmd[0];
 
-            if (pSrbIoCtrl->ControlCode == NVME_PASS_THROUGH_SRB_IO_CODE) {
-                /* More processing required for Format NVM */
-                if (pNvmeCmdDW0->OPC == ADMIN_FORMAT_NVM) {
+            switch (pSrbIoCtrl->ControlCode) {
+            case NVME_PASS_THROUGH_SRB_IO_CODE:
+                switch (pNvmeCmdDW0->OPC) {
+                case ADMIN_FORMAT_NVM:
                     pFormatNvmInfo = &pAdapterExtension->FormatNvmInfo;
                     if (pFormatNvmInfo->State == FORMAT_NVM_NO_ACTIVITY) {
                         pFormatNvmInfo->State = FORMAT_NVM_RECEIVED;
@@ -1146,44 +1234,57 @@ BOOLEAN NVMeStartIo(
                      * Set Format NVM State Machine as FORMAT_NVM_CMD_ISSUED
                      */
                     pFormatNvmInfo->State = FORMAT_NVM_CMD_ISSUED;
-                }
-            } else if (pSrbIoCtrl->ControlCode == NVME_HOT_ADD_NAMESPACE) {
+                    break;
+                default:
+                    /* fall through for PT processing */
+                    break;
+                }  /* OPC switch */
+                break;
+            case NVME_HOT_ADD_NAMESPACE:
                 Srb->SrbStatus = SRB_STATUS_SUCCESS;
                 /* Call NVMeIoctlHotAddNamespace to add the namespace */
                 NVMeIoctlHotAddNamespace(pSrbExtension);
                 IO_StorPortNotification(RequestComplete, pAdapterExtension, Srb);
                 return TRUE;
-            } else if (pSrbIoCtrl->ControlCode == NVME_HOT_REMOVE_NAMESPACE) {
+                break;
+            case NVME_HOT_REMOVE_NAMESPACE:
                 Srb->SrbStatus = SRB_STATUS_SUCCESS;
                 /* Call NVMeIoctlHotRemoveNamespace to remove the namespace */
                 NVMeIoctlHotRemoveNamespace(pSrbExtension);
                 IO_StorPortNotification(RequestComplete, pAdapterExtension, Srb);
                 return TRUE;
-            } else {
+                break;
+            default:
                 Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
                 IO_StorPortNotification(RequestComplete, pAdapterExtension, Srb);
                 return TRUE;
-            }
+                break;
+            } /* switch on control code */
+
             /* No processing required, just issue the command */
             if (pSrbExtension->forAdminQueue == TRUE) {
                 status = ProcessIo(pAdapterExtension,
                                    pSrbExtension,
-                                   NVME_QUEUE_TYPE_ADMIN);
+                                   NVME_QUEUE_TYPE_ADMIN,
+                                   FALSE);
             } else {
                 status = ProcessIo(pAdapterExtension,
                                    pSrbExtension,
-                                   NVME_QUEUE_TYPE_IO);
+                                   NVME_QUEUE_TYPE_IO,
+                                   FALSE);
             }
         break;
         case SRB_FUNCTION_EXECUTE_SCSI:
             if (pSrbExtension->forAdminQueue == TRUE) {
                 status = ProcessIo(pAdapterExtension,
                                    pSrbExtension,
-                                   NVME_QUEUE_TYPE_ADMIN);
+                                   NVME_QUEUE_TYPE_ADMIN,
+                                   FALSE);
             } else {
                 status = ProcessIo(pAdapterExtension,
                                    pSrbExtension,
-                                   NVME_QUEUE_TYPE_IO);
+                                   NVME_QUEUE_TYPE_IO,
+                                   FALSE);
             }
         break;
         case SRB_FUNCTION_POWER:
@@ -1222,6 +1323,12 @@ BOOLEAN NVMeIsrIntx(
 {
     PNVME_DEVICE_EXTENSION pAE = (PNVME_DEVICE_EXTENSION)AdapterExtension;
     BOOLEAN InterruptClaimed = FALSE;
+
+#if defined(CHATHAM2)
+    if (pAE->ResMapTbl.NumMsiMsgGranted == 0) {
+        return TRUE;
+    }
+#endif
 
     pAE->IntxMasked = FALSE;
 
@@ -1276,15 +1383,10 @@ IoCompletionDpcRoutine(
     USHORT lastCheckQueue = 0;
     USHORT indexCheckQueue;
     BOOLEAN InterruptClaimed = FALSE;
-    ULONG oldIrql = 0;
     STOR_LOCK_HANDLE DpcLockhandle = { 0 };
     BOOLEAN learning;
 
-    if (pRMT->InterruptType == INT_TYPE_INTX) {
         StorPortAcquireSpinLock(pAE, DpcLock, pDpc, &DpcLockhandle);
-    } else {
-        StorPortAcquireMSISpinLock(pAE, (UINT32)MsgID, (PULONG)&oldIrql);
-    }
 
     /* Use the message id to find the correct entry in the MSI_MESSAGE_TBL */
     pMMT = pRMT->pMsiMsgTbl + MsgID;
@@ -1339,6 +1441,13 @@ IoCompletionDpcRoutine(
                 InterruptClaimed = TRUE;
 
 #pragma prefast(suppress:6011,"This pointer is not NULL")
+#ifdef HISTORY
+                TracePathComplete(COMPPLETE_CMD, pCplEntry->DW2.SQID,
+                    pCplEntry->DW3.CID, pCplEntry->DW2.SQHD,
+                    pCplEntry->DW3,
+                    (pSrbExtension) ? (ULONGLONG)pSrbExtension->pNvmeCompletionRoutine : 0,
+                    0);
+#endif
                 NVMeCompleteCmd(pAE,
                                 pCplEntry->DW2.SQID,
                                 pCplEntry->DW2.SQHD,
@@ -1420,11 +1529,8 @@ IoCompletionDpcRoutine(
         }
     } /* end for loop: for every queue to be checked */
 
-    if (pRMT->InterruptType == INT_TYPE_INTX) {
         StorPortReleaseSpinLock(pAE, &DpcLockhandle);
-    } else {
-        StorPortReleaseMSISpinLock(pAE,(UINT32)MsgID, oldIrql);
-    }
+
 } /* IoCompletionDpcRoutine */
 
 
@@ -1450,6 +1556,12 @@ NVMeIsrMsix (
     PMSI_MESSAGE_TBL              pMMT = pRMT->pMsiMsgTbl;
     ULONG                         qNum = 0;
     BOOLEAN                       status;
+
+#if defined(CHATHAM2) 
+    if (pAE->ResMapTbl.NumMsiMsgGranted == 0) {
+        return TRUE;
+    }
+#endif
 
     /*
      * For shared mode, we'll use the DPC for queue 0,
@@ -1491,6 +1603,12 @@ NVMeIsrMsix (
     USHORT indexCheckQueue;
     BOOLEAN InterruptClaimed = FALSE;
     BOOLEAN learning;
+
+#if defined(CHATHAM2)
+    if (pAE->ResMapTbl.NumMsiMsgGranted == 0) {
+        return TRUE;
+    }
+#endif
 
     /* Use the message id to find the correct entry in the MSI_MESSAGE_TBL */
     pMMT = pRMT->pMsiMsgTbl + MsgID;
@@ -1597,6 +1715,7 @@ NVMeIsrMsix (
                      *    an Srb
                      * Otherwise we cont call storport's completion
                     */
+
                     if ((pSrbExtension->pNvmeCompletionRoutine == NULL) &&
                         (SntiMapCompletionStatus(pSrbExtension) == TRUE)) {
                         callStorportNotification = TRUE;
@@ -1661,6 +1780,8 @@ VOID RecoveryDpcRoutine(
     PNVMe_COMMAND pNVMeCmd = NULL;
     PNVME_SRB_EXTENSION pSrbExtension = NULL;
 
+    DbgPrint("RecoveryDpcRoutine: Entry\n");
+
     /*
      * Get spinlocks in order, this assures we don't have submission or
      * completion threads happening before or during reset
@@ -1689,10 +1810,13 @@ VOID RecoveryDpcRoutine(
 
             while (pSQI->SubQTailPtr != pSQI->SubQHeadPtr) {
 #pragma prefast(suppress:6011,"This pointer is not NULL")
-#if DBG
                 DbgPrint("Complete CID 0x%x on 0x%x\n",
                          pNVMeCmd->CDW0.CID,
                          pSQI->SubQueueID);
+#ifdef HISTORY
+                TraceEvent(DPC_RESET,
+                         pSQI->SubQueueID, pNVMeCmd->CDW0.CID,
+                    0, 0, 0,0);
 #endif
                 NVMeCompleteCmd(pAE,
                                 pSQI->SubQueueID,
@@ -1726,6 +1850,7 @@ VOID RecoveryDpcRoutine(
          * init state machine has completed.
          */
         StorPortReleaseSpinLock(pAE, &startLockhandle);
+        StorPortReady(pAE);
 
         /* Prepare for new commands */
         if (NVMeInitAdminQueues(pAE) == STOR_STATUS_SUCCESS) {
@@ -1780,6 +1905,8 @@ BOOLEAN NVMeResetController(
         if (storStatus == TRUE) {
             pAdapterExtension->RecoveryAttemptPossible = FALSE;
         }
+    } else {
+        DbgPrint("NVMeResetController: reset called but already pending\n");
     }
 
     return storStatus;
@@ -1986,7 +2113,7 @@ VOID NVMeAERCompletionRoutine(
             pSrbExt->nvmeSqeUnit.PRP2 = 0;
 
             /* Issue the Get Log Page command */
-            if (ProcessIo(pDevExt, pSrbExt, NVME_QUEUE_TYPE_ADMIN) == FALSE) {
+            if (ProcessIo(pDevExt, pSrbExt, NVME_QUEUE_TYPE_ADMIN, TRUE) == FALSE) {
                 StorPortDebugPrint(
                     INFO,
                     "AER DPC: ProcessIo GET LOG PAGE failed (pSrbExt = 0x%x)\n",
@@ -2078,7 +2205,7 @@ VOID NVMeAERGetLogPageCompletionRoutine(
     pSrbExt->nvmeSqeUnit.PRP2 = 0;
 
     /* Re-Issue the AER command */
-    if (ProcessIo(pDevExt, pSrbExt, NVME_QUEUE_TYPE_ADMIN) == FALSE) {
+    if (ProcessIo(pDevExt, pSrbExt, NVME_QUEUE_TYPE_ADMIN, TRUE) == FALSE) {
         StorPortDebugPrint(
             INFO,
             "AER DPC Routine: ProcessIo for AER failed (pSrbExt = 0x%x)\n",
@@ -2245,6 +2372,7 @@ BOOLEAN NVMeIoctlIdentify(
     ULONG IoctlHdrSize = sizeof(NVME_PASS_THROUGH_IOCTL);
 
     pIdentifyDW10 = (PADMIN_IDENTIFY_COMMAND_DW10)&pNvmePtIoctl->NVMeCmd[10];
+
     if (pIdentifyDW10->CNS == 0)
         DataBufferSize = sizeof(ADMIN_IDENTIFY_NAMESPACE);
     else
@@ -2742,8 +2870,6 @@ VOID NVMeIoctlHotAddNamespace (
     StorPortNotification(BusChangeDetected, pDevExt);
 } /* NVMeIoctlHotAddNamespace */
 
-
-
 /******************************************************************************
  * FormatNVMGetIdentify
  *
@@ -2754,7 +2880,7 @@ VOID NVMeIoctlHotAddNamespace (
  * @param pSrbExt - Pointer to Srb Extension allocated in SRB.
  * @param NamespaceID - Specifies which structure to retrieve.
  *
- * @return TRUE - Indicates the request should be completed due to certain errors.
+ * @return TRUE - Indicates the request should be completed due to errors.
  *         FALSE - Indicates more processing required and no error detected.
  ******************************************************************************/
 BOOLEAN FormatNVMGetIdentify(
@@ -2787,7 +2913,8 @@ BOOLEAN FormatNVMGetIdentify(
             Status = FALSE;
         } else {
             /* Assign the destination buffer for retrieved structure */
-            pIdenNS = &pAE->lunExtensionTable[NamespaceID - 1]->identifyData;
+            // TODO next line needs to be REWORKED to point to the correct LUN
+            pIdenNS = &pAE->pLunExtensionTable[pAE->visibleLuns]->identifyData;
             /* Namespace ID is 1-based. */
             pIdentify->NSID = NamespaceID;
             /* Prepare PRP entries, need at least one PRP entry */
@@ -2803,7 +2930,7 @@ BOOLEAN FormatNVMGetIdentify(
         return Status;
     }
     /* Now issue the command via Admin Doorbell register */
-    return ProcessIo(pAE, pSrbExt, NVME_QUEUE_TYPE_ADMIN);
+    return ProcessIo(pAE, pSrbExt, NVME_QUEUE_TYPE_ADMIN, TRUE);
 } /* FormatNVMGetIdentify */
 
 
@@ -2853,7 +2980,6 @@ BOOLEAN FormatNVMFailure(
     }
 }
 
-
 /******************************************************************************
  * NVMeIoctlFormatNVMCallback
  *
@@ -2881,6 +3007,10 @@ BOOLEAN NVMeIoctlFormatNVMCallback(
     ULONG NS;
 
     pNvmePtIoctl = (PNVME_PASS_THROUGH_IOCTL)(pSrb->DataBuffer);
+
+/* TODO:  the .NN data is cached in te devExt and may have changed by now
+ * so the format code can't count on it unless it sends another ID CTRL
+ */
 
     switch (pFormatNvmInfo->State) {
         case FORMAT_NVM_CMD_ISSUED:
@@ -3460,12 +3590,14 @@ VOID IO_StorPortNotification(
         (pSrb->ScsiStatus != SCSISTAT_GOOD)){
 
         /* DbgBreakPoint(); */
-
         StorPortDebugPrint(INFO,
-                           "FYI: SRB status 0x%x scsi 0x%x for CDB 0x%x\n",
+                           "FYI: SRB status 0x%x scsi 0x%x for CDB 0x%x BTL %d %d %d\n",
                            pSrb->SrbStatus,
                            pSrb->ScsiStatus,
-                           pSrb->Cdb[0]);
+                           pSrb->Cdb[0],
+                           pSrb->PathId,
+                           pSrb->TargetId,
+                           pSrb->Lun);
     }
 
     StorPortNotification(NotificationType,

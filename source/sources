@@ -43,15 +43,20 @@ TARGETNAME=nvme
 TARGETTYPE=MINIPORT
 TARGETPATH=$(TARGETNAME)\obj$(BUILD_ALT_DIR)
 
-# -DDBL_BUFF:  Used ONLY FOR DEBUG.  Double buffers all IOs, handy for any debug
+# -DDUMB_DRIVER:  Used ONLY FOR DEBUG.  Double buffers all IOs, handy for any debug
 #              situation where control over all host side buffers is needed
 #              (alingment issues, etc).  Be sure to step through before use,
-#              doesn't get used/tested often!
+#              doesn't get used/tested often!  Also disables:
+#              - learning mode
+#              - SGL-PRP xlation (our buffre addresses are known)
+#              - multiple queues NUMA opimized (uses only one Q by faking single proc)
 
 # -DCHATHAM:  Required for use with Chatham hardware
 # -DCHATHAM2:  Required for use with Chatham2 hardware
 
 # -DCOMPLETE_IN_DPC:  Controls whether IOs are completed in the ISR ot in DPCs
+
+# -DHISTORY:  Enables history buffers for debug, can be used in free or checked build
 
 C_DEFINES = $(C_DEFINES) -D__KERNEL_ -D__MSWINDOWS__ -DCOMPLETE_IN_DPC
 

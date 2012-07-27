@@ -140,11 +140,12 @@ BOOLEAN NVMeRunningStartAttempt(
     pAE->DriverState.IdentifyNamespaceFetched = 0;
     pAE->DriverState.InterruptCoalescingSet = FALSE;
     pAE->DriverState.ConfigLbaRangeNeeded = FALSE;
-    pAE->DriverState.LbaRangeExamined = 0;
+    pAE->DriverState.TtlLbaRangeExamined = 0;
     pAE->DriverState.NumAERsIssued = 0;
     pAE->DriverState.TimeoutCounter = 0;
     pAE->DriverState.resetDriven = resetDriven;
     pAE->DriverState.pResetSrb = pResetSrb;
+    pAE->DriverState.VisibleNamespacesExamined = 0;
 
     /* Zero out SQ cn CQ counters */
     pAE->QueueInfo.NumSubIoQCreated = 0;
@@ -153,7 +154,7 @@ BOOLEAN NVMeRunningStartAttempt(
     pAE->QueueInfo.NumCplIoQAllocFromAdapter = 0;
 
     /* Zero out the LUN extensions and reset the counter as well */
-    memset((PVOID)pAE->lunExtensionTable[0],
+    memset((PVOID)pAE->pLunExtensionTable[0],
            0,
            sizeof(NVME_LUN_EXTENSION) * MAX_NAMESPACES);
 
@@ -317,9 +318,13 @@ VOID NVMeRunningWaitOnRDY(
                                        (PULONG)(&pAE->pCtrlRegister->CC),
                                        CC.AsUlong);
     #endif /* CHATHAM */
+            StorPortDebugPrint(INFO,"NVMeRunningWaitOnRDY: RDY has been set\n");
             pAE->DriverState.NextDriverState = NVMeWaitOnIdentifyCtrl;
             pAE->DriverState.StateChkCount = 0;
         } else {
+            if (pAE->DriverState.StateChkCount == 0) {
+                StorPortDebugPrint(INFO,"NVMeRunningWaitOnRDY: Waiting...\n");
+            }
             pAE->DriverState.NextDriverState = NVMeWaitOnRDY;
             pAE->DriverState.StateChkCount += pAE->DriverState.CheckbackInterval;
         }
@@ -382,7 +387,7 @@ VOID NVMeRunningWaitOnIdentifyCtrl(
                   fw,
                   strnlen(fw, _countof(fw)));
 
-    pIdenNS = &pAE->lunExtensionTable[0]->identifyData;
+    pIdenNS = &pAE->pLunExtensionTable[0]->identifyData;
 
     memset(pIdenNS, 0, sizeof(ADMIN_IDENTIFY_NAMESPACE));
     pIdenNS->NSZE = ChathamNlb;
@@ -394,8 +399,7 @@ VOID NVMeRunningWaitOnIdentifyCtrl(
     pAE->QueueInfo.NumSubIoQAllocFromAdapter = CHATHAM_NR_QUEUES;
     pAE->QueueInfo.NumCplIoQAllocFromAdapter = CHATHAM_NR_QUEUES;
 
-    pLunExt = pAE->lunExtensionTable[0];
-    pLunExt->ExposeNamespace = TRUE;
+    pLunExt = pAE->pLunExtensionTable[0];
     pLunExt->ReadOnly = FALSE;
 
     pAE->DriverState.NextDriverState = NVMeWaitOnSetupQueues;
@@ -712,21 +716,24 @@ VOID NVMeRunningWaitOnLearnMapping(
     PNVMe_COMMAND pCmd = (PNVMe_COMMAND)(&pNVMeSrbExt->nvmeSqeUnit);
     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
     STOR_PHYSICAL_ADDRESS PhysAddr;
-    PNVME_LUN_EXTENSION pLunExt = pAE->lunExtensionTable[0];
+    PNVME_LUN_EXTENSION pLunExt = pAE->pLunExtensionTable[0];
     UINT32 lbaLengthPower, lbaLength;
     PQUEUE_INFO pQI = &pAE->QueueInfo;
     UINT8 flbas;
 
     __try {
 
+#ifdef DUMB_DRIVER
+        {
+#else
         if ((pRMT->NumMsiMsgGranted <= pRMT->NumActiveCores) ||
             (pRMT->pMsiMsgTbl->Shared == TRUE) ||
             (pRMT->InterruptType == INT_TYPE_INTX) ||
             (pRMT->InterruptType == INT_TYPE_MSI) ||
-            (pQI->NumCplIoQAllocated == 1) ||
+            (pQI->NumCplIoQAllocated < pRMT->NumActiveCores) ||
             (pAE->DriverState.IdentifyNamespaceFetched == 0) ||
             (pLunExt == NULL)) {
-
+#endif
             /*
              * go ahead and complete the init state machine now
              * but effectively disable learning as one of the above
@@ -768,7 +775,7 @@ VOID NVMeRunningWaitOnLearnMapping(
 #endif
 
         /* Now issue the command via IO queue */
-        if (FALSE == ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_IO)) {
+        if (FALSE == ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_IO, FALSE)) {
             pAE->LearningCores = pRMT->NumActiveCores;
             pAE->DriverState.NextDriverState = NVMeStartComplete;
             __leave;

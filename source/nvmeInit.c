@@ -47,12 +47,6 @@
 
 #include "precomp.h"
 
-#if DBG
-BOOLEAN gResetTest = FALSE;
-ULONG gResetCounter = 0;
-ULONG gResetCount = 20000;
-#endif
-
 /*******************************************************************************
  * NVMeGetPhysAddr
  *
@@ -294,6 +288,10 @@ BOOLEAN NVMeEnumNumaCores(
      */
     StorPortGetHighestNodeNumber( pAE, &Node );
 
+#ifdef DUMB_DRIVER
+    Node = 0;
+#endif
+
     pRMT->NumNumaNodes = Node + 1;
 
     StorPortDebugPrint(INFO,
@@ -330,6 +328,9 @@ BOOLEAN NVMeEnumNumaCores(
 
         /* Find out the number of active cores of the NUMA node */
         pNNT->NumCores = NVMeActiveProcessorCount(GroupAffinity.Mask);
+#ifdef DUMB_DRIVER
+        pNNT->NumCores = 1;
+#endif
         pRMT->NumActiveCores += pNNT->NumCores;
         StorPortMoveMemory((PVOID)&pNNT->GroupAffinity,
                            (PVOID)&GroupAffinity,
@@ -384,7 +385,9 @@ BOOLEAN NVMeEnumNumaCores(
                            "There are %d cores in Node#%d.\n",
                            pNNT->NumCores, Node);
     }
-
+#ifdef DUMB_DRIVER
+    TotalCores = 1;
+#endif
     /* Double check the total core number */
     if (TotalCores > pRMT->NumActiveCores) {
         StorPortDebugPrint(ERROR,
@@ -643,11 +646,11 @@ VOID NVMeCompleteResMapTbl(
  * @param pSubQueue - Pointer to buffer to save retrieved submI[QueueID]ssion queue ID
  * @param pCplQueue - Pointer to buffer to save retrieved Completion queue ID
  *
- * @return BOOLEAN
- *     TRUE - If valid number is retrieved
- *     FALSE - If anything goes wrong
+ * @return ULONG
+ *     STOR_STATUS_SUCCESS - If valid number is retrieved
+ *     STOR_STATUS_UNSUCCESSFUL - If anything goes wrong
  ******************************************************************************/
-BOOLEAN NVMeMapCore2Queue(
+ULONG NVMeMapCore2Queue(
     PNVME_DEVICE_EXTENSION pAE,
     PPROCESSOR_NUMBER pPN,
     USHORT* pSubQueue,
@@ -663,7 +666,7 @@ BOOLEAN NVMeMapCore2Queue(
             "NVMeGetCurCoreNumber: <Error> Invalid core number = %d.\n",
             pPN->Number);
 
-        return (FALSE);
+        return (STOR_STATUS_UNSUCCESSFUL);
     }
 
     /* Locate the target CORE_TBL entry for the specific core number
@@ -679,7 +682,7 @@ BOOLEAN NVMeMapCore2Queue(
         *pCplQueue = (USHORT)pAE->LearningCores + 1;
     }
 
-    return (TRUE);
+    return (STOR_STATUS_SUCCESS);
 } /* NVMeMapCore2Queue */
 
 /*******************************************************************************
@@ -703,7 +706,7 @@ VOID NVMeInitFreeQ(
     PCMD_INFO pCmdInfo = NULL;
     ULONG_PTR CurPRPList = 0;
     ULONG prpListSz = 0;
-#ifdef DBL_BUFF
+#ifdef DUMB_DRIVER
     ULONG_PTR PtrTemp;
     ULONG dblBuffSz = 0;
 #endif
@@ -738,12 +741,19 @@ VOID NVMeInitFreeQ(
                                       pCmdInfo->pPRPList,
                                       &prpListSz);
 
-#ifdef DBL_BUFF
+#ifdef DUMB_DRIVER
         PtrTemp = (ULONG_PTR)((PUCHAR)pSQI->pDlbBuffStartVa);
-        pCmdInfo->pDblVir = (PVOID)(PtrTemp + (DBL_BUFF_SZ * Entry));
+        pCmdInfo->pDblVir = (PVOID)(PtrTemp + (DUMB_DRIVER_SZ * Entry));
         pCmdInfo->dblPhy = StorPortGetPhysicalAddress(pAE,
                                                       NULL,
                                                       pCmdInfo->pDblVir,
+                                                      &dblBuffSz);
+
+        PtrTemp = (ULONG_PTR)((PUCHAR)pSQI->pDlbBuffStartListVa);
+        pCmdInfo->pDblPrpListVir = (PVOID)(PtrTemp + (PAGE_SIZE * Entry));
+        pCmdInfo->dblPrpListPhy = StorPortGetPhysicalAddress(pAE,
+                                                      NULL,
+                                                      pCmdInfo->pDblPrpListVir,
                                                       &dblBuffSz);
 #endif
 
@@ -824,16 +834,27 @@ ULONG NVMeAllocQueues (
     /* Save the size if needed to free the unused buffers */
     pSQI->QueueAllocSize = SizeQueueEntry + PAGE_SIZE;
 
-#ifdef DBL_BUFF
+#ifdef DUMB_DRIVER
     pSQI->pDblBuffAlloc = NVMeAllocateMem(pAE,
-                                          (QEntries * DBL_BUFF_SZ) + PAGE_SIZE,
+                                          (QEntries * DUMB_DRIVER_SZ) + PAGE_SIZE,
                                           NumaNode);
 
     if (pSQI->pDblBuffAlloc == NULL)
         return ( STOR_STATUS_INSUFFICIENT_RESOURCES );
 
     /* Save the size if needed to free the unused buffers */
-    pSQI->pDblBuffSz = (QEntries * DBL_BUFF_SZ) + PAGE_SIZE;
+    pSQI->dblBuffSz = (QEntries * DUMB_DRIVER_SZ) + PAGE_SIZE;
+
+    /* now the PRP list mem for this SQ to use */
+    pSQI->pDblBuffListAlloc = NVMeAllocateMem(pAE,
+                                          (QEntries * PAGE_SIZE) + PAGE_SIZE,
+                                          NumaNode);
+
+    if (pSQI->pDblBuffListAlloc == NULL)
+        return ( STOR_STATUS_INSUFFICIENT_RESOURCES );
+
+    /* Save the size if needed to free the unused buffers */
+    pSQI->dblBuffListSz = (QEntries * PAGE_SIZE) + PAGE_SIZE;
 #endif
 
     /*
@@ -895,6 +916,7 @@ ULONG NVMeInitSubQueue(
     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
     ULONG_PTR PtrTemp = 0;
     USHORT Entries;
+    ULONG dbIndex = 0;
 
     /* Ensure the QueueID is valid via the number of active cores in system */
     if (QueueID > pRMT->NumActiveCores)
@@ -905,9 +927,15 @@ ULONG NVMeInitSubQueue(
                                          pQI->NumAdQEntriesAllocated;
     pSQI->SubQueueID = QueueID;
     pSQI->FreeSubQEntries = pSQI->SubQEntries;
-    pSQI->pSubTDBL = (QueueID != 0) ?
-        (PULONG)(&pAE->pCtrlRegister->IOQP[QueueID - 1].SQ_TDBL) :
-        (PULONG)(&pAE->pCtrlRegister->AdminQP.SQ_TDBL);
+
+     /* calculate byte offset per 1.0c spec formula */
+    dbIndex = 2 * QueueID * (4 << pAE->pCtrlRegister->CAP.DSTRD);
+    /* convert to index */
+    dbIndex = dbIndex / sizeof(NVMe_QUEUE_Y_DOORBELL);
+    pSQI->pSubTDBL = (PULONG)(&pAE->pCtrlRegister->IODB[dbIndex].QHT );
+    StorPortDebugPrint(INFO,
+                       "NVMeInitSubQueue : SQ 0x%x pSubTDBL 0x%x at index  0x%x\n",
+                       QueueID, pSQI->pSubTDBL, dbIndex);
     pSQI->Requests = 0;
 
     /*
@@ -937,9 +965,12 @@ ULONG NVMeInitSubQueue(
     if (pSQI->SubQStart.QuadPart == 0)
         return ( STOR_STATUS_INSUFFICIENT_RESOURCES );
 
-#ifdef DBL_BUFF
+#ifdef DUMB_DRIVER
     pSQI->pDlbBuffStartVa = PAGE_ALIGN_BUF_PTR(pSQI->pDblBuffAlloc);
-    memset(pSQI->pDblBuffAlloc, 0, pSQI->pDblBuffSz);
+    memset(pSQI->pDblBuffAlloc, 0, pSQI->dblBuffSz);
+
+    pSQI->pDlbBuffStartListVa = PAGE_ALIGN_BUF_PTR(pSQI->pDblBuffListAlloc);
+    memset(pSQI->pDblBuffListAlloc, 0, pSQI->dblBuffListSz);
 #endif
 
     /*
@@ -986,6 +1017,7 @@ ULONG NVMeInitCplQueue(
     ULONG_PTR PtrTemp;
     USHORT Entries;
     ULONG queueSize = 0;
+    ULONG dbIndex = 0;
 
     /* Ensure the QueueID is valid via the number of active cores in system */
     if (QueueID > pRMT->NumActiveCores)
@@ -998,9 +1030,14 @@ ULONG NVMeInitCplQueue(
     pCQI->CplQueueID = QueueID;
     pCQI->CplQEntries = pSQI->SubQEntries;
 
-    pCQI->pCplHDBL = (QueueID != 0) ?
-        (PULONG)(&pAE->pCtrlRegister->IOQP[QueueID - 1].CQ_HDBL) :
-        (PULONG)(&pAE->pCtrlRegister->AdminQP.CQ_HDBL);
+    /* calculate byte offset per 10.c spec formula  */
+    dbIndex = (2 * QueueID + 1) * (4 << pAE->pCtrlRegister->CAP.DSTRD);
+    /* convert to index */
+    dbIndex = dbIndex / sizeof(NVMe_QUEUE_Y_DOORBELL);
+    pCQI->pCplHDBL = (PULONG)(&pAE->pCtrlRegister->IODB[dbIndex].QHT );
+    StorPortDebugPrint(INFO,
+                       "NVMeInitSubQueue : CQ 0x%x pCplHDBL 0x%x at index  0x%x\n",
+                       QueueID, pCQI->pCplHDBL, dbIndex);
     pCQI->Completions = 0;
 
     /**
@@ -1291,12 +1328,15 @@ VOID NVMeSetFeaturesCompletion(
     PADMIN_SET_FEATURES_COMMAND_LBA_RANGE_TYPE_ENTRY pLbaRangeTypeEntry = NULL;
     PNVME_LUN_EXTENSION pLunExt = NULL;
     PADMIN_SET_FEATURES_COMMAND_DW10 pSetFeaturesCDW10 = NULL;
+    PADMIN_SET_FEATURES_COMMAND_LBA_RANGE_TYPE_DW11 pSetFeaturesCDW11 = NULL;
+    NS_VISBILITY visibility = IGNORED;
 
     /*
      * Mark down the resulted information if succeeded. Otherwise, log the error
      * bit in case of errors and fail the state machine
      */
-    pSetFeaturesCDW10 = (PADMIN_SET_FEATURES_COMMAND_DW10) &pNVMeCmd->CDW10;
+    pSetFeaturesCDW10 =
+        (PADMIN_SET_FEATURES_COMMAND_DW10) &pNVMeCmd->CDW10;
 
     if (pAE->DriverState.InterruptCoalescingSet == FALSE &&
         pNVMeCmd->CDW0.OPC == ADMIN_SET_FEATURES        &&
@@ -1328,9 +1368,10 @@ VOID NVMeSetFeaturesCompletion(
             pAE->DriverState.StateChkCount = 0;
             pAE->DriverState.NextDriverState = NVMeWaitOnSetFeatures;
         }
-    } else if ((pAE->DriverState.LbaRangeExamined <
+    } else if ((pAE->DriverState.TtlLbaRangeExamined <
                 pAE->DriverState.IdentifyNamespaceFetched) &&
                (pSetFeaturesCDW10->FID == LBA_RANGE_TYPE)) {
+        /* first check completion status code */
         if (pCplEntry->DW3.SF.SC != 0) {
             NVMeDriverFatalError(pAE,
                                 (1 << START_STATE_LBA_RANGE_CHK_FAILURE));
@@ -1339,88 +1380,94 @@ VOID NVMeSetFeaturesCompletion(
              * When Get Features command completes, exam the completed data to
              * see if Set Features is required. If so, simply set
              * ConfigLbaRangeNeeded as TRUE If not, simply increase
-             * LbaRangeExamined and set ConfigLbaRangeNeeded as FALSE When Set
-             * Features command completes, simply increase LbaRangeExamined
+             * TtlLbaRangeExamined and set ConfigLbaRangeNeeded as FALSE When Set
+             * Features command completes, simply increase TtlLbaRangeExamined
              */
             pLbaRangeTypeEntry =
                 (PADMIN_SET_FEATURES_COMMAND_LBA_RANGE_TYPE_ENTRY)
                 pAE->DriverState.pDataBuffer;
+            pSetFeaturesCDW11 =
+                (PADMIN_SET_FEATURES_COMMAND_LBA_RANGE_TYPE_DW11) &pNVMeCmd->CDW11;
 
-            pLunExt = pAE->lunExtensionTable[pAE->DriverState.LbaRangeExamined];
+            pLunExt = pAE->pLunExtensionTable[pAE->DriverState.VisibleNamespacesExamined];
 
             if (pNVMeCmd->CDW0.OPC == ADMIN_GET_FEATURES) {
-                /* # of LBA ranges is zero based */
-                if (pCplEntry->DW0 == 0) {
-                    if (pLbaRangeTypeEntry->NLB == 0) {
+                /* driver only supports 1 LBA range type per NS (NUM is 0 based) */
+                if (pSetFeaturesCDW11->NUM == 0) {
+
                         /*
-                         * Assume for now this means that the device
-                         * doesn't support LBA ranges so just expose it
+                     *
+                     * NOTE:  spec/group still working this behavior out
+                     * wrt dealing with range tpyes so making this simple
+                     * for now so we can update it when needed.  Currently
+                     * we'll IGNORE the range TYPE entirely
+                     *
                          */
-                        pLunExt->ExposeNamespace = TRUE;
-                        pLunExt->ReadOnly = FALSE;
-                        pAE->DriverState.ConfigLbaRangeNeeded = FALSE;
-                        pAE->DriverState.LbaRangeExamined++;
-                    } else if (pLbaRangeTypeEntry->Type == 0) {
-                        /*
-                         * It's not yet being configured,
-                         * issue Set Features to configure it as Filesystem,
-                         * set it as visibl and can be overwritten
-                         */
-                        pAE->DriverState.ConfigLbaRangeNeeded = TRUE;
-                    } else if (pLbaRangeTypeEntry->Type ==
-                               LBA_TYPE_FILESYSTEM) {
-                        /*
-                         * It's been configured,
-                         * issue Set Features to configure it as Filesystem,
-                         * set it as visibl and can be overwritten
-                         */
-                        pLunExt->ExposeNamespace =
-                            pLbaRangeTypeEntry->Attributes.Hidden ? FALSE:TRUE;
+                    StorPortDebugPrint(INFO,
+                           "pLbaRangeTypeEntry type : 0x%llX\n",
+                           pLbaRangeTypeEntry->Type);
+
+                    visibility =
+                        pLbaRangeTypeEntry->Attributes.Hidden ? HIDDEN:VISIBLE;
                         pLunExt->ReadOnly =
                             pLbaRangeTypeEntry->Attributes.Overwriteable ?
                                 FALSE:TRUE;
 
-                        pAE->DriverState.ConfigLbaRangeNeeded = FALSE;
-                        pAE->DriverState.LbaRangeExamined++;
                     } else {
                         /*
-                         * Unsupported types. Mark it hidden and set ReadOnly
-                         * based on Attributes(bit0).
+                     * Don't support more than one entry per NS. Mark it IGNORED
                          */
-                        pLunExt->ExposeNamespace = FALSE;
-                        pLunExt->ReadOnly =
-                            pLbaRangeTypeEntry->Attributes.Overwriteable ?
-                                FALSE:TRUE;
-
-                        pAE->DriverState.ConfigLbaRangeNeeded = FALSE;
-                        pAE->DriverState.LbaRangeExamined++;
-                    }
-                } else {
-                    /*
-                     * Don't support more than one entry. Mark it hidden and
-                     * set ReadOnly based on Attributes(bit0).
-                     */
-                    pLunExt->ExposeNamespace = FALSE;
-                    pLunExt->ReadOnly =
-                        pLbaRangeTypeEntry->Attributes.Overwriteable ?
-                            FALSE:TRUE;
+                    visibility = IGNORED;
+                }
 
                     pAE->DriverState.ConfigLbaRangeNeeded = FALSE;
-                    pAE->DriverState.LbaRangeExamined++;
+                pAE->DriverState.TtlLbaRangeExamined++;
+                if (visibility == VISIBLE) {
+                    pLunExt->slotStatus = ONLINE;
+                    pAE->DriverState.VisibleNamespacesExamined++;
+                } else {
+                    RtlZeroMemory(pLunExt, sizeof(NVME_LUN_EXTENSION));
                 }
+
             } else if (pNVMeCmd->CDW0.OPC == ADMIN_SET_FEATURES) {
-                pLunExt->ExposeNamespace = TRUE;
+
+                /* TODO: set features not currently called, after its ironed out
+                 * how we want to handle range types, we'll need to fill
+                 * this in
+                 */
+
+                /*
+                pAE->DriverState.VisibleNamespacesExamined++;
                 pLunExt->ReadOnly = FALSE;
-                pAE->DriverState.LbaRangeExamined++;
+                pAE->DriverState.TtlLbaRangeExamined++;
+                pAE->DriverState.ConfigLbaRangeNeeded = FALSE;
+                */
             }
 
             /* Reset the counter and set next state accordingly */
             pAE->DriverState.StateChkCount = 0;
-            if (pAE->DriverState.LbaRangeExamined ==
-                pAE->DriverState.IdentifyNamespaceFetched) {
+            if (pAE->DriverState.TtlLbaRangeExamined ==
+                pAE->controllerIdentifyData.NN) {
+                /* We have called identify namespace as well as get/set
+                 * features for each of the NN namespaces that exist.
+                 * Move on to the next state in the state machine.
+                 */
+                pAE->visibleLuns = pAE->DriverState.VisibleNamespacesExamined;
                 pAE->DriverState.NextDriverState = NVMeWaitOnSetupQueues;
             } else {
+                /* We have more namespaces to identify and get/set features
+                 * for. But before we can move on to the next namespace,
+                 * we'll check if we need to call set features - if not,
+                 * we'll set the state to NVMeWaitOnIdentifyNS so we can
+                 * continue to identify the remaining namespaces.
+                 */
+                if (TRUE == pAE->DriverState.ConfigLbaRangeNeeded) {
+                    // We still need to issue a set features for this namespace
                 pAE->DriverState.NextDriverState = NVMeWaitOnSetFeatures;
+                } else {
+                    // Move on to the next namespace and issue an identify
+                    pAE->DriverState.NextDriverState = NVMeWaitOnIdentifyNS;
+                }
             }
         }
     }
@@ -1502,18 +1549,21 @@ void HardCodeChatham2Data(
                       CHATHAM2_FR,
                       strlen(CHATHAM2_FR));
         pAE->controllerIdentifyData.SSVID = 0x2011;
+        pAE->controllerIdentifyData.NN = 1;
         pAE->controllerIdentifyData.RAB = 8;
         pAE->controllerIdentifyData.UAERL = 3;
         pAE->controllerIdentifyData.IEEMAC.IEEE = 0x423;
         pAE->controllerIdentifyData.LPA.SupportsSMART_HealthInformationLogPage = 1;
-        pAE->controllerIdentifyData.SQES.RequiredSubmissionQueueEntrySize = (UCHAR)NVME_CC_IOSQES;
-        pAE->controllerIdentifyData.CQES.RequiredCompletionQueueEntrySize = (UCHAR)NVME_CC_IOCQES;
-        pAE->controllerIdentifyData.NN = 1;
+        pAE->controllerIdentifyData.SQES.RequiredSubmissionQueueEntrySize = 6;
+        pAE->controllerIdentifyData.SQES.MaximumSubmissionQueueEntrySize = 6;
+        pAE->controllerIdentifyData.CQES.RequiredCompletionQueueEntrySize = 4;
+        pAE->controllerIdentifyData.CQES.MaximumCompletionQueueEntrySize = 4;
+
     } else {
         PADMIN_IDENTIFY_NAMESPACE pIdenNS = NULL;
         ADMIN_IDENTIFY_FORMAT_DATA fData = {0};
 
-        pIdenNS = &pAE->lunExtensionTable[0]->identifyData;
+        pIdenNS = &pAE->pLunExtensionTable[0]->identifyData;
         RtlZeroMemory(pIdenNS,
             sizeof(ADMIN_IDENTIFY_NAMESPACE));
 
@@ -1528,7 +1578,6 @@ void HardCodeChatham2Data(
             pIdenNS->NUSE = ChathamNlb;
         }
 
-        pIdenNS->NSFEAT.SupportsThinProvisioning = 1;
         fData.LBADS = 9;
         pIdenNS->LBAFx[0] = fData;
     }
@@ -1591,32 +1640,25 @@ BOOLEAN NVMeInitCallback(
              */
             if ((pCplEntry->DW3.SF.SC == 0) &&
                 (pCplEntry->DW3.SF.SCT == 0)) {
-
                 PNVME_LUN_EXTENSION pLunExt =
-                    pAE->lunExtensionTable[pAE->DriverState.IdentifyNamespaceFetched];
+                    pAE->pLunExtensionTable[pAE->DriverState.VisibleNamespacesExamined];
 
 #if defined(CHATHAM2)
                 HardCodeChatham2Data(pAE,1);
 #endif
-                /* Mark down the Namespace ID */
-                pLunExt->namespaceId =
-                    pAE->DriverState.IdentifyNamespaceFetched + 1;
+
                 pAE->DriverState.IdentifyNamespaceFetched++;
 
                 /* Reset the counter and set next state */
                 pAE->DriverState.StateChkCount = 0;
 
-                if (pAE->DriverState.IdentifyNamespaceFetched ==
-                    pAE->controllerIdentifyData.NN) {
-                    /*
-                     * We have all the info we need, move on to the next
-                     * state.
-                     */
-                    pAE->DriverState.NextDriverState = NVMeWaitOnSetFeatures;
-                } else {
-                    /* More namespaces to get info for */
-                    pAE->DriverState.NextDriverState = NVMeWaitOnIdentifyNS;
-                }
+                /* Move to the next state to set features for this namespace */
+                pAE->DriverState.NextDriverState = NVMeWaitOnSetFeatures;
+
+                /* Mark down the Namespace ID */
+                pLunExt->namespaceId =
+                    pAE->DriverState.IdentifyNamespaceFetched;
+
              } else {
                 NVMeDriverFatalError(pAE,
                                     (1 << START_STATE_IDENTIFY_NS_FAILURE));
@@ -1642,6 +1684,11 @@ BOOLEAN NVMeInitCallback(
              * Otherwise, log the error bit in case of errors and
              * fail the state machine
              */
+
+#if defined(CHATHAM2)
+                pCplEntry->DW3.SF.SC = 0;
+                pCplEntry->DW3.SF.SCT = 0;
+#endif
             if ((pCplEntry->DW3.SF.SC == 0) &&
                 (pCplEntry->DW3.SF.SCT == 0)) {
                 pQI->NumCplIoQCreated++;
@@ -1702,8 +1749,14 @@ BOOLEAN NVMeInitCallback(
                     pAE->DriverState.NextDriverState = NVMeWaitOnReSetupQueues;
                 }
             } else {
-                NVMeDriverFatalError(pAE,
-                                    (1 << START_STATE_LEARNING_FAILURE));
+                PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
+
+                /* possibly no NS exists at all, either way this isn't fatal */
+                StorPortDebugPrint(INFO,
+                    "NVMeInitCallback: WARNING: no learning possible, SC 0x% SCT 0x%x\n",
+                     pCplEntry->DW3.SF.SC, pCplEntry->DW3.SF.SCT);
+                pAE->LearningCores = pRMT->NumActiveCores;
+                pAE->DriverState.NextDriverState = NVMeStartComplete;
             }
         break;
         case NVMeWaitOnReSetupQueues:
@@ -1827,7 +1880,7 @@ BOOLEAN NVMeSetIntCoalescing(
     pSetFeaturesCDW11->THR = pAE->InitInfo.IntCoalescingEntry;
 
     /* Now issue the command via Admin Doorbell register */
-    return ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN);
+    return ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN, FALSE);
 } /* NVMeSetIntCoalescing */
 
 /*******************************************************************************
@@ -1881,7 +1934,7 @@ BOOLEAN NVMeAllocQueueFromAdapter(
     }
 
     /* Now issue the command via Admin Doorbell register */
-    return ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN);
+    return ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN, FALSE);
 } /* NVMeAllocQueueFromAdapter */
 
 /*******************************************************************************
@@ -1915,9 +1968,8 @@ BOOLEAN NVMeAccessLbaRangeEntry(
         (PNVME_SRB_EXTENSION)pAE->DriverState.pSrbExt;
     PNVMe_COMMAND pSetFeatures = (PNVMe_COMMAND)(&pNVMeSrbExt->nvmeSqeUnit);
     PADMIN_SET_FEATURES_COMMAND_DW10 pSetFeaturesCDW10 = NULL;
-    PADMIN_SET_FEATURES_COMMAND_LBA_RANGE_TYPE_DW11 pSetFeaturesCDW11 = NULL;
     PADMIN_SET_FEATURES_COMMAND_LBA_RANGE_TYPE_ENTRY pLbaRangeEntry = NULL;
-    ULONG NSID = pAE->DriverState.LbaRangeExamined + 1;
+    ULONG NSID = pAE->DriverState.TtlLbaRangeExamined + 1;
     BOOLEAN Query = pAE->DriverState.ConfigLbaRangeNeeded;
 
     /* Fail here if Namespace ID is 0 or out of range */
@@ -1947,7 +1999,7 @@ BOOLEAN NVMeAccessLbaRangeEntry(
         pLbaRangeEntry->Type = LBA_TYPE_FILESYSTEM;
         pLbaRangeEntry->Attributes.Overwriteable = 1;
         pLbaRangeEntry->Attributes.Hidden = 0;
-        pLbaRangeEntry->NLB = pAE->lunExtensionTable[NSID-1]->identifyData.NSZE;
+        pLbaRangeEntry->NLB = pAE->pLunExtensionTable[NSID-1]->identifyData.NSZE;
     } else {
         pSetFeatures->CDW0.OPC = ADMIN_GET_FEATURES;
         memset(pAE->DriverState.pDataBuffer, 0, PAGE_SIZE);
@@ -1963,13 +2015,10 @@ BOOLEAN NVMeAccessLbaRangeEntry(
     }
 
     pSetFeaturesCDW10 = (PADMIN_SET_FEATURES_COMMAND_DW10) &pSetFeatures->CDW10;
-    pSetFeaturesCDW11 = (PADMIN_SET_FEATURES_COMMAND_LBA_RANGE_TYPE_DW11)
-        &pSetFeatures->CDW11;
-
     pSetFeaturesCDW10->FID = LBA_RANGE_TYPE;
 
     /* Now issue the command via Admin Doorbell register */
-    return ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN);
+    return ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN, FALSE);
 } /* NVMeAccessLbaRangeEntry */
 
 /*******************************************************************************
@@ -1998,7 +2047,6 @@ BOOLEAN NVMeGetIdentifyStructures(
     PADMIN_IDENTIFY_CONTROLLER pIdenCtrl = &pAE->controllerIdentifyData;
     PADMIN_IDENTIFY_NAMESPACE pIdenNS = NULL;
     PADMIN_IDENTIFY_COMMAND_DW10 pIdentifyCDW10 = NULL;
-    ULONG NameSpace;
 
     /* Zero-out the entire SRB_EXTENSION */
     memset((PVOID)pNVMeSrbExt, 0, sizeof(NVME_SRB_EXTENSION));
@@ -2027,10 +2075,21 @@ BOOLEAN NVMeGetIdentifyStructures(
         if ( pIdenCtrl == NULL )
             return (FALSE);
 
+        /* Indicate it's for Namespace structure */
+        pIdentifyCDW10 = (PADMIN_IDENTIFY_COMMAND_DW10) &pIdentify->CDW10;
+        pIdentifyCDW10->CNS = 0;
+
         /* NN of Controller structure is 1-based */
         if (NamespaceID <= pIdenCtrl->NN) {
-            /* Assign the destination buffer for retrieved structure */
-            pIdenNS = &pAE->lunExtensionTable[NamespaceID - 1]->identifyData;
+
+            /* Assign the destination buffer for retrieved structure.
+             * We're storing it in lunExt->identifyData irrespective of
+             * whether this namespace is exposed or not. If we later determine
+             * (in Set Features) that this namespace is hidden, we just reuse
+             * the same buffer for future identifys, thus overwriting it.
+             */
+
+            pIdenNS = &pAE->pLunExtensionTable[pAE->DriverState.VisibleNamespacesExamined]->identifyData;
 
             /* Namespace ID is 1-based. */
             pIdentify->NSID = NamespaceID;
@@ -2039,7 +2098,7 @@ BOOLEAN NVMeGetIdentifyStructures(
             if (NVMePreparePRPs(pAE,
                                 pIdentify,
                                 (PVOID)pIdenNS,
-                                sizeof(ADMIN_IDENTIFY_CONTROLLER)) == FALSE) {
+                                sizeof(ADMIN_IDENTIFY_NAMESPACE)) == FALSE) {
                 return (FALSE);
             }
         } else {
@@ -2048,7 +2107,7 @@ BOOLEAN NVMeGetIdentifyStructures(
     }
 
     /* Now issue the command via Admin Doorbell register */
-    return ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN);
+    return ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN, FALSE);
 } /* NVMeGetIdentifyStructures */
 
 /*******************************************************************************
@@ -2115,7 +2174,7 @@ UCHAR NVMeIssueAERs(
          * Now issue the command via Admin Doorbell register
          * If fails, just return how many AERs are issued
          */
-        if (ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN) == FALSE)
+        if (ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN, FALSE) == FALSE)
             return (CmdIssued);
 
         CmdIssued++;
@@ -2178,15 +2237,21 @@ BOOLEAN NVMeCreateCplQueue(
         pCreateCplCDW10->QID = QueueID;
 #ifdef CHATHAM
         pCreateCplCDW10->QSIZE = pQI->NumIoQEntriesAllocated;
-#else /* CHATHAM */
+#else
         pCreateCplCDW10->QSIZE = pQI->NumIoQEntriesAllocated - 1;
-#endif /* CHATHAM */
+#endif
         pCreateCplCDW11->PC = 1;
         pCreateCplCDW11->IEN = 1;
         pCreateCplCDW11->IV = pCQI->MsiMsgID;
 
+#ifdef CHATHAM2
+        if (pAE->ResMapTbl.NumMsiMsgGranted == 0) {
+            pCreateCplCDW11->IEN = 0;
+            pCreateCplCDW11->IV = 0;
+        }
+#endif
         /* Now issue the command via Admin Doorbell register */
-        return ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN);
+        return ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN, FALSE);
     }
 
     return (FALSE);
@@ -2252,7 +2317,7 @@ BOOLEAN NVMeCreateSubQueue(
         pCreateSubCDW11->PC = 1;
 
         /* Now issue the command via Admin Doorbell register */
-        return ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN);
+        return ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN, FALSE);
     }
 
     return (FALSE);
@@ -2296,7 +2361,7 @@ BOOLEAN NVMeDeleteCplQueues(
         pDeleteCplCDW10->QID = QueueID;
 
         /* Now issue the command via Admin Doorbell register */
-        if (ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN) == FALSE) {
+        if (ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN, FALSE) == FALSE) {
             return (FALSE);
         }
     }
@@ -2342,7 +2407,7 @@ BOOLEAN NVMeDeleteSubQueues(
         pDeleteSubCDW10->QID = QueueID;
 
         /* Now issue the command via Admin Doorbell register */
-        if (ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN) == FALSE) {
+        if (ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN, FALSE) == FALSE) {
             return (FALSE);
         }
     }
@@ -2463,9 +2528,9 @@ VOID NVMeFreeBuffers (
                                                  PAGE_SIZE, MmCached);
 
     /* Free the NVME_LUN_EXTENSION memory allocated by driver */
-    if (pAE->lunExtensionTable[0] != NULL)
+    if (pAE->pLunExtensionTable[0] != NULL)
         StorPortFreeContiguousMemorySpecifyCache((PVOID)pAE,
-                                                 pAE->lunExtensionTable[0],
+                                                 pAE->pLunExtensionTable[0],
                                                  pAE->LunExtSize,
                                                  MmCached);
 
@@ -2485,13 +2550,18 @@ VOID NVMeFreeBuffers (
                                                          pSQI->PRPListAllocSize,
                                                          MmCached);
 
-#ifdef DBL_BUFF
+#ifdef DUMB_DRIVER
             if (pSQI->pDblBuffAlloc != NULL)
                 StorPortFreeContiguousMemorySpecifyCache((PVOID)pAE,
                                                          pSQI->pDblBuffAlloc,
-                                                         pSQI->pDblBuffSz,
+                                                         pSQI->dblBuffSz,
                                                          MmCached);
-#endif /* DBL_BUFF */
+            if (pSQI->pDblBuffListAlloc != NULL)
+                StorPortFreeContiguousMemorySpecifyCache((PVOID)pAE,
+                                                         pSQI->pDblBuffListAlloc,
+                                                         pSQI->dblBuffListSz,
+                                                         MmCached);
+#endif /* DUMB_DRIVER */
         }
     }
 
@@ -2609,35 +2679,42 @@ BOOLEAN NVMeAllocIoQueues(
     ULONG Core, Node, QEntries;
     USHORT QueueID, Queue;
 
-    /*
-     * Need to determine how many IO queues to allocate from system memory
-     * It depends on:
-     *   1. NumSubIoQAllocFromAdapter and NumCplIoQAllocFromAdapter
-     *   2. Number of active cores in the system
-     *
-     * Once the number queues to allocate is determined, allocate the sub/cpl
-     * queue info structure array first.
-     */
-    if ( pQI->NumSubIoQAllocFromAdapter >= pRMT->NumActiveCores ) {
+    pQI->NumSubIoQAllocated = pQI->NumCplIoQAllocated = 0;
+
         for (Node = 0; Node < pRMT->NumNumaNodes; Node++) {
             pNNT = pRMT->pNumaNodeTbl + Node;
-
+        QueueID = 0;
             for (Core = pNNT->FirstCoreNum; Core <= pNNT->LastCoreNum; Core++) {
                 if (((pNNT->GroupAffinity.Mask >> Core) & 1) == 0)
                     continue;
 
                 pCT = pRMT->pCoreTbl + Core;
-                QueueID = (USHORT)(Core + 1);
-                pSQI = pQI->pSubQueueInfo + QueueID;
-                QEntries = pAE->InitInfo.IoQEntries;
+            /*
+             * If there are more cores than Qs alloc'd from the adapter, just
+             * cycle through the available Qs in the core table.  Ex, if there
+             * are 2 Q's and 4 cores, the table will look like:
+             * Core  QID
+             *  0     1
+             *  1     2
+             *  3     1
+             *  4     2
+             */
+            QueueID = (QueueID + 1 > (USHORT)pQI->NumSubIoQAllocFromAdapter) ?
+                1 : QueueID + 1;
 
+            if (pQI->NumSubIoQAllocated < QueueID)  {
+
+                QEntries = pAE->InitInfo.IoQEntries;
                 Status = NVMeAllocQueues(pAE,
                                          QueueID,
                                          QEntries,
                                          (USHORT)Node);
 
-                /* Fails on allocating */
-                if (Status != STOR_STATUS_SUCCESS) {
+                if (Status == STOR_STATUS_SUCCESS) {
+
+                    pQI->NumSubIoQAllocated = ++pQI->NumCplIoQAllocated;
+
+                } else {
                     /*
                      * If faling on the very first queue allocation, failure
                      * case.
@@ -2650,8 +2727,10 @@ BOOLEAN NVMeAllocIoQueues(
                          * Free the other allocated queues before returning
                          * and return TRUE.
                          */
+                        Queue = 0;
                         for (Core = 1; Core < pRMT->NumActiveCores; Core++) {
-                            Queue = (USHORT)Core + 1;
+                            Queue = (Queue + 1 > (USHORT)pQI->NumSubIoQAllocFromAdapter) ? 1 : Queue + 1;
+
                             pSQI = pQI->pSubQueueInfo + Queue;
 
                             if (pSQI->pQueueAlloc != NULL)
@@ -2668,66 +2747,43 @@ BOOLEAN NVMeAllocIoQueues(
                                     pSQI->PRPListAllocSize,
                                     MmCached);
 
-#ifdef DBL_BUFF
+#ifdef DUMB_DRIVER
                             if (pSQI->pDblBuffAlloc != NULL)
                                 StorPortFreeContiguousMemorySpecifyCache(
                                                         (PVOID)pAE,
                                                         pSQI->pDblBuffAlloc,
-                                                        pSQI->pDblBuffSz,
+                                                        pSQI->dblBuffSz,
                                                         MmCached);
+
+                            if (pSQI->pDblBuffListAlloc != NULL)
+                                StorPortFreeContiguousMemorySpecifyCache(
+                                                        (PVOID)pAE,
+                                                        pSQI->pDblBuffListAlloc,
+                                                        pSQI->dblBuffListSz,
+                                                        MmCached);
+
 #endif
                             pCT = pRMT->pCoreTbl + Core;
-                            pCT->SubQueue = 1;
-                            pCT->CplQueue = 1;
+                            pCT->SubQueue = pCT->CplQueue = 1;
                         }
 
-                        pQI->NumSubIoQAllocated = 1;
-                        pQI->NumCplIoQAllocated = 1;
-
+                        pQI->NumSubIoQAllocated = pQI->NumCplIoQAllocated = 1;
                         return (TRUE);
                     } /* fall back to use only one queue */
                 } /* failure case */
+            }
 
                 /* Succeeded! Mark down the number of queues allocated */
-                pCT->SubQueue = (USHORT)Core + 1;
-                pCT->CplQueue = (USHORT)Core + 1;
+            pCT->SubQueue = pCT->CplQueue = QueueID;
+            StorPortDebugPrint(INFO,
+                "NVMeAllocIoQueues: Core 0x%x ---> QueueID 0x%x\n",
+                 Core, QueueID);
             } /* current core */
         } /* current NUMA node */
 
-        /* When all queues are allocated successfully... */
-        pQI->NumSubIoQAllocated = pRMT->NumActiveCores;
-        pQI->NumCplIoQAllocated = pRMT->NumActiveCores;
-
         return (TRUE);
-    } else {
-        /*
-         * Allocate only one IO queue from NUMA Node #0.
-         */
-        pSQI = pQI->pSubQueueInfo + 1;
-        QEntries = pAE->InitInfo.IoQEntries;
 
-        Status = NVMeAllocQueues(pAE,
-                                 1,
-                                 QEntries,
-                                 0);
-
-        if (Status != STOR_STATUS_SUCCESS)
-            return (FALSE);
-
-        /* Mark down the sub/cpl queue to use for a given core */
-        for (Core = 0; Core < pRMT->NumActiveCores; Core++) {
-            pCT = pRMT->pCoreTbl + Core;
-            pCT->SubQueue = 1;
-            pCT->CplQueue = 1;
-        }
-
-        pQI->NumSubIoQAllocated = 1;
-        pQI->NumCplIoQAllocated = 1;
-
-        return (TRUE);
-    }
 } /* NVMeAllocIoQueues */
-
 /*******************************************************************************
  * NVMeAcqQueueEntry
  *
@@ -2825,82 +2881,6 @@ ULONG NVMeGetCmdEntry(
 
     return (STOR_STATUS_SUCCESS);
 } /* NVMeGetCmdEntry */
-
-/*******************************************************************************
- * NVMeIssueCmd
- *
- * @brief NVMeIssueCmd can be called to issue one command at a time by ringing
- *        the specific doorbell register with the updated Submission Queue Tail
- *        Pointer. This routine copies the caller prepared submission entry data
- *        pointed by pTempSubEntry to next available submission entry of the
- *        specific queue before issuing the command.
- *
- * @param pAE - Pointer to hardware device extension.
- * @param QueueID - Which submission queue to issue the command
- * @param pTempSubEntry - The caller prepared Submission entry data
- *
- * @return ULONG
- *     STOR_STATUS_SUCCESS - If the command is issued successfully
- *     Otherwise - If anything goes wrong
- ******************************************************************************/
-ULONG NVMeIssueCmd(
-    PNVME_DEVICE_EXTENSION pAE,
-    USHORT QueueID,
-    PVOID pTempSubEntry
-)
-{
-    PQUEUE_INFO pQI = &pAE->QueueInfo;
-    PSUB_QUEUE_INFO pSQI = NULL;
-    PCMD_ENTRY pCmdEntry = NULL;
-    PNVMe_COMMAND pNVMeCmd = NULL;
-    USHORT tempSqTail = 0;
-
-    /* Make sure the parameters are valid */
-    if (QueueID > pQI->NumSubIoQCreated || pTempSubEntry == NULL)
-        return (STOR_STATUS_INVALID_PARAMETER);
-
-    /*
-     * Locate the current submission entry and
-     * copy the fields from the temp buffer
-     */
-    pSQI = pQI->pSubQueueInfo + QueueID;
-
-    /* First make sure FW is draining this SQ */
-    tempSqTail = ((pSQI->SubQTailPtr + 1) == pSQI->SubQEntries)
-        ? 0 : pSQI->SubQTailPtr + 1;
-
-    if (tempSqTail == pSQI->SubQHeadPtr)
-        return (STOR_STATUS_INSUFFICIENT_RESOURCES);
-
-    pNVMeCmd = (PNVMe_COMMAND)pSQI->pSubQStart;
-    pNVMeCmd += pSQI->SubQTailPtr;
-
-    memcpy((PVOID)pNVMeCmd, pTempSubEntry, sizeof(NVMe_COMMAND));
-
-    /* Increase the tail pointer by 1 and reset it if needed */
-    pSQI->SubQTailPtr = tempSqTail;
-
-    /*
-     * Track # of outstanding requests for this SQ
-     * actually tracking calls to this func and the complete func
-     */
-    pSQI->Requests++;
-
-    /* Now issue the command via Doorbell register */
-    StorPortWriteRegisterUlong(pAE, pSQI->pSubTDBL, (ULONG)pSQI->SubQTailPtr);
-
-#if DBG
-    if (gResetTest && (gResetCounter++ > gResetCount)) {
-        gResetCounter = 0;
-
-        /* quick hack for testing internally driven resets */
-        NVMeResetController(pAE, NULL);
-        return STOR_STATUS_SUCCESS;
-    }
-#endif /* DBG */
-
-    return STOR_STATUS_SUCCESS;
-} /* NVMeIssueCmd */
 
 /*******************************************************************************
  * NVMeGetCplEntry

@@ -48,11 +48,19 @@
 #ifndef __NVME_IO_H__
 #define __NVME_IO_H__
 
+typedef enum _IO_SUBMIT_STATUS
+{
+    NOT_SUBMITTED = 0,
+    SUBMITTED,
+    BUSY
+} IO_SUBMIT_STATUS;
+
 BOOLEAN
 ProcessIo(
     __in PNVME_DEVICE_EXTENSION pAdapterExtension,
     __in PNVME_SRB_EXTENSION pSrbExtension,
-    __in NVME_QUEUE_TYPE QueueType
+    __in NVME_QUEUE_TYPE QueueType,
+    __in BOOLEAN AcquireLock
 );
 
 VOID

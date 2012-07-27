@@ -1407,7 +1407,7 @@ typedef struct _ADMIN_IDENTIFY_CONTROLLER
          * nor Set Features or Get Features with the Volatile Write Cache
          * identifier.
          */
-        UCHAR   VolatileWriteCachePresent               :1;
+        UCHAR   Present               :1;
         UCHAR   Reserved                                :7;
     } VWC;
 
