@@ -50,6 +50,9 @@
 
 /* MEMORY STRUCTURES */
 
+
+#define NUM_LBAF (16)
+
 /* Section 4.2, Figure 6 */
 typedef struct _NVMe_COMMAND_DWORD_0
 {
@@ -74,62 +77,6 @@ typedef struct _NVMe_COMMAND_DWORD_0
     USHORT   CID;
 } NVMe_COMMAND_DWORD_0, *PNVMe_COMMAND_DWORD_0;
 
-#ifdef CHATHAM
-typedef struct _NVMe_COMMAND
-{
-    /*
-     * [Command Dword 0] This field is common to all commands and is defined in
-     * Figure 6.
-     */
-    NVMe_COMMAND_DWORD_0    CDW0;
-
-    /*
-     * [Namespace Identifier] This field indicates the namespace that this
-     * command applies to. If the namespace is not used for the command, then
-     * this field shall be cleared to 0h. If a command shall be applied to all
-     * namespaces on the device, then this value shall be set to FFFFFFFFh.
-     */
-    ULONG                   NSID;
-
-    /*
-     * [Metadata Pointer] This field contains the address of a contiguous
-     * physical buffer of metadata. This field is only used if metadata is not
-     * interleaved with the LBA data, as specified in the Format NVM command.
-     * This field shall be Dword aligned.
-     */
-    ULONGLONG               MPTR;
-
-    /* [PRP Entry 1] This field contains the first PRP entry for the command. */
-    ULONGLONG               PRP1;
-
-    /*
-     * [PRP Entry 2] This field contains the second PRP entry for the command.
-     * If the data transfer spans more than two memory pages, then this field
-     * is a PRP List pointer.
-     */
-    ULONGLONG               PRP2;
-
-    /* [Command Dword 10] This field is command specific Dword 10. */
-    ULONG                   CDW10;
-
-    /* [Command Dword 11] This field is command specific Dword 11. */
-    ULONG                   CDW11;
-
-    /* [Command Dword 12] This field is command specific Dword 12. */
-    ULONG                   CDW12;
-
-    /* [Command Dword 13] This field is command specific Dword 13. */
-    ULONG                   CDW13;
-
-    /* [Command Dword 14] This field is command specific Dword 14. */
-    ULONG                   CDW14;
-
-    /* [Command Dword 15] This field is command specific Dword 15. */
-    ULONG                   CDW15;
-
-    ULONGLONG               pad;
-} NVMe_COMMAND, *PNVMe_COMMAND;
-#else /* CHATHAM */
 /*
  * Section 4.2, Figure 7
  */
@@ -188,7 +135,6 @@ typedef struct _NVMe_COMMAND
     /* [Command Dword 15] This field is command specific Dword 15. */
     ULONG                   CDW15;
 } NVMe_COMMAND, *PNVMe_COMMAND;
-#endif /* CHATHAM */
 
 /* Section 4.3, Figure 9 */
 typedef struct _NVMe_PRP_ENTRY
@@ -1067,7 +1013,7 @@ typedef struct _ADMIN_IDENTIFY_POWER_STATE_DESCRIPTOR
 } ADMIN_IDENTIFY_POWER_STATE_DESCRIPTOR,
   *PADMIN_IDENTIFY_POWER_STATE_DESCRIPTOR;
 
-#if defined(CHATHAM) || defined(CHATHAM2)
+#if defined(CHATHAM2)
 typedef struct _IEEE_MAC
 {
     ULONG IEEE:24;
@@ -1129,7 +1075,7 @@ typedef struct _ADMIN_IDENTIFY_CONTROLLER
      * http://standards.ieee.org/develop/regauth/oui/public.html.
      * and Multi-Interface Capabilities
     */
-#if defined(CHATHAM) || defined(CHATHAM2)
+#if defined(CHATHAM2)
     IEEE_MAC IEEMAC;
 #else
     UCHAR IEEE[3];
@@ -1697,7 +1643,7 @@ typedef struct _ADMIN_IDENTIFY_NAMESPACE
      * supported by the controller. The LBA format field is defined in Figure
      * 68.
      */
-    ADMIN_IDENTIFY_FORMAT_DATA  LBAFx[16];
+    ADMIN_IDENTIFY_FORMAT_DATA  LBAFx[NUM_LBAF];
     UCHAR                       Reserved2[192];
 
     /*
@@ -2345,7 +2291,7 @@ typedef struct _ADMIN_SECURITY_RECEIVE_COMMAND_DW11
 
 #define NVM_WRITE_UNCORRECTABLE             0x04
 #define NVM_COMPARE                         0x05
-#define NVM_DATASET_MANAGEMENT              0x06
+#define NVM_DATASET_MANAGEMENT              0x09
 
 #define NVM_VENDOR_SPECIFIC_START           0x80
 #define NVM_VENDOR_SPECIFIC_END             0xFF

@@ -51,8 +51,7 @@ TARGETPATH=$(TARGETNAME)\obj$(BUILD_ALT_DIR)
 #              - SGL-PRP xlation (our buffre addresses are known)
 #              - multiple queues NUMA opimized (uses only one Q by faking single proc)
 
-# -DCHATHAM:  Required for use with Chatham hardware
-# -DCHATHAM2:  Required for use with Chatham2 hardware
+# -DCHATHAM2:  Required for use with Chatham2 (aka Chatsberg) hardware
 
 # -DCOMPLETE_IN_DPC:  Controls whether IOs are completed in the ISR ot in DPCs
 

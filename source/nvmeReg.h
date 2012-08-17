@@ -172,87 +172,6 @@ typedef struct _NVMe_VERSION
 } NVMe_VERSION, *PNVMe_VERSION;
 
 /* Table 3.1.5 */
-#ifdef CHATHAM
-typedef union _NVMe_CONTROLLER_CONFIGURATION
-{
-    struct
-    {
-        /* 
-         * [Enable] When set to ‘1’, then the controller shall process commands 
-         * based on Submission Queue Tail doorbell writes. When cleared to ‘0’, 
-         * then the controller shall not process commands nor submit completion 
-         * entries to Completion Queues. When this field transitions from ‘1’ to 
-         * ‘0’, the controller is reset (referred to as a Controller Reset). The 
-         * reset deletes all I/O Submission Queues and I/O Completion Queues 
-         * created, resets the Admin Submission and Completion Queues, and 
-         * brings the hardware to an idle state. The reset does not affect PCI 
-         * Express registers nor the Admin Queue registers (AQA, ASQ, or ACQ). 
-         * All other controller registers defined in this section are reset. The 
-         * controller shall ensure that there is no data loss for commands that 
-         * have been completed to the host as part of the reset operation. Refer 
-         * to section 7.3 for reset details. When this field is cleared to ‘0’, 
-         * the CSTS.RDY bit is cleared to ‘0’ by the controller. When this field 
-         * is set to ‘1’, the controller sets CSTS.RDY to ‘1’ when it is ready 
-         * to process commands. The Admin Queue registers (AQA, ASQ, and ACQ) 
-         * shall only be modified when EN is cleared to ‘0’.
-         */
-        ULONG EN         :1; 
-
-        /* 
-         * Completion Queue Interrupt Status Enable (CQISE): This field is set
-         * to '1’
-         */
-        ULONG CQISE      :1;
-
-        /* 
-         * Admin Completion Queue Interrupt Enable (ACQIE):  If set to ‘1’,
-         * then an
-         */
-        ULONG ACQIE      :1;
-
-        /* 
-         * I/O Completion Queue Interrupt Enable (IOCQIE): If set to ‘1’, then 
-         * an interrupt
-         */
-        ULONG IOCQIE     :1; 
-        ULONG rsv1       :1;
-
-        /* 
-         * [Command Set Selected] This field specifies the command set that is 
-         * selected for use for the I/O Submission Queues. Software shall only 
-         * select a supported command set, as indicated in CAP.CSS. The command 
-         * set shall only be changed when the controller is disabled (CC.EN is 
-         * cleared to ‘0’). The command set selected shall be used for all I/O 
-         * Submission Queues. Value 000b == NVM command set.  Values 001b-111b 
-         * Reserved.
-         */
-        ULONG CSS        :2; 
-
-        /* 
-         * [Memory Page Size] This field indicates the host memory page size. 
-         * The memory page size is (2 ^ (12 + MPS)). Thus, the minimum host 
-         * memory page size is 4KB and the maximum host memory page size is 
-         * 128MB. The value set by host software shall be a supported value as 
-         * indicated by the CAP.MPSMAX and CAP.MPSMIN fields. This field 
-         * describes the value used for PRP entry size.
-         */
-        ULONG MPS        :4; 
-
-        /* 
-         * [Arbitration Mechanism Selected]  This field selects the arbitration
-         * mechanism to be used. This value shall only be changed when EN is 
-         * cleared to ‘0’. Software shall only set this field to supported 
-         * arbitration mechanisms indicated in CAP.AMS. Value 000b == Round 
-         * Robin. Value 001b == Weighted Round Robin + Urgent.  010b-110b == 
-         * Reserved. 111b == Vendor Specific.
-         */
-        ULONG AMS        :2; 
-        ULONG Reserved2  :19;
-    };
-
-    ULONG AsUlong;
-} NVMe_CONTROLLER_CONFIGURATION, *PNVMe_CONTROLLER_CONFIGURATION;
-#else /* CHATHAM */
 typedef union _NVMe_CONTROLLER_CONFIGURATION
 {
     struct
@@ -355,7 +274,6 @@ typedef union _NVMe_CONTROLLER_CONFIGURATION
 
     ULONG AsUlong;
 } NVMe_CONTROLLER_CONFIGURATION, *PNVMe_CONTROLLER_CONFIGURATION;
-#endif /* CHATHAM */
 
 /* Table 3.1.6 */
 typedef union _NVMe_CONTROLLER_STATUS
@@ -502,22 +420,6 @@ typedef union _NVMe_QUEUE_Y_DOORBELL
   *PNVMe_QUEUE_Y_DOORBELL;
 
 /* Table 3.1 */
-#ifdef CHATHAM
-typedef struct _NVMe_CONTROLLER_REGISTERS
-{
-    NVMe_CONTROLLER_CAPABILITIES  CAP;
-    NVMe_VERSION                  VS;
-    ULONG                         IS;
-    NVMe_CONTROLLER_CONFIGURATION CC;
-    NVMe_CONTROLLER_STATUS        CSTS;
-    ULONG                         Reserved1;
-    NVMe_ADMIN_QUEUE_ATTRIBUTES   AQA;
-    NVMe_SUBMISSION_QUEUE_BASE    ASQ;
-    NVMe_COMPLETION_QUEUE_BASE    ACQ;
-    ULONG                         Reserved2[0x3f4];
-    NVMe_QUEUE_Y_DOORBELL         IODB[1];
-} NVMe_CONTROLLER_REGISTERS, *PNVMe_CONTROLLER_REGISTERS;
-#else /* CHATHAM */
 typedef struct _NVMe_CONTROLLER_REGISTERS
 {
     NVMe_CONTROLLER_CAPABILITIES  CAP;
@@ -560,8 +462,6 @@ typedef struct _NVMe_CONTROLLER_REGISTERS
     /* variable sized array limited by the BAR size */
     NVMe_QUEUE_Y_DOORBELL           IODB[1];
 } NVMe_CONTROLLER_REGISTERS, *PNVMe_CONTROLLER_REGISTERS;
-
-#endif /* CHATHAM */
 
 #pragma pack(pop, regs)
 

@@ -52,7 +52,7 @@
 #define DUMB_DRIVER_SZ (1024 * 64)
 #endif
 
-#if defined(CHATHAM) || defined(CHATHAM2)
+#if defined(CHATHAM2)
 ULONGLONG ChathamSize; /* Size of device in bytes */
 ULONG ChathamNlb; /* Number of logical blocks */
 #define CHATHAM_NR_QUEUES (8)
@@ -346,6 +346,7 @@ enum
 };
 
 #define ALL_NAMESPACES_APPLIED 0xFFFFFFFF
+#define INVALID_LUN_EXTN 0xFFFFFFFF
 
 /* Format NVM State Machine states */
 enum
@@ -355,7 +356,7 @@ enum
     FORMAT_NVM_NS_REMOVED,
     FORMAT_NVM_CMD_ISSUED,
     FORMAT_NVM_IDEN_CONTROLLER_ISSUED,
-    FORMAT_NVM_NS_ADDED
+    FORMAT_NVM_IDEN_NAMESPACE_FETCHED
 };
 
 /*******************************************************************************
@@ -366,23 +367,23 @@ typedef struct _FORMAT_NVM_INFO
     /* Current state after receiving Format NVM request */
     ULONG               State;
 
-    /* Bit-wise indicator, which Lun(s) to format */
+    /* LunId corresponding to the visible namespace that is being formatted */
     ULONG               TargetLun;
 
-    /* Bit-wise indicator, which Lun(s) is/are just being formatted */
-    ULONG               FormattedLun;
+    /* NSID of the next NS to fetch identify structure for */
+    ULONG               NextNs;
 
-    /* Bit-wise indicator, which Identify Namespace structures is obsolete. */
-    ULONG               ObsoleteNS;
+    /* LunId corresponding to NextNs */
+    ULONG               NextLun;
+
+    /* Indicates if we're formatting one namespace or all namespaces */
+    BOOLEAN             FormatAllNamespaces;
 
     /*
      * Flag to indicate calling StorPortNotification with BusChangeDetected
      * is required to add back the formatted namespace(s)
      */
     BOOLEAN             AddNamespaceNeeded;
-
-    /* Saved original SRB */
-    PSCSI_REQUEST_BLOCK pOrgSrb;
 } FORMAT_NVM_INFO, *PFORMAT_NVM_INFO;
 
 #define LBA_TYPE_FILESYSTEM 1
@@ -455,6 +456,9 @@ typedef struct _START_STATE
     /* Number of exposed namespaces found at init */
     ULONG VisibleNamespacesExamined;
 
+    /* The NSID of the current device for the init state */
+    ULONG CurrentNsid;
+
 } START_STATE, *PSTART_STATE;
 
 /*******************************************************************************
@@ -480,7 +484,7 @@ typedef struct _INIT_INFO
     /* Aggregation entries per interrupt vector */
     ULONG IntCoalescingEntry;
 
-#if defined(CHATHAM) || defined(CHATHAM2)
+#if defined(CHATHAM2)
     ULONGLONG Parm1;
     ULONGLONG Parm2;
     ULONGLONG Parm3;
@@ -839,14 +843,20 @@ typedef enum _LUN_SLOT_STATUS
     ONLINE,
     OFFLINE
 } LUN_SLOT_STATUS;
+typedef enum _LUN_OFFLINE_REASON
+{
+    NOT_OFFLINE,
+    FORMAT_IN_PROGRESS
+    // Add more as needed
+} LUN_OFFLINE_REASON;
 
 typedef struct _nvme_lun_extension
 {
     ADMIN_IDENTIFY_NAMESPACE     identifyData;
     UINT32                       namespaceId;
-    UINT32                       reserved;
     BOOLEAN                      ReadOnly;
     LUN_SLOT_STATUS              slotStatus;
+    LUN_OFFLINE_REASON           offlineReason;
 } NVME_LUN_EXTENSION, *PNVME_LUN_EXTENSION;
 
 /* Submission Queue Entry Unit - 64 Bytes */
@@ -959,7 +969,7 @@ typedef struct _nvme_device_extension
     /* counter used to determine in learning the vector/core table */
     ULONG                       LearningCores;
 
-#if defined(CHATHAM) || defined(CHATHAM2)
+#if defined(CHATHAM2)
     PVOID                       pChathamRegs;
     ULONG                       FwVer;
 #endif
@@ -1348,6 +1358,11 @@ BOOLEAN NVMeBuildIo(
     __in PSCSI_REQUEST_BLOCK Srb
 );
 
+void NVMeStartIoProcessIoctl(
+    __in PNVME_DEVICE_EXTENSION pAdapterExtension,
+    __in PSCSI_REQUEST_BLOCK pSrb
+);
+
 BOOLEAN NVMeIsrIntx(
     __in PVOID AdapterExtension
 );
@@ -1428,8 +1443,48 @@ BOOLEAN NVMeProcessIoctl(
     PSCSI_REQUEST_BLOCK pSrb
 );
 
+BOOLEAN NVMeProcessPublicIoctl(
+    PNVME_DEVICE_EXTENSION pDevExt,
+    PSCSI_REQUEST_BLOCK pSrb
+);
+
+BOOLEAN NVMeProcessPrivateIoctl(
+    PNVME_DEVICE_EXTENSION pDevExt,
+    PSCSI_REQUEST_BLOCK pSrb
+);
+
+BOOLEAN NVMeIoctlCallback(
+    PVOID pNVMeDevExt,
+    PVOID pSrbExtension
+);
+
+BOOLEAN NVMeHandleNVMePassthrough(
+    PVOID pNVMeDevExt,
+    PNVME_SRB_EXTENSION pSrbExtension
+);
+
+BOOLEAN NVMeHandleSmartAttribs(
+    PVOID pNVMeDevExt,
+    PNVME_SRB_EXTENSION pSrbExtension
+);
+
+BOOLEAN NVMeHandleSmartThresholds(
+    PVOID pNVMeDevExt,
+    PNVME_SRB_EXTENSION pSrbExtension
+);
+
+VOID NVMeBuildIdentify(
+    PSENDCMDOUTPARAMS pCmdOutParameters,
+    PNVME_DEVICE_EXTENSION pSrbExt
+);
+
 ULONG NVMeInitAdminQueues(
     PNVME_DEVICE_EXTENSION pAE
+);
+
+BOOLEAN NVMeIsNamespaceVisible(
+    __in PNVME_SRB_EXTENSION pSrbExt,
+    __out PULONG pLunId
 );
 
 VOID NVMeLogError(
@@ -1447,7 +1502,7 @@ VOID IO_StorPortNotification(
 #define IO_StorPortNotification StorPortNotification
 #endif
 
-#if defined(CHATHAM) || defined(CHATHAM2)
+#if defined(CHATHAM2)
 VOID NVMeChathamSetup(
     PNVME_DEVICE_EXTENSION pAE
 );

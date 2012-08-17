@@ -46,15 +46,18 @@
  */ 
 
 #ifndef __NVME_IOCTL_H__
-#define __NVME_IOCTl_H__
+#define __NVME_IOCTL_H__
+
+#include "ntddscsi.h"
 
 #define NVME_STORPORT_DRIVER 0xE000
 
+
+/* the following are the NVME driver private IOCTL definitions */
 #define NVME_PASS_THROUGH_SRB_IO_CODE \
     CTL_CODE(NVME_STORPORT_DRIVER, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
-#define NVME_GET_NAMESPACE_ID \
-    CTL_CODE(NVME_STORPORT_DRIVER, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
+/* 0x801 is available */
 
 #define NVME_HOT_ADD_NAMESPACE \
     CTL_CODE(NVME_STORPORT_DRIVER, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS)
@@ -65,6 +68,8 @@
 
 #define NVME_SIG_STR          "NvmeMini"
 #define NVME_SIG_STR_LEN      8
+#define SCSI_SIG_STR          "SCSIDISK"
+#define SCSI_SIG_STR_LEN      8
 #define NVME_NO_DATA_TX       0 /* No data transfer involved */
 #define NVME_FROM_HOST_TO_DEV 1 /* Transfer data from host to device */
 #define NVME_FROM_DEV_TO_HOST 2 /* Transfer data from device to host */
@@ -88,6 +93,7 @@
 enum _IOCTL_STATUS
 {
      NVME_IOCTL_SUCCESS,
+     NVME_IOCTL_INTERNAL_ERROR,
      NVME_IOCTL_INVALID_IOCTL_CODE,                     
      NVME_IOCTL_INVALID_SIGNATURE,                      
      NVME_IOCTL_INSUFFICIENT_IN_BUFFER,                 
@@ -105,7 +111,8 @@ enum _IOCTL_STATUS
      NVME_IOCTL_INVALID_PATH_TARGET_ID,
      NVME_IOCTL_FORMAT_NVM_PENDING,      // Only one Format NVM at a time
      NVME_IOCTL_FORMAT_NVM_FAILED,
-     NVME_IOCTL_INVALID_NAMESPACE_ID
+     NVME_IOCTL_INVALID_NAMESPACE_ID,
+     NVME_IOCTL_MAX_SSD_NAMESPACES_REACHED
 };
 
 #pragma pack(1)
@@ -155,5 +162,72 @@ typedef struct _NVME_PASS_THROUGH_IOCTL
     UCHAR          DataBuffer[1]; 
 } NVME_PASS_THROUGH_IOCTL, *PNVME_PASS_THROUGH_IOCTL;
 #pragma pack() 
+
+#define DRIVE_TEMPERATURE_CODE             0xE7
+#define REALLOCATED_SECTORS_COUNT_CODE     0x05
+#define ENDURANCE_REMAINING_CODE           0xE8
+#define LBAS_READ_CODE                     0xF2
+#define LBAS_WRITTEN_CODE                  0xF1
+#define LOADED_HOURS_CODE                  0xDE
+#define POWER_CYCLE_COUNT_CODE             0x0C
+#define POWER_ON_HOURS_CODE                0x09
+#define REPORTED_UNCORRECTABLE_ERRORS_CODE 0xBB
+
+#pragma pack(1)
+/******************************************************************************
+ * SMART Attribute structure.
+ *
+ * This structure contains the code and value pair for a SMART attribute
+ ******************************************************************************/
+typedef struct _NVME_SMART_ATTRIBUTES
+{
+    UCHAR Code;
+    UCHAR Value;
+
+} NVME_SMART_ATTRIBUTES, *PNVME_SMART_ATTRIBUTES;
+#pragma pack()
+
+#pragma pack(1)
+/******************************************************************************
+ * NVMe SMART READ ATTRIBUTES DATA structure.
+ *
+ * This structure contains the information about SMART passed back when a
+ * IOCTL_SCSI_MINIPORT_SMART_READ_ATTRIBS is requested.
+ *
+ * User applications need to allocate proper size of buffer(s) and populate the
+ * fields to ensure the requests are being processed correctly after issuing.
+ ******************************************************************************/
+typedef struct _NVME_SMART_READ_ATTRIBUTES_DATA
+{
+    SRB_IO_CONTROL SrbIoCtrl;
+    NVME_SMART_ATTRIBUTES DriveTemperature;
+    NVME_SMART_ATTRIBUTES ReallocatedSectorsCount;
+    NVME_SMART_ATTRIBUTES EnduranceRemaining;
+    NVME_SMART_ATTRIBUTES LBAsRead;
+    NVME_SMART_ATTRIBUTES LBAsWritten;
+    NVME_SMART_ATTRIBUTES LoadedHours;
+    NVME_SMART_ATTRIBUTES PowerCycleCount;
+    NVME_SMART_ATTRIBUTES PowerOnHours;
+    NVME_SMART_ATTRIBUTES ReportedUncorrectableErrors;
+} NVME_SMART_READ_ATTRIBUTES_DATA, *PNVME_SMART_READ_ATTRIBUTES_DATA;
+#pragma pack()
+
+#pragma pack(1)
+/******************************************************************************
+ * NVMe SMART READ THRESHOLDS DATA structure.
+ *
+ * This structure contains the information about SMART passed back when a
+ * IOCTL_SCSI_MINIPORT_SMART_READ_THRESHOLDS is requested.
+ *
+ * User applications need to allocate proper size of buffer(s) and populate the
+ * fields to ensure the requests are being processed correctly after issuing.
+ ******************************************************************************/
+typedef struct _NVME_SMART_READ_THRESHOLDS_DATA
+{
+    SRB_IO_CONTROL SrbIoCtrl;
+    NVME_SMART_ATTRIBUTES DriveTemperature;
+    NVME_SMART_ATTRIBUTES ReallocatedSectorsCount;
+} NVME_SMART_READ_THRESHOLDS_DATA, *PNVME_SMART_READ_THRESHOLDS_DATA;
+#pragma pack()
 
 #endif // __NVME_IOCTL_H__

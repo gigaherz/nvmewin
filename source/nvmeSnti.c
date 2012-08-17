@@ -347,8 +347,11 @@ SNTI_TRANSLATION_STATUS SntiTranslateCommand(
     /* DEBUG ONLY - Turn off for main I/O */
 #if DBG
     StorPortDebugPrint(INFO,
-                       "SNTI: Translating opcode - 0x%02x\n",
-                       GET_OPCODE(pSrb));
+                       "SNTI: Translating opcode - 0x%02x BTL (%d %d %d)\n",
+                       GET_OPCODE(pSrb),
+                       pSrb->PathId,
+                       pSrb->TargetId,
+                       pSrb->Lun);
 #endif /* DBG */
 
     switch (GET_OPCODE(pSrb)) {
@@ -377,9 +380,6 @@ SNTI_TRANSLATION_STATUS SntiTranslateCommand(
             }
         break;
         case SCSIOP_LOG_SENSE:
-#ifdef CHATHAM
-            returnStatus = SntiTranslateLogSense(pSrb);
-#else /* CHATHAM */
             SntiSetScsiSenseData(pSrb,
                                  SCSISTAT_CHECK_CONDITION,
                                  SCSI_SENSE_ILLEGAL_REQUEST,
@@ -388,22 +388,10 @@ SNTI_TRANSLATION_STATUS SntiTranslateCommand(
             pSrb->SrbStatus |= SRB_STATUS_INVALID_REQUEST;
             pSrb->DataTransferLength = 0;
             returnStatus = SNTI_UNSUPPORTED_SCSI_REQUEST;
-#endif /* CHATHAM */
         break;
         case SCSIOP_MODE_SELECT:
         case SCSIOP_MODE_SELECT10:
-#ifndef CHATHAM
             returnStatus = SntiTranslateModeSelect(pSrb, supportsVwc);
-#else /* CHATHAM */
-            SntiSetScsiSenseData(pSrb,
-                                 SCSISTAT_CHECK_CONDITION,
-                                 SCSI_SENSE_ILLEGAL_REQUEST,
-                                 SCSI_ADSENSE_ILLEGAL_COMMAND,
-                                 SCSI_ADSENSE_NO_SENSE);
-            pSrb->SrbStatus |= SRB_STATUS_INVALID_REQUEST;
-            pSrb->DataTransferLength = 0;
-            returnStatus = SNTI_UNSUPPORTED_SCSI_REQUEST;
-#endif /* CHATHAM */
         break;
         case SCSIOP_MODE_SENSE:
         case SCSIOP_MODE_SENSE10:
@@ -443,7 +431,13 @@ SNTI_TRANSLATION_STATUS SntiTranslateCommand(
         break;
         case SCSIOP_SYNCHRONIZE_CACHE:
         case SCSIOP_SYNCHRONIZE_CACHE16:
+            if (supportsVwc == TRUE) {
             returnStatus = SntiTranslateSynchronizeCache(pSrb);
+            } else {
+                pSrb->SrbStatus = SRB_STATUS_SUCCESS;
+                pSrb->DataTransferLength = 0;
+                returnStatus = SNTI_COMMAND_COMPLETED;
+            }
         break;
         case SCSIOP_FORMAT_UNIT:
             /* Will never get this request from OS */
@@ -526,22 +520,6 @@ SNTI_TRANSLATION_STATUS SntiTranslateInquiry(
     pageCode = GET_INQ_PAGE_CODE(pSrb);
 
     ASSERT(pSrbExt != NULL);
-
-    /*
-     * Reject the Inquiry if a pending Format NVM command applies to
-     * the target Lun.
-     */
-    if ((1 << pSrb->Lun) & pSrbExt->pNvmeDevExt->FormatNvmInfo.TargetLun) {
-        SntiSetScsiSenseData(pSrb,
-                             SCSISTAT_CHECK_CONDITION,
-                             SCSI_SENSE_NOT_READY,
-                             SCSI_ADSENSE_LUN_NOT_READY,
-                             SCSI_ADSENSE_NO_SENSE);
-
-        pSrb->SrbStatus |= SRB_STATUS_INVALID_REQUEST;
-        pSrb->DataTransferLength = 0;
-        return SNTI_FAILURE_CHECK_RESPONSE_DATA;
-    }
 
     status = GetLunExtension(pSrbExt, &pLunExt);
     if (status != SNTI_SUCCESS) {
@@ -898,61 +876,17 @@ VOID SntiTranslateStandardInquiryPage(
 {
     PNVME_DEVICE_EXTENSION pDevExt = NULL;
     PINQUIRYDATA pStdInquiry = NULL;
-    PFORMAT_NVM_INFO pFormatNvmInfo = NULL;
     UINT16 allocLength;
 
     pStdInquiry = (PINQUIRYDATA)GET_DATA_BUFFER(pSrb);
     allocLength = GET_INQ_ALLOC_LENGTH(pSrb);
     pDevExt = ((PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb))->pNvmeDevExt;
 
-    /*
-     * Handling bus re-enumeration driven by Format NVM command
-     * Only do this checking when Format NVM state is FORMAT_NVM_NS_ADDED
-     */
-    pFormatNvmInfo = &pDevExt->FormatNvmInfo;
-
-    if (pFormatNvmInfo->State == FORMAT_NVM_NS_ADDED) {
-        /*
-         * If the namespace indicated in FormattedLun matches the current Lun,
-         * clear the associated bit.
-         */
-        if (((pFormatNvmInfo->FormattedLun) & (1 << pSrb->Lun)) ==
-            (1 << pSrb->Lun)) {
-            pFormatNvmInfo->FormattedLun &= ~(1 << pSrb->Lun);
-        }
-        /*
-         * Check if we need to complete the request when FormattedLun is zero
-         * and the Format NVM command needs to add back namespace(s).
-         */
-        if (pFormatNvmInfo->FormattedLun == 0) {
-            if ((pFormatNvmInfo->pOrgSrb != NULL) &&
-                (pFormatNvmInfo->AddNamespaceNeeded == TRUE)){
-                pFormatNvmInfo->pOrgSrb->SrbStatus = SRB_STATUS_SUCCESS;
-                IO_StorPortNotification(RequestComplete,
-                                        pDevExt,
-                                        pFormatNvmInfo->pOrgSrb);
-            }
-            /*
-             * Reset FORMAT_NVM_INFO structure to zero
-             * since the request is completed
-             */
-            memset((PVOID)pFormatNvmInfo, 0, sizeof(FORMAT_NVM_INFO));
-#if DBG
-            StorPortDebugPrint(INFO,
-                "SntiTranslateStandardInquiryPage: Format NVM completes\n");
-#endif /* DBG */
-        }
-    }
-
     memset(pStdInquiry, 0, allocLength);
     pStdInquiry->DeviceType          = DIRECT_ACCESS_DEVICE;
     pStdInquiry->DeviceTypeQualifier = DEVICE_CONNECTED;
     pStdInquiry->RemovableMedia      = UNREMOVABLE_MEDIA;
-#ifndef CHATHAM
     pStdInquiry->Versions            = VERSION_SPC_4;
-#else
-    pStdInquiry->Versions            = 5;
-#endif
     pStdInquiry->NormACA             = ACA_UNSUPPORTED;
     pStdInquiry->HiSupport           = HIERARCHAL_ADDR_UNSUPPORTED;
     pStdInquiry->ResponseDataFormat  = RESPONSE_DATA_FORMAT_SPC_4;
@@ -1073,7 +1007,6 @@ SNTI_TRANSLATION_STATUS SntiTranslateReportLuns(
 
         /* The first LUN Id will always be 0 per the SAM spec */
         for (lunExtIdx = 0; lunExtIdx < MAX_NAMESPACES; lunExtIdx++) {
-
              pLunExt = pDevExt->pLunExtensionTable[lunExtIdx];
              if ((pLunExt->slotStatus == ONLINE) &&
                  (++numberOfLunsFound <= numberOfLuns)) {
@@ -1430,16 +1363,6 @@ SNTI_TRANSLATION_STATUS SntiTranslateWrite(
     pSrbExt = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb);
     pDevExt = pSrbExt->pNvmeDevExt;
 
-    /*
-     * Need to block IOs when a pending Format NVM command applies to
-     * the target Lun.
-     */
-    if ((pDevExt->FormatNvmInfo.TargetLun & (1 << pSrb->Lun)) ==
-        (1 << pSrb->Lun)) {
-        pSrb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
-        return SNTI_FAILURE_CHECK_RESPONSE_DATA;
-    }
-
     status = GetLunExtension(pSrbExt, &pLunExt);
     if (status != SNTI_SUCCESS) {
         /* Map the translation error to a SCSI error */
@@ -1538,19 +1461,8 @@ SNTI_STATUS SntiTranslateWrite6(
 
         /* Command DWORD 12 - LR/FUA/PRINFO/NLB */
         pSrbExt->nvmeSqeUnit.CDW12 |= FUA_ENABLED;
-#ifdef CHATHAM
-        pSrbExt->nvmeSqeUnit.CDW12 |= length;
-#else /* CHATHAM */
         pSrbExt->nvmeSqeUnit.CDW12 |= length - 1; /* 0's based */
-#endif /* CHATHAM */
     }
-
-#if DBG
-    StorPortDebugPrint(INFO,
-                       "SNTI: Write(6) - LBA 0x%x, numBlocks 0x%x\n",
-                       lba,
-                       length);
-#endif /* DBG */
 
     return status;
 } /* SntiTranslateWrite6 */
@@ -1601,19 +1513,8 @@ SNTI_STATUS SntiTranslateWrite10(
 
         /* Command DWORD 12 - LR/FUA/PRINFO/NLB */
         pSrbExt->nvmeSqeUnit.CDW12 |= (fua ? FUA_ENABLED : FUA_DISABLED);
-#ifdef CHATHAM
-        pSrbExt->nvmeSqeUnit.CDW12 |= length;
-#else /* CHATHAM */
         pSrbExt->nvmeSqeUnit.CDW12 |= length - 1; /* 0's based */
-#endif /* CHATHAM */
     }
-
-#if DBG
-    StorPortDebugPrint(INFO,
-                       "SNTI: Write(10) - LBA 0x%x, numBlocks 0x%x\n",
-                       lba,
-                       length);
-#endif
 
     return status;
 } /* SntiTranslateWrite10 */
@@ -1664,20 +1565,8 @@ SNTI_TRANSLATION_STATUS SntiTranslateWrite12(
 
         /* Command DWORD 12 - LR/FUA/PRINFO/NLB */
         pSrbExt->nvmeSqeUnit.CDW12 |= (fua ? FUA_ENABLED : FUA_DISABLED);
-
-#ifdef CHATHAM
-        pSrbExt->nvmeSqeUnit.CDW12 |= (length & DWORD_BIT_MASK);
-#else
         pSrbExt->nvmeSqeUnit.CDW12 |= (length & DWORD_BIT_MASK) - 1; /* 0's based */
-#endif /* CHATHAM */
     }
-
-#if DBG
-    StorPortDebugPrint(INFO,
-                       "SNTI: Write(12) - LBA 0x%x, numBlocks 0x%x\n",
-                       lba,
-                       length);
-#endif
 
     return status;
 } /* SntiTranslateWrite12 */
@@ -1730,20 +1619,8 @@ SNTI_TRANSLATION_STATUS SntiTranslateWrite16(
 
         /* Command DWORD 12 - LR/FUA/PRINFO/NLB */
         pSrbExt->nvmeSqeUnit.CDW12 |= (fua ? FUA_ENABLED : FUA_DISABLED);
-
-#ifdef CHATHAM
-        pSrbExt->nvmeSqeUnit.CDW12 |= (length & DWORD_BIT_MASK);
-#else
         pSrbExt->nvmeSqeUnit.CDW12 |= (length & DWORD_BIT_MASK) - 1; /* 0's based */
-#endif /* CHATHAM */
     }
-
-#if DBG
-    StorPortDebugPrint(INFO,
-                       "SNTI: Write(16) - LBA 0x%x, numBlocks 0x%x\n",
-                       lba,
-                       length);
-#endif
 
     return status;
 } /* SntiTranslateWrite16 */
@@ -1780,16 +1657,6 @@ SNTI_TRANSLATION_STATUS SntiTranslateRead(
 
     pSrbExt = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb);
     pDevExt = pSrbExt->pNvmeDevExt;
-
-    /*
-     * Need to block IOs when a pending Format NVM command applies to
-     * the target Lun.
-     */
-    if ((pDevExt->FormatNvmInfo.TargetLun & (1 << pSrb->Lun)) ==
-        (1 << pSrb->Lun)) {
-        pSrb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
-        return SNTI_FAILURE_CHECK_RESPONSE_DATA;
-    }
 
     status = GetLunExtension(pSrbExt, &pLunExt);
     if (status != SNTI_SUCCESS) {
@@ -1887,19 +1754,8 @@ SNTI_STATUS SntiTranslateRead6(
 
         /* Command DWORD 12 - LR/FUA/PRINFO/NLB */
         pSrbExt->nvmeSqeUnit.CDW12 |= FUA_ENABLED;
-#ifdef CHATHAM
-        pSrbExt->nvmeSqeUnit.CDW12 |= length;
-#else /* CHATHAM */
         pSrbExt->nvmeSqeUnit.CDW12 |= length - 1; /* 0's based */
-#endif /* CHATHAM */
     }
-
-#if DBG
-    StorPortDebugPrint(INFO,
-                       "SNTI: Read(6) - LBA 0x%x, numBlocks 0x%x\n",
-                       lba,
-                       length);
-#endif
 
     return status;
 } /* SntiTranslateRead6 */
@@ -1950,19 +1806,8 @@ SNTI_STATUS SntiTranslateRead10(
 
         /* Command DWORD 12 - LR/FUA/PRINFO/NLB */
         pSrbExt->nvmeSqeUnit.CDW12 |= (fua ? FUA_ENABLED : FUA_DISABLED);
-#ifdef CHATHAM
-        pSrbExt->nvmeSqeUnit.CDW12 |= length;
-#else /* CHATHAM */
         pSrbExt->nvmeSqeUnit.CDW12 |= length - 1; /* 0's based */
-#endif /* CHATHAM */
     }
-
-#if DBG
-    StorPortDebugPrint(INFO,
-                       "SNTI: Read(10) - LBA 0x%x, numBlocks 0x%x\n",
-                       lba,
-                       length);
-#endif
 
     return status;
 } /* SntiTranslateRead10 */
@@ -2016,20 +1861,9 @@ SNTI_TRANSLATION_STATUS SntiTranslateRead12(
         pSrbExt->nvmeSqeUnit.CDW12 |= (fua ? FUA_ENABLED : FUA_DISABLED);
 
         /* NVMe Translation Spec ERRATA... NLB is only 16 bits!!! */
-#ifdef CHATHAM
-        pSrbExt->nvmeSqeUnit.CDW12 |= (length & DWORD_BIT_MASK);
-#else
         pSrbExt->nvmeSqeUnit.CDW12 |= (length & DWORD_BIT_MASK) - 1; /* 0's based */
-#endif /* CHATHAM */
 
     }
-
-#if DBG
-    StorPortDebugPrint(INFO,
-                       "SNTI: Read(12) - LBA 0x%x, numBlocks 0x%x\n",
-                       lba,
-                       length);
-#endif
 
     return status;
 } /* SntiTranslateRead12 */
@@ -2082,20 +1916,8 @@ SNTI_TRANSLATION_STATUS SntiTranslateRead16(
 
         /* Command DWORD 12 - LR/FUA/PRINFO/NLB */
         pSrbExt->nvmeSqeUnit.CDW12 |= (fua ? FUA_ENABLED : FUA_DISABLED);
-
-#ifdef CHATHAM
-        pSrbExt->nvmeSqeUnit.CDW12 |= (length & DWORD_BIT_MASK);
-#else
         pSrbExt->nvmeSqeUnit.CDW12 |= (length & DWORD_BIT_MASK) - 1; /* 0's based */
-#endif /* CHATHAM */
     }
-
-#if DBG
-    StorPortDebugPrint(INFO,
-                       "SNTI: Read(16) - LBA 0x%x, numBlocks 0x%x\n",
-                       lba,
-                       length);
-#endif
 
     return status;
 } /* SntiTranslateRead16 */
@@ -2616,12 +2438,20 @@ SNTI_TRANSLATION_STATUS SntiTranslateSynchronizeCache(
 )
 {
     PNVME_SRB_EXTENSION pSrbExt = NULL;
+    PNVME_LUN_EXTENSION pLunExt = NULL;
     SNTI_STATUS status;
 
     /* Default to successful translation */
     SNTI_TRANSLATION_STATUS returnStatus = SNTI_TRANSLATION_SUCCESS;
 
     pSrbExt = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb);
+
+    status = GetLunExtension(pSrbExt, &pLunExt);
+    if (status != SNTI_SUCCESS) {
+        /* Map the translation error to a SCSI error */
+        SntiMapInternalErrorStatus(pSrb, status);
+        return SNTI_FAILURE_CHECK_RESPONSE_DATA;
+    }
 
     /* Set the SRB status to pending - controller communication necessary */
     pSrb->SrbStatus = SRB_STATUS_PENDING;
@@ -2635,6 +2465,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateSynchronizeCache(
     pSrbExt->nvmeSqeUnit.CDW0.OPC = NVME_FLUSH;
     pSrbExt->nvmeSqeUnit.CDW0.CID = 0;
     pSrbExt->nvmeSqeUnit.CDW0.FUSE = FUSE_NORMAL_OPERATION;
+    pSrbExt->nvmeSqeUnit.NSID = pLunExt->namespaceId;
 
     return returnStatus;
 } /* SntiTranslateSynchronizeCache */
@@ -4472,7 +4303,6 @@ SNTI_STATUS GetLunExtension(
     } else {
         *ppLunExt = pDevExt->pLunExtensionTable[pSrb->Lun];
     }
-
     return returnStatus;
 } /* GetLunExtension */
 

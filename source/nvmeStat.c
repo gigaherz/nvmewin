@@ -46,7 +46,7 @@
  */
 
 #include "precomp.h"
-#if defined(CHATHAM) || defined(CHATHAM2)
+#if defined(CHATHAM2)
 #include <string.h>
 #include <stdlib.h>
 #endif
@@ -310,14 +310,6 @@ VOID NVMeRunningWaitOnRDY(
             StorPortReadRegisterUlong(pAE, &pAE->pCtrlRegister->CSTS.AsUlong);
 
         if (CSTS.RDY == 1) {
-    #ifdef CHATHAM
-            CC.AsUlong =
-                StorPortReadRegisterUlong(pAE, (PULONG)(&pAE->pCtrlRegister->CC));
-            CC.IOCQIE = CC.ACQIE = 1;
-            StorPortWriteRegisterUlong(pAE,
-                                       (PULONG)(&pAE->pCtrlRegister->CC),
-                                       CC.AsUlong);
-    #endif /* CHATHAM */
             StorPortDebugPrint(INFO,"NVMeRunningWaitOnRDY: RDY has been set\n");
             pAE->DriverState.NextDriverState = NVMeWaitOnIdentifyCtrl;
             pAE->DriverState.StateChkCount = 0;
@@ -350,63 +342,12 @@ VOID NVMeRunningWaitOnIdentifyCtrl(
      * Issue Identify command for the very first time If failed, fail the state
      * machine
      */
-#ifndef CHATHAM
     if (NVMeGetIdentifyStructures(pAE, IDEN_CONTROLLER) == FALSE) {
         NVMeDriverFatalError(pAE,
                             (1 << START_STATE_IDENTIFY_CTRL_FAILURE));
         NVMeCallArbiter(pAE);
         return;
     }
-#else /* CHATHAM */
-    {
-    PADMIN_IDENTIFY_NAMESPACE pIdenNS = NULL;
-    ADMIN_IDENTIFY_FORMAT_DATA fData = {0};
-    PNVME_LUN_EXTENSION pLunExt = NULL;
-    char fw[8] = {0};
-
-    memset(&pAE->controllerIdentifyData, 0, sizeof(ADMIN_IDENTIFY_CONTROLLER));
-
-    pAE->controllerIdentifyData.VID = 0x8086;
-    pAE->controllerIdentifyData.IEEMAC.IEEE = 0x423;
-    pAE->controllerIdentifyData.NN = 1;
-    pAE->DriverState.IdentifyNamespaceFetched = 1;
-
-#define CHATHAM_SERIAL "S123"
-#define CHATHAM_MODEL "CHATHAM"
-
-    RtlCopyMemory((UINT8*)&pAE->controllerIdentifyData.SN[0],
-                  CHATHAM_SERIAL,
-                  strlen(CHATHAM_SERIAL));
-
-    RtlCopyMemory((UINT8*)&pAE->controllerIdentifyData.MN[0],
-                  CHATHAM_MODEL,
-                  strlen(CHATHAM_MODEL));
-
-    _itoa(pAE->FwVer, fw, 16);
-    RtlCopyMemory((UINT8*)&pAE->controllerIdentifyData.FR[0],
-                  fw,
-                  strnlen(fw, _countof(fw)));
-
-    pIdenNS = &pAE->pLunExtensionTable[0]->identifyData;
-
-    memset(pIdenNS, 0, sizeof(ADMIN_IDENTIFY_NAMESPACE));
-    pIdenNS->NSZE = ChathamNlb;
-    pIdenNS->NCAP = ChathamNlb;
-    pIdenNS->NUSE = ChathamNlb;
-    fData.LBADS = 9;
-    pIdenNS->LBAFx[0] = fData;
-
-    pAE->QueueInfo.NumSubIoQAllocFromAdapter = CHATHAM_NR_QUEUES;
-    pAE->QueueInfo.NumCplIoQAllocFromAdapter = CHATHAM_NR_QUEUES;
-
-    pLunExt = pAE->pLunExtensionTable[0];
-    pLunExt->ReadOnly = FALSE;
-
-    pAE->DriverState.NextDriverState = NVMeWaitOnSetupQueues;
-    pAE->DriverState.StateChkCount = 0;
-    NVMeCallArbiter(pAE);
-    }
-#endif /* CHATHAM */
 } /* NVMeRunningWaitOnIdentifyCtrl */
 
 /*******************************************************************************
@@ -423,6 +364,8 @@ VOID NVMeRunningWaitOnIdentifyNS(
     PNVME_DEVICE_EXTENSION pAE
 )
 {
+    ULONG nsid = pAE->DriverState.IdentifyNamespaceFetched + 1;
+
     /*
      * Issue an identify command.  The completion handler will keep us at this
      * state if there are more identifies needed based on what the ctlr told us
@@ -430,8 +373,8 @@ VOID NVMeRunningWaitOnIdentifyNS(
      *
      * Please note that NN of Controller structure is 1-based.
      */
-    if (NVMeGetIdentifyStructures(pAE,
-            pAE->DriverState.IdentifyNamespaceFetched + 1) == FALSE) {
+
+    if (NVMeGetIdentifyStructures(pAE, nsid) == FALSE) {
         NVMeDriverFatalError(pAE,
                             (1 << START_STATE_IDENTIFY_NS_FAILURE));
         NVMeCallArbiter(pAE);
@@ -716,13 +659,14 @@ VOID NVMeRunningWaitOnLearnMapping(
     PNVMe_COMMAND pCmd = (PNVMe_COMMAND)(&pNVMeSrbExt->nvmeSqeUnit);
     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
     STOR_PHYSICAL_ADDRESS PhysAddr;
-    PNVME_LUN_EXTENSION pLunExt = pAE->pLunExtensionTable[0];
+    PNVME_LUN_EXTENSION pLunExt = NULL;
     UINT32 lbaLengthPower, lbaLength;
     PQUEUE_INFO pQI = &pAE->QueueInfo;
     UINT8 flbas;
+    BOOLEAN error = FALSE;
 
     __try {
-
+        pLunExt = pAE->pLunExtensionTable[0];
 #ifdef DUMB_DRIVER
         {
 #else
@@ -770,18 +714,19 @@ VOID NVMeRunningWaitOnLearnMapping(
         pCmd->CDW0.OPC = NVME_READ;
         pCmd->PRP1 = (ULONGLONG)PhysAddr.QuadPart;
         pCmd->NSID = 1;
-#if defined(CHATHAM)
-        pCmd->CDW12 = 1;
-#endif
 
         /* Now issue the command via IO queue */
         if (FALSE == ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_IO, FALSE)) {
+            error = TRUE;
             pAE->LearningCores = pRMT->NumActiveCores;
             pAE->DriverState.NextDriverState = NVMeStartComplete;
             __leave;
         }
 
     } __finally {
+        if ((error == TRUE) && (NULL != pNVMeSrbExt->pDataBuffer)) {
+            StorPortFreePool((PVOID)pAE, pNVMeSrbExt->pDataBuffer);
+        }
         if (pAE->DriverState.NextDriverState == NVMeStartComplete) {
             NVMeCallArbiter(pAE);
         }
@@ -809,7 +754,7 @@ VOID NVMeRunningWaitOnReSetupQueues(
     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
     PQUEUE_INFO pQI = &pAE->QueueInfo;
 
-#if defined(CHATHAM) || defined(CHATHAM2)
+#if defined(CHATHAM2)
     if (NVMeResetAdapter(pAE) == TRUE) {
         /* 10 msec "settle" delay post reset */
         NVMeStallExecution(pAE, 10000);
@@ -825,7 +770,6 @@ VOID NVMeRunningWaitOnReSetupQueues(
         ASSERT(FALSE);
     }
 #endif
-
     /* Delete all submission queues */
     if (NVMeDeleteSubQueues(pAE) == FALSE) {
         NVMeDriverFatalError(pAE,

@@ -203,7 +203,7 @@ PVOID NVMeAllocatePool(
     /* Call StorPortAllocatePool to allocate the buffer */
     Status = StorPortAllocatePool(pAE, Size, Tag, (PVOID)&pBuf);
 
-    StorPortDebugPrint(INFO,
+    StorPortDebugPrint(TRACE,
                        "NVMeAllocatePool: Size=0x%x\n",
                        Size );
 
@@ -287,11 +287,6 @@ BOOLEAN NVMeEnumNumaCores(
      * NUMA is not supported.
      */
     StorPortGetHighestNodeNumber( pAE, &Node );
-
-#ifdef DUMB_DRIVER
-    Node = 0;
-#endif
-
     pRMT->NumNumaNodes = Node + 1;
 
     StorPortDebugPrint(INFO,
@@ -328,9 +323,6 @@ BOOLEAN NVMeEnumNumaCores(
 
         /* Find out the number of active cores of the NUMA node */
         pNNT->NumCores = NVMeActiveProcessorCount(GroupAffinity.Mask);
-#ifdef DUMB_DRIVER
-        pNNT->NumCores = 1;
-#endif
         pRMT->NumActiveCores += pNNT->NumCores;
         StorPortMoveMemory((PVOID)&pNNT->GroupAffinity,
                            (PVOID)&GroupAffinity,
@@ -385,9 +377,7 @@ BOOLEAN NVMeEnumNumaCores(
                            "There are %d cores in Node#%d.\n",
                            pNNT->NumCores, Node);
     }
-#ifdef DUMB_DRIVER
-    TotalCores = 1;
-#endif
+
     /* Double check the total core number */
     if (TotalCores > pRMT->NumActiveCores) {
         StorPortDebugPrint(ERROR,
@@ -937,6 +927,8 @@ ULONG NVMeInitSubQueue(
                        "NVMeInitSubQueue : SQ 0x%x pSubTDBL 0x%x at index  0x%x\n",
                        QueueID, pSQI->pSubTDBL, dbIndex);
     pSQI->Requests = 0;
+    pSQI->SubQTailPtr = 0;
+    pSQI->SubQHeadPtr = 0;
 
     /*
      * The queue is shared by cores when:
@@ -1039,6 +1031,8 @@ ULONG NVMeInitCplQueue(
                        "NVMeInitSubQueue : CQ 0x%x pCplHDBL 0x%x at index  0x%x\n",
                        QueueID, pCQI->pCplHDBL, dbIndex);
     pCQI->Completions = 0;
+    pCQI->CurPhaseTag = 0;
+    pCQI->CplQHeadPtr = 0;
 
     /**
      * The queue is shared by cores when:
@@ -1266,11 +1260,9 @@ VOID NVMeEnableAdapter(
     CC.CSS = NVME_CC_NVM_CMD;
     CC.MPS = (PAGE_SIZE >> NVME_MEM_PAGE_SIZE_SHIFT);
     CC.AMS = NVME_CC_ROUND_ROBIN;
-#if !defined(CHATHAM)
     CC.SHN = NVME_CC_SHUTDOWN_NONE;
     CC.IOSQES = NVME_CC_IOSQES;
     CC.IOCQES = NVME_CC_IOCQES;
-#endif
 
     StorPortWriteRegisterUlong(pAE,
                                (PULONG)(&pAE->pCtrlRegister->CC),
@@ -1330,6 +1322,7 @@ VOID NVMeSetFeaturesCompletion(
     PADMIN_SET_FEATURES_COMMAND_DW10 pSetFeaturesCDW10 = NULL;
     PADMIN_SET_FEATURES_COMMAND_LBA_RANGE_TYPE_DW11 pSetFeaturesCDW11 = NULL;
     NS_VISBILITY visibility = IGNORED;
+    ULONG lunId;
 
     /*
      * Mark down the resulted information if succeeded. Otherwise, log the error
@@ -1383,13 +1376,15 @@ VOID NVMeSetFeaturesCompletion(
              * TtlLbaRangeExamined and set ConfigLbaRangeNeeded as FALSE When Set
              * Features command completes, simply increase TtlLbaRangeExamined
              */
+            lunId = pAE->DriverState.VisibleNamespacesExamined;
+
             pLbaRangeTypeEntry =
                 (PADMIN_SET_FEATURES_COMMAND_LBA_RANGE_TYPE_ENTRY)
                 pAE->DriverState.pDataBuffer;
             pSetFeaturesCDW11 =
                 (PADMIN_SET_FEATURES_COMMAND_LBA_RANGE_TYPE_DW11) &pNVMeCmd->CDW11;
 
-            pLunExt = pAE->pLunExtensionTable[pAE->DriverState.VisibleNamespacesExamined];
+            pLunExt = pAE->pLunExtensionTable[lunId];
 
             if (pNVMeCmd->CDW0.OPC == ADMIN_GET_FEATURES) {
                 /* driver only supports 1 LBA range type per NS (NUM is 0 based) */
@@ -1404,8 +1399,10 @@ VOID NVMeSetFeaturesCompletion(
                      *
                          */
                     StorPortDebugPrint(INFO,
-                           "pLbaRangeTypeEntry type : 0x%llX\n",
-                           pLbaRangeTypeEntry->Type);
+                           "pLbaRangeTypeEntry type : 0x%llX lun id %d nsid 0x%x\n",
+                           pLbaRangeTypeEntry->Type,
+                           lunId,
+                           pNVMeCmd->NSID);
 
                     visibility =
                         pLbaRangeTypeEntry->Attributes.Hidden ? HIDDEN:VISIBLE;
@@ -1426,6 +1423,8 @@ VOID NVMeSetFeaturesCompletion(
                     pLunExt->slotStatus = ONLINE;
                     pAE->DriverState.VisibleNamespacesExamined++;
                 } else {
+                    StorPortDebugPrint(INFO,"NVMeSetFeaturesCompletion: FYI LnuExt at %d has been cleared (NSID not visible)\n",
+                        lunId);
                     RtlZeroMemory(pLunExt, sizeof(NVME_LUN_EXTENSION));
                 }
 
@@ -1646,7 +1645,6 @@ BOOLEAN NVMeInitCallback(
 #if defined(CHATHAM2)
                 HardCodeChatham2Data(pAE,1);
 #endif
-
                 pAE->DriverState.IdentifyNamespaceFetched++;
 
                 /* Reset the counter and set next state */
@@ -1658,6 +1656,9 @@ BOOLEAN NVMeInitCallback(
                 /* Mark down the Namespace ID */
                 pLunExt->namespaceId =
                     pAE->DriverState.IdentifyNamespaceFetched;
+
+               /* for use in the LBA range type commands we need this info */
+               pAE->DriverState.CurrentNsid = pLunExt->namespaceId;
 
              } else {
                 NVMeDriverFatalError(pAE,
@@ -1969,7 +1970,7 @@ BOOLEAN NVMeAccessLbaRangeEntry(
     PNVMe_COMMAND pSetFeatures = (PNVMe_COMMAND)(&pNVMeSrbExt->nvmeSqeUnit);
     PADMIN_SET_FEATURES_COMMAND_DW10 pSetFeaturesCDW10 = NULL;
     PADMIN_SET_FEATURES_COMMAND_LBA_RANGE_TYPE_ENTRY pLbaRangeEntry = NULL;
-    ULONG NSID = pAE->DriverState.TtlLbaRangeExamined + 1;
+    ULONG NSID = pAE->DriverState.CurrentNsid;
     BOOLEAN Query = pAE->DriverState.ConfigLbaRangeNeeded;
 
     /* Fail here if Namespace ID is 0 or out of range */
@@ -2072,6 +2073,8 @@ BOOLEAN NVMeGetIdentifyStructures(
             return (FALSE);
         }
     } else {
+        ULONG lunId;
+
         if ( pIdenCtrl == NULL )
             return (FALSE);
 
@@ -2081,6 +2084,7 @@ BOOLEAN NVMeGetIdentifyStructures(
 
         /* NN of Controller structure is 1-based */
         if (NamespaceID <= pIdenCtrl->NN) {
+            lunId = pAE->DriverState.VisibleNamespacesExamined;
 
             /* Assign the destination buffer for retrieved structure.
              * We're storing it in lunExt->identifyData irrespective of
@@ -2089,10 +2093,14 @@ BOOLEAN NVMeGetIdentifyStructures(
              * the same buffer for future identifys, thus overwriting it.
              */
 
-            pIdenNS = &pAE->pLunExtensionTable[pAE->DriverState.VisibleNamespacesExamined]->identifyData;
+            pIdenNS = &pAE->pLunExtensionTable[lunId]->identifyData;
 
             /* Namespace ID is 1-based. */
             pIdentify->NSID = NamespaceID;
+
+            StorPortDebugPrint(INFO,
+                "NVMeGetIdentifyStructures: Get NS INFO for NSID 0x%x tgt lun 0x%x\n",
+                    NamespaceID, lunId);
 
             /* Prepare PRP entries, need at least one PRP entry */
             if (NVMePreparePRPs(pAE,
@@ -2102,7 +2110,14 @@ BOOLEAN NVMeGetIdentifyStructures(
                 return (FALSE);
             }
         } else {
-            return (FALSE);
+            /* no initial namespaces defined */
+            StorPortDebugPrint(INFO,
+                "NVMeGetIdentifyStructures: NamespaceID <= pIdenCtrl->NN\n");
+            pAE->DriverState.StateChkCount = 0;
+            pAE->visibleLuns = 0;
+            pAE->DriverState.NextDriverState = NVMeWaitOnSetupQueues;
+            NVMeCallArbiter(pAE);
+            return (TRUE);
         }
     }
 
@@ -2231,15 +2246,9 @@ BOOLEAN NVMeCreateCplQueue(
         /* Populate submission entry fields */
         pCreateCpl->CDW0.OPC = ADMIN_CREATE_IO_COMPLETION_QUEUE;
         pCQI = pQI->pCplQueueInfo + QueueID;
-        pCQI->CurPhaseTag = 0;
-        pCQI->CplQHeadPtr = 0;
         pCreateCpl->PRP1 = pCQI->CplQStart.QuadPart;
         pCreateCplCDW10->QID = QueueID;
-#ifdef CHATHAM
-        pCreateCplCDW10->QSIZE = pQI->NumIoQEntriesAllocated;
-#else
         pCreateCplCDW10->QSIZE = pQI->NumIoQEntriesAllocated - 1;
-#endif
         pCreateCplCDW11->PC = 1;
         pCreateCplCDW11->IEN = 1;
         pCreateCplCDW11->IV = pCQI->MsiMsgID;
@@ -2304,15 +2313,9 @@ BOOLEAN NVMeCreateSubQueue(
         /* Populate submission entry fields */
         pCreateSub->CDW0.OPC = ADMIN_CREATE_IO_SUBMISSION_QUEUE;
         pSQI = pQI->pSubQueueInfo + QueueID;
-        pSQI->SubQTailPtr = 0;
-        pSQI->SubQHeadPtr = 0;
         pCreateSub->PRP1 = pSQI->SubQStart.QuadPart;
         pCreateSubCDW10->QID = QueueID;
-#ifdef CHATHAM
-        pCreateSubCDW10->QSIZE = pQI->NumIoQEntriesAllocated;
-#else /* CHATHAM */
         pCreateSubCDW10->QSIZE = pQI->NumIoQEntriesAllocated - 1;
-#endif /* CHATHAM */
         pCreateSubCDW11->CQID = pSQI->CplQueueID;
         pCreateSubCDW11->PC = 1;
 
@@ -2443,11 +2446,6 @@ BOOLEAN NVMeNormalShutdown(
     ULONG PollMax = pAE->uSecCrtlTimeout / MAX_STATE_STALL_us;
     ULONG PollCount;
 
-#ifdef CHATHAM
-    NVMeStallExecution(pAE,100000);
-    return TRUE;
-#endif
-
     /* Check for any pending cmds. */
     if (NVMeDetectPendingCmds(pAE) == TRUE) {
         return FALSE;
@@ -2467,9 +2465,7 @@ BOOLEAN NVMeNormalShutdown(
      */
     CC.AsUlong = StorPortReadRegisterUlong(pAE,
                                            (PULONG)(&pAE->pCtrlRegister->CC));
-#ifndef CHATHAM
     CC.SHN = 1;
-#endif
 
     /* Set SHN bits of Controller Configuration to normal shutdown (01b) */
     StorPortWriteRegisterUlong (pAE,
@@ -3168,7 +3164,7 @@ BOOLEAN NVMeFetchRegistry(
         }
     }
 
-#if defined(CHATHAM) || defined(CHATHAM2)
+#if defined(CHATHAM2)
     {
         UCHAR PARM1[] = "Parm1";
         UCHAR PARM2[] = "Parm2";
@@ -3273,11 +3269,6 @@ VOID NVMeMaskInterrupts(
     /* Determine the Interrupt type */
     switch (pRMT->InterruptType) {
         case INT_TYPE_INTX: {
-#ifndef CHATHAM
-            StorPortWriteRegisterUlong(pAE,
-                                       &pAE->pCtrlRegister->IVMS,
-                                       MASK_INT);
-#endif /* CHATHAM */
             StorPortDebugPrint(INFO,
                 "NVMeDisableInterrupts: Disabled INTx interrupts\n");
             break;
@@ -3316,11 +3307,6 @@ VOID NVMeUnmaskInterrupts(
     /* Determine the Interrupt type */
     switch (pRMT->InterruptType) {
         case INT_TYPE_INTX: {
-#ifndef CHATHAM
-            StorPortWriteRegisterUlong(pAE,
-                                       &pAE->pCtrlRegister->IVMS,
-                                       CLEAR_INT);
-#endif /* CHATHAM */
             StorPortDebugPrint(INFO,
                 "NVMeDisableInterrupts: Disabled INTx interrupts\n");
             break;

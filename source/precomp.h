@@ -49,7 +49,7 @@
 #include "ntddscsi.h"
 #include "ntdddisk.h"
 #include <storport.h>
-
+#include <ata.h>
 #include "nvme.h"
 #include "nvmeReg.h"
 #include "nvmeIoctl.h"

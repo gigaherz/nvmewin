@@ -227,7 +227,7 @@ ProcessIo(
     USHORT CplQueue = 0;
     PQUEUE_INFO pQI = &pAdapterExtension->QueueInfo;
     PSUB_QUEUE_INFO pSQI = pQI->pSubQueueInfo;
-    STOR_LOCK_HANDLE hStartIoLock;
+    STOR_LOCK_HANDLE hStartIoLock = {0};
 
      __try {
 
