@@ -4723,8 +4723,8 @@ VOID SntiBuildSecuritySendReceiveCmd(
 
     PADMIN_SECURITY_SEND_COMMAND_DW10 pCdw10 =
         (PADMIN_SECURITY_SEND_COMMAND_DW10)&pSrbExt->nvmeSqeUnit.CDW10;
-    PNVM_SECURITY_SEND_COMMAND_DW11 pCdw11 =
-        (PNVM_SECURITY_SEND_COMMAND_DW11)&pSrbExt->nvmeSqeUnit.CDW11;
+    PADMIN_SECURITY_SEND_COMMAND_DW11 pCdw11 =
+        (PADMIN_SECURITY_SEND_COMMAND_DW11)&pSrbExt->nvmeSqeUnit.CDW11;
 
     /* Chose which queue to use */
     pSrbExt->forAdminQueue = TRUE;
@@ -4749,7 +4749,7 @@ VOID SntiBuildSecuritySendReceiveCmd(
     pCdw10->SECP = secProtocol;
 
     /* DWORD 11 */
-    pCdw11->TL = (UINT16)transferLength;
+    pCdw11->AL = transferLength;
 } /* SntiBuildSecuritySendReceiveCmd */
 
 /******************************************************************************

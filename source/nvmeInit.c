@@ -1028,7 +1028,7 @@ ULONG NVMeInitCplQueue(
     dbIndex = dbIndex / sizeof(NVMe_QUEUE_Y_DOORBELL);
     pCQI->pCplHDBL = (PULONG)(&pAE->pCtrlRegister->IODB[dbIndex].QHT );
     StorPortDebugPrint(INFO,
-                       "NVMeInitSubQueue : CQ 0x%x pCplHDBL 0x%x at index  0x%x\n",
+                       "NVMeInitCplQueue : CQ 0x%x pCplHDBL 0x%x at index  0x%x\n",
                        QueueID, pCQI->pCplHDBL, dbIndex);
     pCQI->Completions = 0;
     pCQI->CurPhaseTag = 0;
@@ -1147,7 +1147,7 @@ BOOLEAN NVMeResetAdapter(
 
     /*
      * Immediately reset our start state to indicate that the controller
-     * is ont ready
+     * is not ready
      */
     CC.AsUlong= StorPortReadRegisterUlong(pAE,
                                           (PULONG)(&pAE->pCtrlRegister->CC));
@@ -1178,10 +1178,8 @@ BOOLEAN NVMeWaitOnReady(
 )
 {
     NVMe_CONTROLLER_STATUS CSTS;
-    ULONG PollMax;
+    ULONG PollMax = pAE->uSecCrtlTimeout / MAX_STATE_STALL_us;
     ULONG PollCount;
-
-    PollMax = pAE->uSecCrtlTimeout;
 
     /*
      * Find out the Timeout value from Controller Capability register,
@@ -1194,8 +1192,7 @@ BOOLEAN NVMeWaitOnReady(
 
         if (CSTS.RDY == 0)
             return TRUE;
-
-        NVMeStallExecution(pAE, 1);
+        NVMeStallExecution(pAE, MAX_STATE_STALL_us);
     }
 
     return FALSE;
@@ -2459,6 +2456,19 @@ BOOLEAN NVMeNormalShutdown(
         return (FALSE);
     }
 
+    /* Ensure all queues are deleted after the controller reset */
+    for (PollCount = 0; PollCount < PollMax; PollCount++) {
+        CSTS.AsUlong = StorPortReadRegisterUlong(pAE,
+                           (PULONG)(&pAE->pCtrlRegister->CSTS.AsUlong));
+
+        if (CSTS.RDY == 0) {
+            /* Move on if RDY bit is cleared */
+            break;
+        }
+
+        NVMeStallExecution(pAE, MAX_STATE_STALL_us);
+    }
+
     /*
      * Read Controller Configuration first before setting SHN bits of
      * Controller Configuration to normal shutdown (01b)
@@ -2466,7 +2476,6 @@ BOOLEAN NVMeNormalShutdown(
     CC.AsUlong = StorPortReadRegisterUlong(pAE,
                                            (PULONG)(&pAE->pCtrlRegister->CC));
     CC.SHN = 1;
-
     /* Set SHN bits of Controller Configuration to normal shutdown (01b) */
     StorPortWriteRegisterUlong (pAE,
                                 (PULONG)(&pAE->pCtrlRegister->CC),

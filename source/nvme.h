@@ -118,10 +118,24 @@ typedef struct _NVMe_COMMAND
     ULONGLONG               PRP2;
 
     /* [Command Dword 10] This field is command specific Dword 10. */
-    ULONG                   CDW10;
+    union {
+        ULONG               CDW10;
+        /* 
+         * Defined in Admin and NVM Vendor Specific Command format.
+         * Number of DWORDs in PRP, data transfer (in Figure 8).
+         */
+        ULONG               NDP;
+    };
 
     /* [Command Dword 11] This field is command specific Dword 11. */
-    ULONG                   CDW11;
+    union {
+        ULONG               CDW11;
+        /* 
+         * Defined in Admin and NVM Vendor Specific Command format.
+         * Number of DWORDs in MPTR, Metadata transfer (in Figure 8).
+         */
+        ULONG               NDM;
+    };
 
     /* [Command Dword 12] This field is command specific Dword 12. */
     ULONG                   CDW12;
@@ -523,8 +537,8 @@ typedef struct _ADMIN_GET_LOG_PAGE_COMMAND_DW10
      * [Log Page Identifier] This field specifies the identifier of the log page
      * to retrieve.
      */
-    ULONG   LID     :16;
-
+    ULONG   LID      :8;
+    ULONG   Reserved0:8;
     /*
      * [Number of Dwords] This field specifies the number of Dwords to return.
      * If host software indicates a size larger than the log page requested, the
@@ -568,9 +582,14 @@ typedef struct _ADMIN_GET_LOG_PAGE_ERROR_INFORMATION_LOG_ENTRY
      */
     USHORT      CommandID;
 
-    /* This field indicates the Status Code that the command completed with. */
-    USHORT      StatusCode;
-
+    /* This field indicates the Status that the command completed with. */
+    struct
+    {
+        /* Phase Tag posted for the command */
+        USHORT  PhaseTag   :1;
+        /* The reported status for the completed command. */
+        USHORT  Status     :15;
+    } StatusField;
     /*
      * This field indicates the byte and bit of the command parameter that the
      * error is associated with, if applicable. If the parameter spans multiple
@@ -1196,9 +1215,13 @@ typedef struct _ADMIN_IDENTIFY_CONTROLLER
      * states (i.e., up to 32 total).
      */
     UCHAR NPSS;
-
-    UCHAR   Reserved2[248];
-
+    /* 
+     * Admin Vendor Specific Command Configuration (AVSCC): This field indicates 
+     * the configuration settings for admin vendor specific command handling.
+     */
+    UCHAR   AVSCC          :1; 
+    UCHAR   Reserved_AVSCC :7;
+    UCHAR   Reserved2[247];
     /* NVM Command Set Attributes */
 
     /*
@@ -1377,9 +1400,13 @@ typedef struct _ADMIN_IDENTIFY_CONTROLLER
      * with respect to other read or write operations.
      */
     USHORT  AWUPF;
-
-    UCHAR   Reserved4[174];
-
+    /* 
+     * NVM Vendor Specific Command Configuration (NVSCC): This field indicates 
+     * the configuration settings for NVM vendor specific command handling.
+     */
+    UCHAR   NVSCC          :1; 
+    UCHAR   Reserved_NVSCC :7;    
+    UCHAR   Reserved4[173];
     /* I/O Command Set Attributes */
     UCHAR   Reserved5[1344];
 
@@ -1828,7 +1855,7 @@ typedef struct _ADMIN_SET_FEATURES_COMMAND_LBA_RANGE_TYPE_ENTRY
      * uniquely identifies the type of this LBA range. Well known Types may be
      * defined and are published on the NVMHCI website.
      */
-    ULONGLONG   GUID;
+    UCHAR       GUID[16];    
     UCHAR       Reserved2[16];
 } ADMIN_SET_FEATURES_LBA_COMMAND_RANGE_TYPE_ENTRY,
   *PADMIN_SET_FEATURES_COMMAND_LBA_RANGE_TYPE_ENTRY;
@@ -2021,8 +2048,8 @@ typedef struct _ADMIN_SET_FEATURES_COMMAND_SOFTWARE_PROGRESS_MARKER_DW11
      * value does not wrap to 0). OS driver software should set this field to 0h
      * after the OS has successfully been initialized.
      */
-    ULONG   PBSLC    :1;
-    ULONG   Reserved :31;
+    ULONG   PBSLC    :8; 
+    ULONG   Reserved :24;
 } ADMIN_SET_FEATURES_COMMAND_SOFTWARE_PROGRESS_MARKER_DW11,
   *PADMIN_SET_FEATURES_COMMAND_SOFTWARE_PROGRESS_MARKER_DW11;
 
@@ -2173,14 +2200,12 @@ typedef struct _ADMIN_SECURITY_SEND_COMMAND_DW10
 /* Security Send Command, Section 5.14, Figure 97 */
 typedef struct _ADMIN_SECURITY_SEND_COMMAND_DW11
 {
-    ULONG   Reserved    :16;
-
     /*
      * [Transfer Length] The value of this field is specific to the Security
      * Protocol as defined in SPC-4.
      */
-    ULONG   TL          :16;
-} NVM_SECURITY_SEND_COMMAND_DW11, *PNVM_SECURITY_SEND_COMMAND_DW11;
+    ULONG   AL;
+} ADMIN_SECURITY_SEND_COMMAND_DW11, *PADMIN_SECURITY_SEND_COMMAND_DW11;
 
 /* Security Receive Command, Section 5.14, Figure 92, Opcode 0x82 */
 typedef struct _ADMIN_SECURITY_RECEIVE_COMMAND_DW10
@@ -2204,13 +2229,11 @@ typedef struct _ADMIN_SECURITY_RECEIVE_COMMAND_DW10
 /* Security Receive Command, Section 5.14, Figure 93 */
 typedef struct _ADMIN_SECURITY_RECEIVE_COMMAND_DW11
 {
-    ULONG   Reserved    :16;
-
     /*
      * [Transfer Length] The value of this field is specific to the Security
      * Protocol as defined in SPC-4.
      */
-    ULONG   TL          :16;
+    ULONG   AL;
 } ADMIN_SECURITY_RECEIVE_COMMAND_DW11, *PADMIN_SECURITY_RECEIVE_COMMAND_DW11;
 
 /*
