@@ -338,7 +338,7 @@ NVMeFindAdapter(
          */
         pRMT = &pAE->ResMapTbl;
         pRMT->pMsiMsgTbl = (PMSI_MESSAGE_TBL)
-            NVMeAllocatePool(pAE, (pRMT->NumActiveCores + 1) *
+            NVMeAllocatePool(pAE, pRMT->NumActiveCores *
                              sizeof(MSI_MESSAGE_TBL));
 
         if (pRMT->pMsiMsgTbl == NULL)
@@ -648,16 +648,17 @@ BOOLEAN NVMeInitialize(
          * to wait for RDY to transition EN back to 0 or not.
          */
          CSTS.AsUlong =
-             StorPortReadRegisterUlong(pAE, &pAE->pCtrlRegister->CSTS.AsUlong);
+             StorPortReadRegisterUlong(pAE,
+                                       &pAE->pCtrlRegister->CSTS.AsUlong);
          while (CSTS.RDY != 1) {
             NVMeCrashDelay(STORPORT_TIMER_CB_us);
             time += STORPORT_TIMER_CB_us;
             if (time > pAE->uSecCrtlTimeout) {
                 return (FALSE);
             }
-
             CSTS.AsUlong =
-                StorPortReadRegisterUlong(pAE, &pAE->pCtrlRegister->CSTS.AsUlong);
+                StorPortReadRegisterUlong(pAE,
+                                          &pAE->pCtrlRegister->CSTS.AsUlong);
          };
 
         /* Now reset */
@@ -953,8 +954,6 @@ BOOLEAN NVMeBuildIo(
         case SRB_FUNCTION_RESET_DEVICE:
         case SRB_FUNCTION_RESET_BUS:
         case SRB_FUNCTION_RESET_LOGICAL_UNIT:
-            StorPortDebugPrint(INFO, "BuildIo: SRB_FUNCTION_RESET as 0x%x\n", 
-                Function);
             /* Handle in startio */
             return TRUE;
         break;
@@ -1217,7 +1216,13 @@ BOOLEAN NVMeStartIo(
         case SRB_FUNCTION_RESET_BUS:
             ASSERT(FALSE);
 #ifdef HISTORY
-            TraceEvent(SRB_RESET, 0,0,0,Srb->Lun, 0,0);
+            if (Function == SRB_FUNCTION_RESET_DEVICE) {
+                TraceEvent(SRB_RESET_DEVICE, 0,0,0,Srb->Lun, 0,0);
+            } else if (Function == SRB_FUNCTION_RESET_LOGICAL_UNIT) {
+                TraceEvent(SRB_RESET_LUN, 0,0,0,Srb->Lun, 0,0);
+            } else if (Function == SRB_FUNCTION_RESET_BUS) {
+                TraceEvent(SRB_RESET_BUS, 0,0,0,Srb->Lun, 0,0);
+            }
 #endif
             status = NVMeResetController(pAdapterExtension, Srb);
             if (status == FALSE) {
@@ -1368,8 +1373,8 @@ void NVMeStartIoProcessIoctl(
                 IO_StorPortNotification(RequestComplete, pAdapterExtension, pSrb);
                 return;
                 break;
-	    case NVME_RESET_DEVICE:
-                /* 
+        case NVME_RESET_DEVICE:
+                /*
                  * Need to reset the controller per request from applications,
                  * e.g. after Firmware Activate command completed successfully.
                  * Schedule the reset in recovery DPC when possible.
@@ -1503,45 +1508,42 @@ IoCompletionDpcRoutine(
     PCPL_QUEUE_INFO pCQI = NULL;
     USHORT firstCheckQueue = 0;
     USHORT lastCheckQueue = 0;
-    USHORT indexCheckQueue;
+    USHORT indexCheckQueue = 0;
     BOOLEAN InterruptClaimed = FALSE;
     STOR_LOCK_HANDLE DpcLockhandle = { 0 };
-    BOOLEAN learning;
 
         StorPortAcquireSpinLock(pAE, DpcLock, pDpc, &DpcLockhandle);
 
     /* Use the message id to find the correct entry in the MSI_MESSAGE_TBL */
     pMMT = pRMT->pMsiMsgTbl + MsgID;
 
-    if (pMMT->Shared == TRUE) {
+    if (pMMT->Shared == FALSE) {
+        /* Determine which CQ to look in based on start state */
+        if (pAE->DriverState.NextDriverState == NVMeStartComplete) {
+
+            firstCheckQueue = lastCheckQueue = pMMT->CplQueueNum;
+        } else if (pAE->DriverState.NextDriverState == NVMeWaitOnLearnMapping) {
+
+            /* while learning we setup the CT so that this is always true */
+            firstCheckQueue = lastCheckQueue = (USHORT)MsgID + 1;
+        }
+        /* else we're init'ing so admin queue is in use */
+    } else {
         /*
          * when Qs share an MSI, the we don't learn anything about core
-         * mapping, etc., we just look through all of the queues
+         * mapping, etc., we just look through all of the queues all the time
          */
-        learning = FALSE;
         firstCheckQueue = 0;
         lastCheckQueue = (USHORT)pQI->NumCplIoQCreated;
-    } else {
-
-        /*
-         * if we're done learning, lookup in our table .  Otherwise,
-         * the queue #'s were initialized to match the MsgId
-         */
-        learning = ((pAE->LearningCores < pRMT->NumActiveCores) &&
-                      (MsgID > 0)) ? TRUE : FALSE;
-        if (!learning) {
-            firstCheckQueue = lastCheckQueue = pMMT->CplQueueNum;
-        } else {
-            firstCheckQueue = lastCheckQueue = (USHORT)MsgID;
-        }
     }
 
-    for (indexCheckQueue = firstCheckQueue;
-          indexCheckQueue <= lastCheckQueue;
-          indexCheckQueue++) {
+    /* loop through all the queues we've decided we need to look at */
+    indexCheckQueue = firstCheckQueue;
+    do {
         pCQI = pQI->pCplQueueInfo + indexCheckQueue;
         pSQI = pQI->pSubQueueInfo + indexCheckQueue;
-
+        indexCheckQueue++;
+        /* loop through each queue itself */
         do {
             entryStatus = NVMeGetCplEntry(pAE, pCQI, &pCplEntry);
             if (entryStatus == STOR_STATUS_SUCCESS) {
@@ -1579,6 +1581,17 @@ IoCompletionDpcRoutine(
 
                 if (pSrbExtension != NULL) {
                     BOOLEAN callStorportNotification = FALSE;
+#if DBG
+                    /* for checked builds, sanity check our learning mode */
+                    PROCESSOR_NUMBER procNum;
+
+                    if ((pAE->LearningComplete == TRUE) &&
+                        (firstCheckQueue > 0)) {
+                        StorPortGetCurrentProcessorNumber((PVOID)pAE,
+                                 &procNum);
+                        ASSERT(pSrbExtension->procNum.Number == procNum.Number);
+                    }
+#endif
 
                     pSrbExtension->pCplEntry = pCplEntry;
 
@@ -1586,7 +1599,7 @@ IoCompletionDpcRoutine(
                      * If we're learning and this is an IO queue then update
                      * the PCT to note which QP to start using for this core
                      */
-                    if (learning) {
+                    if (pAE->DriverState.NextDriverState == NVMeWaitOnLearnMapping) {
                         PCORE_TBL pCT = NULL;
                         PQUEUE_INFO pQI = &pAE->QueueInfo;
                         PCPL_QUEUE_INFO pCQI = NULL;
@@ -1604,7 +1617,6 @@ IoCompletionDpcRoutine(
                         pCT->MsiMsgID = (USHORT)MsgID;
                         pCQI->MsiMsgID = pCT->MsiMsgID;
                         pMMT->CplQueueNum = pCT->CplQueue;
-                        pMMT->CoreNum = procNum.Number;
 
                         /* increment our learning counter */
                         pAE->LearningCores++;
@@ -1616,22 +1628,25 @@ IoCompletionDpcRoutine(
                             pSrbExtension->pDataBuffer = NULL;
                         }
                     }
+
+                    if (pSrbExtension->pNvmeCompletionRoutine == NULL) {
                     /*
-                     * Only call IO_StorPortNotification if:
-                     * 1) there's no comp routine, xlation status complted
-                     * 2) there is a comp routine returns OK, there's
-                     *    an Srb
-                     * Otherwise we cont call storport's completion
+                         * if no comp reoutine, call only if we had a valid
+                         * status translation, otherwise let it timeout if
+                         * if was host based
                      */
-                    if ((pSrbExtension->pNvmeCompletionRoutine == NULL) &&
-                        (SntiMapCompletionStatus(pSrbExtension) == TRUE)) {
-                        callStorportNotification = TRUE;
-                    } else if ((pSrbExtension->pNvmeCompletionRoutine(pAE,
-                                (PVOID)pSrbExtension) == TRUE) &&
-                                (pSrbExtension->pSrb != NULL)) {
-                        callStorportNotification = TRUE;
+                        callStorportNotification =
+                            SntiMapCompletionStatus(pSrbExtension);
                     } else {
-                        callStorportNotification = FALSE;
+                        /*
+                         * if we have a completion routine, call it and then
+                         * complete onlt if this was a host request (srb exsits)
+                         * In this case the completion routine is responsible
+                         * for mapping Srb status
+                         */
+                        callStorportNotification =
+                            pSrbExtension->pNvmeCompletionRoutine(pAE, (PVOID)pSrbExtension)
+                            && (pSrbExtension->pSrb != NULL);
                     }
 
                     /* for async calls, call storport if needed */
@@ -1651,7 +1666,15 @@ IoCompletionDpcRoutine(
                                        (ULONG)pCQI->CplQHeadPtr);
             InterruptClaimed = FALSE;
         }
-    } /* end for loop: for every queue to be checked */
+        /*
+         * If we serviced another queue on MSIX0 then we also have to check
+         * the admin queue (admin queue shared with one other QP)
+         */
+        if ((firstCheckQueue > 0) &&
+            (MsgID == 0)) {
+            firstCheckQueue = lastCheckQueue = indexCheckQueue = 0;
+        }
+    } while (indexCheckQueue <= lastCheckQueue); /* end queue checking loop */
 
     /* Un-mask interrupt if it had been masked */
 #if !defined(CHATHAM2)
@@ -1688,7 +1711,7 @@ NVMeIsrMsix (
     ULONG                         qNum = 0;
     BOOLEAN                       status;
 
-#if defined(CHATHAM2) 
+#if defined(CHATHAM2)
     if (pAE->ResMapTbl.NumMsiMsgGranted == 0) {
         return TRUE;
     }
@@ -1731,9 +1754,8 @@ NVMeIsrMsix (
     PCPL_QUEUE_INFO pCQI = NULL;
     USHORT firstCheckQueue = 0;
     USHORT lastCheckQueue = 0;
-    USHORT indexCheckQueue;
+    USHORT indexCheckQueue = 0;
     BOOLEAN InterruptClaimed = FALSE;
-    BOOLEAN learning;
 
 #if defined(CHATHAM2)
     if (pAE->ResMapTbl.NumMsiMsgGranted == 0) {
@@ -1744,35 +1766,31 @@ NVMeIsrMsix (
     /* Use the message id to find the correct entry in the MSI_MESSAGE_TBL */
     pMMT = pRMT->pMsiMsgTbl + MsgID;
 
-    if (pMMT->Shared == TRUE) {
+    if (pMMT->Shared == FALSE) {
+        /* Determine which CQ to look in based on start state */
+        if (pAE->DriverState.NextDriverState == NVMeStartComplete) {
+                firstCheckQueue = lastCheckQueue = pMMT->CplQueueNum;
+        } else if (pAE->DriverState.NextDriverState == NVMeWaitOnLearnMapping) {
+            /* while learning we setup the CT so that this is always true */
+            firstCheckQueue = lastCheckQueue = (USHORT)MsgID + 1;
+        }
+        /* else we're init'ing so admin queue is in use */
+    } else {
         /*
          * when Qs share an MSI, the we don't learn anything about core
-         * mapping, etc., we just look through all of the queues
+         * mapping, etc., we just look through all of the queues all the time
          */
-        learning = FALSE;
         firstCheckQueue = 0;
         lastCheckQueue = (USHORT)pQI->NumCplIoQCreated;
-    } else {
-
-        /*
-         * if we're done learning, lookup in our table .  Otherwise,
-         * the queue #'s were initialized to match the MsgId
-         */
-        learning = ((pAE->LearningCores < pRMT->NumActiveCores) &&
-                      (MsgID > 0)) ? TRUE : FALSE;
-        if (!learning) {
-            firstCheckQueue = lastCheckQueue = pMMT->CplQueueNum;
-        } else {
-            firstCheckQueue = lastCheckQueue = (USHORT)MsgID;
-        }
     }
 
-    for (indexCheckQueue = firstCheckQueue;
-          indexCheckQueue <= lastCheckQueue;
-          indexCheckQueue++) {
+    /* loop through all the queues we've decided we need to look at */
+    indexCheckQueue = firstCheckQueue;
+    do {
         pCQI = pQI->pCplQueueInfo + indexCheckQueue;
         pSQI = pQI->pSubQueueInfo + indexCheckQueue;
-
+        indexCheckQueue++;
+        /* loop through each queue itself */
         do {
             entryStatus = NVMeGetCplEntry(pAE, pCQI, &pCplEntry);
             if (entryStatus == STOR_STATUS_SUCCESS) {
@@ -1802,6 +1820,17 @@ NVMeIsrMsix (
 
                 if (pSrbExtension != NULL) {
                     BOOLEAN callStorportNotification = FALSE;
+#if DBG
+                    /* for checked builds, sanity check our learning mode */
+                    PROCESSOR_NUMBER procNum;
+
+                    if ((pAE->LearningComplete == TRUE) &&
+                        (firstCheckQueue > 0)) {
+                        StorPortGetCurrentProcessorNumber((PVOID)pAE,
+                                 &procNum);
+                        ASSERT(pSrbExtension->procNum.Number == procNum.Number);
+                    }
+#endif
 
                     pSrbExtension->pCplEntry = pCplEntry;
 
@@ -1809,7 +1838,7 @@ NVMeIsrMsix (
                      * If we're learning and this is an IO queue then update
                      * the PCT to note which QP to start using for this core
                      */
-                    if (learning) {
+                    if (pAE->DriverState.NextDriverState == NVMeWaitOnLearnMapping) {
                         PCORE_TBL pCT = NULL;
                         PQUEUE_INFO pQI = &pAE->QueueInfo;
                         PCPL_QUEUE_INFO pCQI = NULL;
@@ -1827,7 +1856,6 @@ NVMeIsrMsix (
                         pCT->MsiMsgID = (USHORT)MsgID;
                         pCQI->MsiMsgID = pCT->MsiMsgID;
                         pMMT->CplQueueNum = pCT->CplQueue;
-                        pMMT->CoreNum = procNum.Number;
 
                         /* increment our learning counter */
                         pAE->LearningCores++;
@@ -1840,23 +1868,24 @@ NVMeIsrMsix (
                         }
                     }
 
+                    if (pSrbExtension->pNvmeCompletionRoutine == NULL) {
                     /*
-                     * Only call IO_StorPortNotification if:
-                     * 1) there's no comp routine, xlation status complted
-                     * 2) there is a comp routine returns OK, there's
-                     *    an Srb
-                     * Otherwise we cont call storport's completion
-                    */
-
-                    if ((pSrbExtension->pNvmeCompletionRoutine == NULL) &&
-                        (SntiMapCompletionStatus(pSrbExtension) == TRUE)) {
-                        callStorportNotification = TRUE;
-                    } else if ((pSrbExtension->pNvmeCompletionRoutine(pAE,
-                                (PVOID)pSrbExtension) == TRUE) &&
-                                (pSrbExtension->pSrb != NULL)) {
-                        callStorportNotification = TRUE;
+                         * if no comp reoutine, call only if we had a valid
+                         * status translation, otherwise let it timeout if
+                         * if was host based
+                         */
+                        callStorportNotification =
+                            SntiMapCompletionStatus(pSrbExtension);
                     } else {
-                        callStorportNotification = FALSE;
+                        /*
+                         * if we have a completion routine, call it and then
+                         * complete onlt if this was a host request (srb exsits)
+                         * In this case the completion routine is responsible
+                         * for mapping Srb status
+                    */
+                        callStorportNotification =
+                            pSrbExtension->pNvmeCompletionRoutine(pAE, (PVOID)pSrbExtension)
+                            && (pSrbExtension->pSrb != NULL);
                     }
 
                     /* for async calls, call storport if needed */
@@ -1876,7 +1905,15 @@ NVMeIsrMsix (
                                        (ULONG)pCQI->CplQHeadPtr);
             InterruptClaimed = FALSE;
         }
-    } /* end for loop: for every queue to be checked */
+        /*
+         * If we serviced another queue on MSIX0 then we also have to check
+         * the admin queue (admin queue shared with one other QP)
+         */
+        if ((firstCheckQueue > 0) &&
+            (MsgID == 0)) {
+            firstCheckQueue = lastCheckQueue = indexCheckQueue = 0;
+        }
+    } while (indexCheckQueue <= lastCheckQueue); /* end queue checking loop */
 
     return InterruptClaimed;
 
@@ -1921,6 +1958,12 @@ VOID RecoveryDpcRoutine(
     StorPortAcquireSpinLock(pAE, StartIoLock, NULL, &startLockhandle);
 
     /*
+     * just so get some prints and a chance to examine
+     * what's outstanding
+     */
+    NVMeDetectPendingCmds(pAE);
+
+    /*
      * Reset the controller; if any steps fail we just quit which
      * will leave the controller un-usable(storport queues frozen)
      * on purpose to prevent possible data corruption
@@ -1958,6 +2001,14 @@ VOID RecoveryDpcRoutine(
 
                 if ((pSrbExtension != NULL) &&
                     (pSrbExtension->pSrb != NULL)) {
+#ifdef HISTORY
+                    NVMe_COMPLETION_QUEUE_ENTRY_DWORD_3 nullEntry = {0};
+                    TracePathComplete(COMPPLETE_CMD_RESET,
+                        pSQI->SubQueueID,
+                        pNVMeCmd->CDW0.CID, 0, nullEntry,
+                        (ULONGLONG)pSrbExtension->pNvmeCompletionRoutine,
+                        0);
+#endif
                     pSrbExtension->pSrb->SrbStatus = SRB_STATUS_BUS_RESET;
                     IO_StorPortNotification(RequestComplete,
                                             pAE,
@@ -3721,7 +3772,7 @@ BOOLEAN NVMeIoctlTxDataToHost(
     ULONG DataBufferSize = pNvmeCmd->NDP * sizeof(ULONG);
     ULONG IoctlHdrSize = sizeof(NVME_PASS_THROUGH_IOCTL);
 
-    /* 
+    /*
      * If NDP is zero, return NVME_IOCTL_ZERO_DATA_TX_LENGTH_ERROR.
      */
     if (DataBufferSize == 0) {
@@ -3776,14 +3827,14 @@ BOOLEAN NVMeIoctlTxDataToDev(
     ULONG DataBufferSize = pNvmeCmd->NDP * sizeof(ULONG);
     ULONG IoctlHdrSize = sizeof(NVME_PASS_THROUGH_IOCTL);
 
-    /* 
+    /*
      * If NDP is zero, return NVME_IOCTL_ZERO_DATA_TX_LENGTH_ERROR.
      */
     if (DataBufferSize == 0) {
         pSrbIoCtrl->ReturnCode = NVME_IOCTL_ZERO_DATA_TX_LENGTH_ERROR;
         return IOCTL_COMPLETED;
     }
-    /* 
+    /*
      * Ensure the size of data buffer is big enough to accommodate the data.
      */
     if (pNvmePtIoctl->DataBufferLen < DataBufferSize) {
@@ -4289,15 +4340,15 @@ BOOLEAN NVMeProcessPrivateIoctl(
                              * Handle data transfer if necessary
                              */
                             if (pNvmePtIoctl->Direction == NVME_FROM_HOST_TO_DEV) {
-                                if (NVMeIoctlTxDataToDev(pDevExt, 
-                                                         pSrb, 
+                                if (NVMeIoctlTxDataToDev(pDevExt,
+                                                         pSrb,
                                                          pNvmePtIoctl)
                                                          == IOCTL_COMPLETED) {
                                     return IOCTL_COMPLETED;
                                 }
                             } else if (pNvmePtIoctl->Direction == NVME_FROM_DEV_TO_HOST) {
-                                if (NVMeIoctlTxDataToHost(pDevExt, 
-                                                          pSrb, 
+                                if (NVMeIoctlTxDataToHost(pDevExt,
+                                                          pSrb,
                                                           pNvmePtIoctl)
                                                           == IOCTL_COMPLETED) {
                                     return IOCTL_COMPLETED;
@@ -4368,15 +4419,15 @@ BOOLEAN NVMeProcessPrivateIoctl(
                              * Handle data transfer if necessary
                              */
                             if (pNvmePtIoctl->Direction == NVME_FROM_HOST_TO_DEV) {
-                                if (NVMeIoctlTxDataToDev(pDevExt, 
-                                                         pSrb, 
+                                if (NVMeIoctlTxDataToDev(pDevExt,
+                                                         pSrb,
                                                          pNvmePtIoctl)
                                                          == IOCTL_COMPLETED) {
                                     return IOCTL_COMPLETED;
                                 }
                             } else if (pNvmePtIoctl->Direction == NVME_FROM_DEV_TO_HOST) {
-                                if (NVMeIoctlTxDataToHost(pDevExt, 
-                                                          pSrb, 
+                                if (NVMeIoctlTxDataToHost(pDevExt,
+                                                          pSrb,
                                                           pNvmePtIoctl)
                                                           == IOCTL_COMPLETED) {
                                     return IOCTL_COMPLETED;

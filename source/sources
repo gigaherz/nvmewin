@@ -57,6 +57,8 @@ TARGETPATH=$(TARGETNAME)\obj$(BUILD_ALT_DIR)
 
 # -DHISTORY:  Enables history buffers for debug, can be used in free or checked build
 
+# -DPRP_DBG:  dumps all PRP info for every IO
+
 C_DEFINES = $(C_DEFINES) -D__KERNEL_ -D__MSWINDOWS__ -DCOMPLETE_IN_DPC
 
 TARGETLIBS=$(DDK_LIB_PATH)\storport.lib \

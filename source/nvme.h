@@ -120,7 +120,7 @@ typedef struct _NVMe_COMMAND
     /* [Command Dword 10] This field is command specific Dword 10. */
     union {
         ULONG               CDW10;
-        /* 
+        /*
          * Defined in Admin and NVM Vendor Specific Command format.
          * Number of DWORDs in PRP, data transfer (in Figure 8).
          */
@@ -130,7 +130,7 @@ typedef struct _NVMe_COMMAND
     /* [Command Dword 11] This field is command specific Dword 11. */
     union {
         ULONG               CDW11;
-        /* 
+        /*
          * Defined in Admin and NVM Vendor Specific Command format.
          * Number of DWORDs in MPTR, Metadata transfer (in Figure 8).
          */
@@ -1215,11 +1215,11 @@ typedef struct _ADMIN_IDENTIFY_CONTROLLER
      * states (i.e., up to 32 total).
      */
     UCHAR NPSS;
-    /* 
-     * Admin Vendor Specific Command Configuration (AVSCC): This field indicates 
+    /*
+     * Admin Vendor Specific Command Configuration (AVSCC): This field indicates
      * the configuration settings for admin vendor specific command handling.
      */
-    UCHAR   AVSCC          :1; 
+    UCHAR   AVSCC          :1;
     UCHAR   Reserved_AVSCC :7;
     UCHAR   Reserved2[247];
     /* NVM Command Set Attributes */
@@ -1400,12 +1400,12 @@ typedef struct _ADMIN_IDENTIFY_CONTROLLER
      * with respect to other read or write operations.
      */
     USHORT  AWUPF;
-    /* 
-     * NVM Vendor Specific Command Configuration (NVSCC): This field indicates 
+    /*
+     * NVM Vendor Specific Command Configuration (NVSCC): This field indicates
      * the configuration settings for NVM vendor specific command handling.
      */
-    UCHAR   NVSCC          :1; 
-    UCHAR   Reserved_NVSCC :7;    
+    UCHAR   NVSCC          :1;
+    UCHAR   Reserved_NVSCC :7;
     UCHAR   Reserved4[173];
     /* I/O Command Set Attributes */
     UCHAR   Reserved5[1344];
@@ -1855,7 +1855,7 @@ typedef struct _ADMIN_SET_FEATURES_COMMAND_LBA_RANGE_TYPE_ENTRY
      * uniquely identifies the type of this LBA range. Well known Types may be
      * defined and are published on the NVMHCI website.
      */
-    UCHAR       GUID[16];    
+    UCHAR       GUID[16];
     UCHAR       Reserved2[16];
 } ADMIN_SET_FEATURES_LBA_COMMAND_RANGE_TYPE_ENTRY,
   *PADMIN_SET_FEATURES_COMMAND_LBA_RANGE_TYPE_ENTRY;
@@ -2048,7 +2048,7 @@ typedef struct _ADMIN_SET_FEATURES_COMMAND_SOFTWARE_PROGRESS_MARKER_DW11
      * value does not wrap to 0). OS driver software should set this field to 0h
      * after the OS has successfully been initialized.
      */
-    ULONG   PBSLC    :8; 
+    ULONG   PBSLC    :8;
     ULONG   Reserved :24;
 } ADMIN_SET_FEATURES_COMMAND_SOFTWARE_PROGRESS_MARKER_DW11,
   *PADMIN_SET_FEATURES_COMMAND_SOFTWARE_PROGRESS_MARKER_DW11;

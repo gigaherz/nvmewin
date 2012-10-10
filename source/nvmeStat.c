@@ -146,6 +146,10 @@ BOOLEAN NVMeRunningStartAttempt(
     pAE->DriverState.resetDriven = resetDriven;
     pAE->DriverState.pResetSrb = pResetSrb;
     pAE->DriverState.VisibleNamespacesExamined = 0;
+#if DBG
+    pAE->LearningComplete = FALSE;
+#endif
+
 
     /* Zero out SQ cn CQ counters */
     pAE->QueueInfo.NumSubIoQCreated = 0;
@@ -670,7 +674,7 @@ VOID NVMeRunningWaitOnLearnMapping(
 #ifdef DUMB_DRIVER
         {
 #else
-        if ((pRMT->NumMsiMsgGranted <= pRMT->NumActiveCores) ||
+        if ((pRMT->NumMsiMsgGranted < pRMT->NumActiveCores) ||
             (pRMT->pMsiMsgTbl->Shared == TRUE) ||
             (pRMT->InterruptType == INT_TYPE_INTX) ||
             (pRMT->InterruptType == INT_TYPE_MSI) ||

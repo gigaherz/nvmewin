@@ -189,8 +189,12 @@ typedef enum _HISTORY_TAG
     ISSUE_RETURN_BUSY,
     ISSUE,
     COMPPLETE_CMD,
-    SRB_RESET,
+    SRB_RESET_LUN,
+    SRB_RESET_BUS,
+    SRB_RESET_DEVICE,
     DPC_RESET,
+    DETECTED_PENDING_CMD,
+    COMPPLETE_CMD_RESET,
     HISTORY_MARKER = 255 // always last in the enum
 } HISTORY_TAG;
 
@@ -788,12 +792,6 @@ typedef struct _MSI_MESSAGE_TBL
     STOR_PHYSICAL_ADDRESS Addr;
 
     /*
-     * The target core the MSI-X message to interrupt on. When the message is
-     * shared (Shared==TRUE), programmed as 0xFFFF.
-     */
-    USHORT CoreNum;
-
-    /*
      * The associated completion queue number. When the message is shared
      * (Shared==TRUE), all queues need to be checked for completion entries
      */
@@ -969,6 +967,11 @@ typedef struct _nvme_device_extension
     /* counter used to determine in learning the vector/core table */
     ULONG                       LearningCores;
 
+#if DBG
+    /* part of debug code to sanity check learning */
+    BOOLEAN                     LearningComplete;
+#endif
+
 #if defined(CHATHAM2)
     PVOID                       pChathamRegs;
     ULONG                       FwVer;
@@ -1012,8 +1015,10 @@ typedef struct _nvme_srb_extension
     PVOID                        pChildIo;
     PVOID                        pParentIo;
 
-    /* used for learning the vector/core mappings */
+#if DBG
+    /* used for debug learning the vector/core mappings */
     PROCESSOR_NUMBER             procNum;
+#endif
 
 #ifdef DUMB_DRIVER
     PVOID pDblVir;     // this cmd's dbl buffer virtual address

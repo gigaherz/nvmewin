@@ -226,8 +226,10 @@ ProcessIo(
     USHORT SubQueue = 0;
     USHORT CplQueue = 0;
     PQUEUE_INFO pQI = &pAdapterExtension->QueueInfo;
-    PSUB_QUEUE_INFO pSQI = pQI->pSubQueueInfo;
     STOR_LOCK_HANDLE hStartIoLock = {0};
+#ifdef PRP_DBG
+    PVOID pVa = NULL;
+#endif
 
      __try {
 
@@ -245,8 +247,10 @@ ProcessIo(
             __leave;
         }
 
-    /* save off the usbmitting core info for CT learning purposes */
+#if DBG
+        /* save off the submitting core info for debug CT learning purposes */
     pSrbExtension->procNum = ProcNumber;
+#endif
 
     /* 1 - Select Queue based on CPU */
     if (QueueType == NVME_QUEUE_TYPE_IO) {
@@ -351,10 +355,11 @@ ProcessIo(
      * stack var but contains a to the pre allocated mem which is what we're
      * updating.
      */
+#ifndef PRP_DBG
     if (pSrbExtension->numberOfPrpEntries > 2) {
         pNvmeCmd->PRP2 = pCmdInfo->prpListPhyAddr.QuadPart;
 
-        /* 
+        /*
          * Copy the PRP list pointed to by PRP2. Size of the copy is total num
          * of PRPs -1 because PRP1 is not in the PRP list pointed to by PRP2.
          */
@@ -363,6 +368,50 @@ ProcessIo(
             (PVOID)&pSrbExtension->prpList[0],
             ((pSrbExtension->numberOfPrpEntries - 1) * sizeof(UINT64)));
     }
+#else
+        if (pSrbExtension->pSrb) {
+            StorPortGetSystemAddress(pSrbExtension->pNvmeDevExt,
+                              pSrbExtension->pSrb,
+                              &pVa);
+            StorPortDebugPrint(INFO,
+                               "NVME: Process Cmd 0x%x VA 0x%x 0x%x SLBA 0x%x 0x%x for LEN 0x%x\n",
+                               pNvmeCmd->CDW0.OPC,
+                               (ULONGLONG)pVa >> 32, (ULONG)pVa,
+                               pNvmeCmd->CDW11,
+                               pNvmeCmd->CDW10,
+                               pSrbExtension->pSrb->DataTransferLength);
+        }
+
+        if (pSrbExtension->numberOfPrpEntries > 2) {
+            ULONG i;
+            pNvmeCmd->PRP2 = pCmdInfo->prpListPhyAddr.QuadPart;
+
+            StorPortMoveMemory(
+                (PVOID)pCmdInfo->pPRPList,
+                               (PVOID)&pSrbExtension->prpList[0],
+                ((pSrbExtension->numberOfPrpEntries - 1) * sizeof(UINT64)));
+
+            StorPortDebugPrint(INFO,
+                   "NVME: Process prp1 0x%x 0x%x prp2 0x%x 0x%x (list for 0x%x entries)\n",
+                   pNvmeCmd->PRP1 >> 32, pNvmeCmd->PRP1,
+                   pNvmeCmd->PRP2 >> 32, pNvmeCmd->PRP2,
+                   (pSrbExtension->numberOfPrpEntries - 1));
+
+            for (i=0;i<(pSrbExtension->numberOfPrpEntries - 1);i++) {
+                StorPortDebugPrint(INFO,
+                   "NVME: Process entry # 0x%x prp 0x%x 0x%x\n",
+                   i,
+                   pSrbExtension->prpList[i] >> 32, pSrbExtension->prpList[i]
+                   );
+            }
+        } else if (pNvmeCmd->PRP1 != 0) {
+                 StorPortDebugPrint(INFO,
+                       "NVME: Process prp1 0x%x 0x%x prp2 0x%x 0x%x (no list)\n",
+                   pNvmeCmd->PRP1 >> 32, pNvmeCmd->PRP1,
+                   pNvmeCmd->PRP2 >> 32, pNvmeCmd->PRP2
+                   );
+        }
+#endif /* PRP_DBG */
 #endif /* DBL_BUFF */
 #ifdef HISTORY
             TracePathSubmit(PRE_ISSUE, SubQueue, pNvmeCmd->NSID, pNvmeCmd->CDW0,
@@ -545,6 +594,16 @@ BOOLEAN NVMeDetectPendingCmds(
     USHORT CmdID;
     USHORT QueueID = 0;
     PNVME_SRB_EXTENSION pSrbExtension = NULL;
+    BOOLEAN retValue = FALSE;
+
+    /*
+     * there is a 0xD1 BSOD on shutdown/restart *with verifier on*
+     * something to do with QEMU and IA emulation.  Confirmed the
+     * mem in question is safe (Q mem) and this doesn't happen with
+     * real HW.  So, if you use QEMU and verifier, uncomment this
+     * line
+     */
+    /* return FALSE; */
 
     /* Search all IO queues - start after admin queue */
     for (QueueID = 1; QueueID <= pQI->NumSubIoQCreated; QueueID++) {
@@ -562,15 +621,51 @@ BOOLEAN NVMeDetectPendingCmds(
                 ASSERT((pSrbExtension != NULL) &&
                        (pSrbExtension->pSrb != NULL));
 
-                StorPortDebugPrint(INFO,
-                    "NVMeDetectPendingCmds: pending commands detected\n");
+#ifdef HISTORY
+                TraceEvent(DETECTED_PENDING_CMD,
+                    QueueID,
+                    pSrbExtension->nvmeSqeUnit.CDW0.CID,
+                    pSrbExtension->nvmeSqeUnit.CDW0.OPC,
+                    pSrbExtension->nvmeSqeUnit.PRP1,
+                    pSrbExtension->nvmeSqeUnit.PRP2,
+                    pSrbExtension->nvmeSqeUnit.NSID);
+#endif
+
+#if DBG
+                DbgPrint("NVMeDetectPendingCmds: cmd info cmd id 0x%x srbExt 0x%x srb 0x%x\n",
+                    pCmdEntry->CmdInfo.CmdID, pSrbExtension, pSrbExtension->pSrb);
+                DbgPrint("\tnvme queue 0x%x OPC 0x%x\n",
+                    QueueID, pSrbExtension->nvmeSqeUnit.CDW0.OPC);
+                DbgPrint("\tnvme cmd id 0x%x\n",
+                    pSrbExtension->nvmeSqeUnit.CDW0.CID);
+                DbgPrint("\tnvme nsid 0x%x\n",
+                    pSrbExtension->nvmeSqeUnit.NSID);
+                DbgPrint("\tnvme prp1 0x%x 0x%x\n",
+                    pSrbExtension->nvmeSqeUnit.PRP1 >> 32,
+                    pSrbExtension->nvmeSqeUnit.PRP1);
+                DbgPrint("\tnvme prp2 0x%x 0x%x\n",
+                    pSrbExtension->nvmeSqeUnit.PRP2 >> 32,
+                    pSrbExtension->nvmeSqeUnit.PRP2);
+                DbgPrint("\tnvme CDW10 0x%x\n",
+                    pSrbExtension->nvmeSqeUnit.CDW10);
+                DbgPrint("\tnvme CDW11 0x%x\n",
+                    pSrbExtension->nvmeSqeUnit.CDW11);
+                DbgPrint("\tnvme CDW12 0x%x\n",
+                    pSrbExtension->nvmeSqeUnit.CDW12);
+                DbgPrint("\tnvme CDW13 0x%x\n",
+                    pSrbExtension->nvmeSqeUnit.CDW13);
+                DbgPrint("\tnvme CDW14 0x%x\n",
+                    pSrbExtension->nvmeSqeUnit.CDW14);
+                DbgPrint("\tnvme CDW15 0x%x\n",
+                    pSrbExtension->nvmeSqeUnit.CDW15);
+#endif
 
                 if ((pSrbExtension != NULL) &&
                     (pSrbExtension->pSrb != NULL))
-                    return TRUE;
+                    retValue = TRUE;
             }
         }
     }
 
-    return FALSE;
+    return retValue;
 } /* NVMeDetectPendingCmds */
