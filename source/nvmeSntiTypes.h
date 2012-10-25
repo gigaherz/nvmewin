@@ -304,7 +304,7 @@
 #define WRITE_CDB_WP_SHIFT                            5
 #define WRITE_CDB_FUA_OFFSET                          1
 #define WRITE_CDB_FUA_MASK                          0x8
-#define WRITE_6_CDB_LBA_OFFSET                        0
+#define WRITE_6_CDB_LBA_OFFSET                        1
 #define WRITE_6_CDB_LBA_MASK                 0x001FFFFF
 #define WRITE_6_CDB_TX_LEN_OFFSET                     4
 #define WRITE_10_CDB_LBA_OFFSET                       2
@@ -341,7 +341,7 @@
 #define READ_CDB_FUA_MASK                           0x8
 #define READ_6_CDB_LBA_OFFSET                         1
 #define READ_6_CDB_TX_LEN_OFFSET                      4
-#define READ_6_CDB_LBA_MASK                    0x1FFFFF
+#define READ_6_CDB_LBA_MASK                  0x001FFFFF
 #define READ_10_CDB_LBA_OFFSET                        2
 #define READ_10_CDB_TX_LEN_OFFSET                     7
 #define READ_10_CDB_FUA_OFFSET                        1

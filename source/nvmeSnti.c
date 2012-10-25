@@ -1443,7 +1443,7 @@ SNTI_STATUS SntiTranslateWrite6(
     UINT32 lba = 0;
     UINT8 length = 0;
 
-    lba = GET_U32_FROM_CDB(pSrb, WRITE_6_CDB_LBA_OFFSET);
+    lba = GET_U24_FROM_CDB(pSrb, WRITE_6_CDB_LBA_OFFSET);
     length = GET_U8_FROM_CDB(pSrb, WRITE_6_CDB_TX_LEN_OFFSET);
 
     /* Mask off the unnecessary bits and validate the LBA range */
@@ -1740,7 +1740,7 @@ SNTI_STATUS SntiTranslateRead6(
     length = GET_U8_FROM_CDB(pSrb, READ_6_CDB_TX_LEN_OFFSET);
 
     /* Mask off the unnecessary bits and validate the LBA range */
-    lba &= WRITE_6_CDB_LBA_MASK;
+    lba &= READ_6_CDB_LBA_MASK;
 
     status = SntiValidateLbaAndLength(pLunExt,
                                       pSrbExt,

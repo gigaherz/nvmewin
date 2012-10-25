@@ -205,8 +205,11 @@ NVMeFindAdapter(
     UNREFERENCED_PARAMETER( Reserved2 );
     UNREFERENCED_PARAMETER( Reserved3 );
 
-    /* Initialize the hardware device extension structure. */
+    /* Initialize the hardware device extension structure to avoid OS assert */
     memset ((void*)pAE, 0, sizeof(NVME_DEVICE_EXTENSION));
+
+    /* Ensure Storport allocates the DMA adapter object */
+    StorPortGetUncachedExtension(pAE, pPCI, 1);
 
     /*
      * Get memory-mapped access range information
