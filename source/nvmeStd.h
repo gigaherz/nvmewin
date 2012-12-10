@@ -80,7 +80,6 @@ ULONG ChathamNlb; /* Number of logical blocks */
 #define DUMP_POLL_CALLS             3
 #define STORPORT_TIMER_CB_us        5000 /* .005 seconds */
 #define MAX_STATE_STALL_us          STORPORT_TIMER_CB_us
-#define QUIESCE_TIMEOUT             100 /* 500ms */
 #define MILLI_TO_MICRO              1000
 #define MICRO_TO_NANO               1000
 #define MSI_ADDR_RH_DM_MASK         0xC
@@ -194,7 +193,7 @@ typedef enum _HISTORY_TAG
     SRB_RESET_DEVICE,
     DPC_RESET,
     DETECTED_PENDING_CMD,
-    COMPPLETE_CMD_RESET,
+    COMPLETE_CMD_RESET,
     HISTORY_MARKER = 255 // always last in the enum
 } HISTORY_TAG;
 
@@ -328,6 +327,7 @@ enum
     START_STATE_AER_FAILURE,
     FATAL_POLLED_ADMIN_CMD_FAILURE,
     START_STATE_UNKNOWN_STATE_FAILURE,
+    START_MAX_XFER_MISMATCH_FAILURE,
     START_STATE_TIMEOUT_FAILURE = 31
 };
 
@@ -1192,11 +1192,6 @@ BOOLEAN NVMeNormalShutdown(
     __in PNVME_DEVICE_EXTENSION pAE
 );
 
-UCHAR NVMeIssueAERs(
-    PNVME_DEVICE_EXTENSION pAE,
-    UCHAR NumCmds
-);
-
 BOOLEAN NVMeAllocIoQueues(
     __in PNVME_DEVICE_EXTENSION pAE
 );
@@ -1298,10 +1293,6 @@ NVMeRunningWaitOnSetFeatures(
     PNVME_DEVICE_EXTENSION pAE
 );
 
-VOID NVMeRunningWaitOnAER(
-    PNVME_DEVICE_EXTENSION pAE
-);
-
 VOID NVMeRunningWaitOnIoCQ(
     PNVME_DEVICE_EXTENSION pAE
 );
@@ -1388,33 +1379,11 @@ SCSI_ADAPTER_CONTROL_STATUS NVMeAdapterControl(
     __in PVOID Parameters
 );
 
-BOOLEAN NVMeAERCompletion(
-    PNVME_DEVICE_EXTENSION pDevExt,
-    PNVME_SRB_EXTENSION pSrbExt
-);
-
 VOID RecoveryDpcRoutine(
     IN PSTOR_DPC  pDpc,
     IN PVOID  pHwDeviceExtension,
     IN PVOID  pSystemArgument1,
     IN PVOID  pSystemArgument2
-);
-
-VOID NVMeAERDpcRoutine(
-    IN PSTOR_DPC  pDpc,
-    IN PVOID  pHwDeviceExtension,
-    IN PVOID  pSystemArgument1,
-    IN PVOID  pSystemArgument2
-);
-
-VOID NVMeAERCompletionRoutine(
-    PNVME_SRB_EXTENSION pSrbExt,
-    PNVMe_COMPLETION_QUEUE_ENTRY pCqEntry
-);
-
-VOID NVMeAERGetLogPageCompletionRoutine(
-    PVOID param1,
-    PVOID param2
 );
 
 VOID NVMeInitSrbExtension(

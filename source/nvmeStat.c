@@ -239,9 +239,6 @@ VOID NVMeRunning(
         case NVMeWaitOnSetupQueues:
             NVMeRunningWaitOnSetupQueues(pAE);
         break;
-        case NVMeWaitOnAER:
-            NVMeRunningWaitOnAER(pAE);
-        break;
         case NVMeWaitOnIoCQ:
             NVMeRunningWaitOnIoCQ(pAE);
         break;
@@ -467,9 +464,8 @@ VOID NVMeRunningWaitOnSetupQueues(
     }
 
     /*
-     * TODO:
-     * Skip NVMeWaitOnAER since the NVMe QEMU emulator completes these commands
-     *immediately pAE->StartState.NextStartState = NVMeWaitOnAER;
+     * Transition to NVMeWaitOnIoCQ state
+     * pAE->StartState.NextStartState = NVMeWaitOnIoCQ;
      */
     ASSERT(pQI->NumCplIoQCreated == 0);
     pAE->DriverState.NextDriverState = NVMeWaitOnIoCQ;
@@ -532,31 +528,6 @@ VOID NVMeRunningWaitOnSetFeatures(
     }
 } /* NVMeRunningWaitOnSetFeatures */
 
-/*******************************************************************************
- * NVMeRunningWaitOnAER
- *
- * @brief NVMeRunningWaitOnAER is called to issue Asynchronous Event Request
- *        commands.
- *
- * @param pAE - Pointer to adapter device extension.
- *
- * @return VOID
- ******************************************************************************/
-VOID NVMeRunningWaitOnAER(
-    PNVME_DEVICE_EXTENSION pAE
-)
-{
-    /*
-     * Issue four Asynchronous Event Request commands by default
-     * As long as it can issue one command, proceed to next state.
-     * If failed to issue any, fail the state machine
-     */
-    if (NVMeIssueAERs( pAE, DFT_ASYNC_EVENT_REQ_NUMBER ) == 0) {
-        NVMeDriverFatalError(pAE,
-                            (1 << START_STATE_AER_FAILURE));
-        NVMeCallArbiter(pAE);
-    }
-} /* NVMeRunningWaitOnAER */
 
 /*******************************************************************************
  * NVMeRunningWaitOnIoCQ

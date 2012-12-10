@@ -106,7 +106,7 @@ ULONG NVMeIssueCmd(
     pNVMeCmd = (PNVMe_COMMAND)pSQI->pSubQStart;
     pNVMeCmd += pSQI->SubQTailPtr;
 
-    memcpy((PVOID)pNVMeCmd, pTempSubEntry, sizeof(NVMe_COMMAND));
+    StorPortCopyMemory((PVOID)pNVMeCmd, pTempSubEntry, sizeof(NVMe_COMMAND));
 
     /* Increase the tail pointer by 1 and reset it if needed */
     pSQI->SubQTailPtr = tempSqTail;
@@ -342,7 +342,7 @@ ProcessIo(
              * be copied out in the ISR
              */
             if (IS_CMD_DATA_OUT(pNvmeCmd->CDW0.OPC)) {
-                StorPortMoveMemory(pSrbExtension->pDblVir,
+                    StorPortCopyMemory(pSrbExtension->pDblVir,
                                    pSrbExtension->pSrbDataVir,
                                    pSrbExtension->dataLen);
             }
@@ -363,7 +363,7 @@ ProcessIo(
          * Copy the PRP list pointed to by PRP2. Size of the copy is total num
          * of PRPs -1 because PRP1 is not in the PRP list pointed to by PRP2.
          */
-        StorPortMoveMemory(
+            StorPortCopyMemory(
             (PVOID)pCmdInfo->pPRPList,
             (PVOID)&pSrbExtension->prpList[0],
             ((pSrbExtension->numberOfPrpEntries - 1) * sizeof(UINT64)));
@@ -386,7 +386,7 @@ ProcessIo(
             ULONG i;
             pNvmeCmd->PRP2 = pCmdInfo->prpListPhyAddr.QuadPart;
 
-            StorPortMoveMemory(
+            StorPortCopyMemory(
                 (PVOID)pCmdInfo->pPRPList,
                                (PVOID)&pSrbExtension->prpList[0],
                 ((pSrbExtension->numberOfPrpEntries - 1) * sizeof(UINT64)));
@@ -559,7 +559,7 @@ VOID NVMeCompleteCmd(
 
         ASSERT(pSrbExt);
 
-        StorPortMoveMemory(pSrbExt->pSrbDataVir,
+        StorPortCopyMemory(pSrbExt->pSrbDataVir,
                            pSrbExt->pDblVir,
                            pSrbExt->dataLen);
     }
@@ -579,13 +579,15 @@ VOID NVMeCompleteCmd(
  *        be pending. Called when the caller is about to shutdown per S3 or S4.
  *
  * @param pAE - Pointer to hardware device extension.
+ * @param completeCmd - determines if deteced commands should be completed
  *
  * @return BOOLEAN
  *     TRUE if commands are detected that are still pending
  *     FALSE if no commands pending
  ******************************************************************************/
 BOOLEAN NVMeDetectPendingCmds(
-    PNVME_DEVICE_EXTENSION pAE
+    PNVME_DEVICE_EXTENSION pAE,
+    BOOLEAN completeCmd
 )
 {
     PQUEUE_INFO pQI = &pAE->QueueInfo;
@@ -595,6 +597,7 @@ BOOLEAN NVMeDetectPendingCmds(
     USHORT QueueID = 0;
     PNVME_SRB_EXTENSION pSrbExtension = NULL;
     BOOLEAN retValue = FALSE;
+    PNVMe_COMMAND pNVMeCmd = NULL;
 
     /*
      * there is a 0xD1 BSOD on shutdown/restart *with verifier on*
@@ -605,8 +608,8 @@ BOOLEAN NVMeDetectPendingCmds(
      */
     /* return FALSE; */
 
-    /* Search all IO queues - start after admin queue */
-    for (QueueID = 1; QueueID <= pQI->NumSubIoQCreated; QueueID++) {
+    /* Search all submission queues */
+    for (QueueID = 0; QueueID <= pQI->NumSubIoQCreated; QueueID++) {
         pSQI = pQI->pSubQueueInfo + QueueID;
 
         for (CmdID = 0; CmdID < pSQI->SubQEntries; CmdID++) {
@@ -621,51 +624,106 @@ BOOLEAN NVMeDetectPendingCmds(
                 ASSERT((pSrbExtension != NULL) &&
                        (pSrbExtension->pSrb != NULL));
 
+                if (pSrbExtension != NULL) {
+                    pNVMeCmd = &pSrbExtension->nvmeSqeUnit;
+
 #ifdef HISTORY
-                TraceEvent(DETECTED_PENDING_CMD,
-                    QueueID,
-                    pSrbExtension->nvmeSqeUnit.CDW0.CID,
-                    pSrbExtension->nvmeSqeUnit.CDW0.OPC,
-                    pSrbExtension->nvmeSqeUnit.PRP1,
-                    pSrbExtension->nvmeSqeUnit.PRP2,
-                    pSrbExtension->nvmeSqeUnit.NSID);
+                    TraceEvent(DETECTED_PENDING_CMD,
+                        QueueID,
+                        pNVMeCmd->CDW0.CID,
+                        pNVMeCmd->CDW0.OPC,
+                        pNVMeCmd->PRP1,
+                        pNVMeCmd->PRP2,
+                        pNVMeCmd->NSID);
 #endif
 
 #if DBG
-                DbgPrint("NVMeDetectPendingCmds: cmd info cmd id 0x%x srbExt 0x%x srb 0x%x\n",
-                    pCmdEntry->CmdInfo.CmdID, pSrbExtension, pSrbExtension->pSrb);
-                DbgPrint("\tnvme queue 0x%x OPC 0x%x\n",
-                    QueueID, pSrbExtension->nvmeSqeUnit.CDW0.OPC);
-                DbgPrint("\tnvme cmd id 0x%x\n",
-                    pSrbExtension->nvmeSqeUnit.CDW0.CID);
-                DbgPrint("\tnvme nsid 0x%x\n",
-                    pSrbExtension->nvmeSqeUnit.NSID);
-                DbgPrint("\tnvme prp1 0x%x 0x%x\n",
-                    pSrbExtension->nvmeSqeUnit.PRP1 >> 32,
-                    pSrbExtension->nvmeSqeUnit.PRP1);
-                DbgPrint("\tnvme prp2 0x%x 0x%x\n",
-                    pSrbExtension->nvmeSqeUnit.PRP2 >> 32,
-                    pSrbExtension->nvmeSqeUnit.PRP2);
-                DbgPrint("\tnvme CDW10 0x%x\n",
-                    pSrbExtension->nvmeSqeUnit.CDW10);
-                DbgPrint("\tnvme CDW11 0x%x\n",
-                    pSrbExtension->nvmeSqeUnit.CDW11);
-                DbgPrint("\tnvme CDW12 0x%x\n",
-                    pSrbExtension->nvmeSqeUnit.CDW12);
-                DbgPrint("\tnvme CDW13 0x%x\n",
-                    pSrbExtension->nvmeSqeUnit.CDW13);
-                DbgPrint("\tnvme CDW14 0x%x\n",
-                    pSrbExtension->nvmeSqeUnit.CDW14);
-                DbgPrint("\tnvme CDW15 0x%x\n",
-                    pSrbExtension->nvmeSqeUnit.CDW15);
+                    DbgPrintEx(DPFLTR_STORMINIPORT_ID,
+                        DPFLTR_ERROR_LEVEL,
+                        "NVMeDetectPendingCmds: cmdinfo cmd id 0x%x srbExt 0x%x srb 0x%x\n",
+                        pCmdEntry->CmdInfo.CmdID, pSrbExtension, pSrbExtension->pSrb);
+                    DbgPrintEx(DPFLTR_STORMINIPORT_ID,
+                        DPFLTR_ERROR_LEVEL,
+                        "\tnvme queue 0x%x OPC 0x%x\n",
+                        QueueID, pNVMeCmd->CDW0.OPC);
+                    DbgPrintEx(DPFLTR_STORMINIPORT_ID,
+                        DPFLTR_ERROR_LEVEL,
+                        "\tnvme cmd id 0x%x\n",
+                        pNVMeCmd->CDW0.CID);
+                    DbgPrintEx(DPFLTR_STORMINIPORT_ID,
+                        DPFLTR_ERROR_LEVEL,
+                        "\tnvme nsid 0x%x\n",
+                        pNVMeCmd->NSID);
+                    DbgPrintEx(DPFLTR_STORMINIPORT_ID,
+                        DPFLTR_ERROR_LEVEL,
+                        "\tnvme prp1 0x%x 0x%x\n",
+                        pNVMeCmd->PRP1 >> 32,
+                        pNVMeCmd->PRP1);
+                    DbgPrintEx(DPFLTR_STORMINIPORT_ID,
+                        DPFLTR_ERROR_LEVEL,
+                        "\tnvme prp2 0x%x 0x%x\n",
+                        pNVMeCmd->PRP2 >> 32,
+                        pNVMeCmd->PRP2);
+                    DbgPrintEx(DPFLTR_STORMINIPORT_ID,
+                        DPFLTR_ERROR_LEVEL,
+                        "\tnvme CDW10 0x%x\n",
+                        pNVMeCmd->CDW10);
+                    DbgPrintEx(DPFLTR_STORMINIPORT_ID,
+                        DPFLTR_ERROR_LEVEL,
+                        "\tnvme CDW11 0x%x\n",
+                        pNVMeCmd->CDW11);
+                    DbgPrintEx(DPFLTR_STORMINIPORT_ID,
+                        DPFLTR_ERROR_LEVEL,
+                        "\tnvme CDW12 0x%x\n",
+                        pNVMeCmd->CDW12);
+                    DbgPrintEx(DPFLTR_STORMINIPORT_ID,
+                        DPFLTR_ERROR_LEVEL,
+                        "\tnvme CDW13 0x%x\n",
+                        pNVMeCmd->CDW13);
+                    DbgPrintEx(DPFLTR_STORMINIPORT_ID,
+                        DPFLTR_ERROR_LEVEL,
+                        "\tnvme CDW14 0x%x\n",
+                        pNVMeCmd->CDW14);
+                    DbgPrintEx(DPFLTR_STORMINIPORT_ID,
+                        DPFLTR_ERROR_LEVEL,
+                        "\tnvme CDW15 0x%x\n",
+                        pNVMeCmd->CDW15);
 #endif
 
-                if ((pSrbExtension != NULL) &&
-                    (pSrbExtension->pSrb != NULL))
-                    retValue = TRUE;
-            }
-        }
-    }
+                    /* don't count AER as an outstanding cmd */
+                    if ((pNVMeCmd->CDW0.OPC != ADMIN_ASYNCHRONOUS_EVENT_REQUEST) &&
+                        (pSrbExtension->pSrb != NULL)) {
+                        retValue = TRUE;
+                    }
+
+                    /* if requested, complete the command now */
+                    if (completeCmd == TRUE) {
+
+                        NVMeCompleteCmd(pAE,
+                                        pSQI->SubQueueID,
+                                        NO_SQ_HEAD_CHANGE,
+                                        pNVMeCmd->CDW0.CID,
+                                        (PVOID)&pSrbExtension);
+
+                        if (pSrbExtension->pSrb != NULL) {
+#ifdef HISTORY
+                            NVMe_COMPLETION_QUEUE_ENTRY_DWORD_3 nullEntry = {0};
+                            TracePathComplete(COMPLETE_CMD_RESET,
+                                pSQI->SubQueueID,
+                                pNVMeCmd->CDW0.CID, 0, nullEntry,
+                                (ULONGLONG)pSrbExtension->pNvmeCompletionRoutine,
+                                0);
+#endif
+                            pSrbExtension->pSrb->SrbStatus = SRB_STATUS_BUS_RESET;
+                            IO_StorPortNotification(RequestComplete,
+                                                    pAE,
+                                                    pSrbExtension->pSrb);
+                        } /* has an Srb */
+                    } /* complete the command? */
+                } /* non NULL srbExt */
+            } /* if cmd is pending */
+        } /* for cmds on the SQ */
+    } /* for the SQ */
 
     return retValue;
 } /* NVMeDetectPendingCmds */

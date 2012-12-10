@@ -205,11 +205,8 @@ NVMeFindAdapter(
     UNREFERENCED_PARAMETER( Reserved2 );
     UNREFERENCED_PARAMETER( Reserved3 );
 
-    /* Initialize the hardware device extension structure to avoid OS assert */
+    /* Initialize the hardware device extension structure. */
     memset ((void*)pAE, 0, sizeof(NVME_DEVICE_EXTENSION));
-
-    /* Ensure Storport allocates the DMA adapter object */
-    StorPortGetUncachedExtension(pAE, pPCI, 1);
 
     /*
      * Get memory-mapped access range information
@@ -531,7 +528,6 @@ BOOLEAN NVMePassiveInitialize(
 
     /* Initialize a DPC for command completions that need to free memory */
     StorPortInitializeDpc(pAE, &pAE->SntiDpc, SntiDpcRoutine);
-    StorPortInitializeDpc(pAE, &pAE->AerDpc, NVMeAERDpcRoutine);
     StorPortInitializeDpc(pAE, &pAE->RecoveryDpc, RecoveryDpcRoutine);
 
 #ifdef COMPLETE_IN_DPC
@@ -643,6 +639,8 @@ BOOLEAN NVMeInitialize(
     if (CC.EN == 1) {
         NVMe_CONTROLLER_STATUS CSTS = {0};
         ULONG time = 0;
+
+        StorPortDebugPrint(INFO, "NVMeInitialize:  EN already set, wait for RDY...\n");
         /*
          * Before we transition to 0, make sure the ctrl is actually RDY
          * NOTE:  Some HW implementations may not require this wait and
@@ -664,6 +662,7 @@ BOOLEAN NVMeInitialize(
                                           &pAE->pCtrlRegister->CSTS.AsUlong);
          };
 
+        StorPortDebugPrint(INFO, "NVMeInitialize:  Clearing EN...\n");
         /* Now reset */
         CC.EN = 0;
         StorPortWriteRegisterUlong(pAE,
@@ -1217,7 +1216,7 @@ BOOLEAN NVMeStartIo(
         case SRB_FUNCTION_RESET_DEVICE:
         case SRB_FUNCTION_RESET_LOGICAL_UNIT:
         case SRB_FUNCTION_RESET_BUS:
-            ASSERT(FALSE);
+         //   ASSERT(FALSE);
 #ifdef HISTORY
             if (Function == SRB_FUNCTION_RESET_DEVICE) {
                 TraceEvent(SRB_RESET_DEVICE, 0,0,0,Srb->Lun, 0,0);
@@ -1872,7 +1871,7 @@ NVMeIsrMsix (
                     }
 
                     if (pSrbExtension->pNvmeCompletionRoutine == NULL) {
-                    /*
+                        /*
                          * if no comp reoutine, call only if we had a valid
                          * status translation, otherwise let it timeout if
                          * if was host based
@@ -1885,7 +1884,7 @@ NVMeIsrMsix (
                          * complete onlt if this was a host request (srb exsits)
                          * In this case the completion routine is responsible
                          * for mapping Srb status
-                    */
+                         */
                         callStorportNotification =
                             pSrbExtension->pNvmeCompletionRoutine(pAE, (PVOID)pSrbExtension)
                             && (pSrbExtension->pSrb != NULL);
@@ -1946,25 +1945,16 @@ VOID RecoveryDpcRoutine(
     PNVME_DEVICE_EXTENSION pAE = (PNVME_DEVICE_EXTENSION)pHwDeviceExtension;
     PSCSI_REQUEST_BLOCK pSrb = (PSCSI_REQUEST_BLOCK)pSystemArgument1;
     STOR_LOCK_HANDLE startLockhandle = { 0 };
-    PQUEUE_INFO pQI = &pAE->QueueInfo;
-    PSUB_QUEUE_INFO pSQI = NULL;
-    ULONG index = 0;
-    PNVMe_COMMAND pNVMeCmd = NULL;
-    PNVME_SRB_EXTENSION pSrbExtension = NULL;
 
     DbgPrint("RecoveryDpcRoutine: Entry\n");
-
+#ifdef HISTORY
+    TraceEvent(DPC_RESET,0,0,0,0, 0,0);
+#endif
     /*
      * Get spinlocks in order, this assures we don't have submission or
      * completion threads happening before or during reset
      */
     StorPortAcquireSpinLock(pAE, StartIoLock, NULL, &startLockhandle);
-
-    /*
-     * just so get some prints and a chance to examine
-     * what's outstanding
-     */
-    NVMeDetectPendingCmds(pAE);
 
     /*
      * Reset the controller; if any steps fail we just quit which
@@ -1978,58 +1968,10 @@ VOID RecoveryDpcRoutine(
         /* Complete outstanding commands on submission queues */
         StorPortNotification(ResetDetected, pAE, 0);
 
-        for (index = 0; index <= pQI->NumSubIoQCreated; index++) {
-            /* Start at tail and walk up to current head */
-            pSQI = pQI->pSubQueueInfo + index;
-
-            pNVMeCmd = (PNVMe_COMMAND)pSQI->pSubQStart;
-            pNVMeCmd += ((pSQI->SubQTailPtr) == 0)
-                ? (pSQI->SubQEntries - 1) : (pSQI->SubQTailPtr - 1);
-
-            while (pSQI->SubQTailPtr != pSQI->SubQHeadPtr) {
-#pragma prefast(suppress:6011,"This pointer is not NULL")
-                DbgPrint("Complete CID 0x%x on 0x%x\n",
-                         pNVMeCmd->CDW0.CID,
-                         pSQI->SubQueueID);
-#ifdef HISTORY
-                TraceEvent(DPC_RESET,
-                         pSQI->SubQueueID, pNVMeCmd->CDW0.CID,
-                    0, 0, 0,0);
-#endif
-                NVMeCompleteCmd(pAE,
-                                pSQI->SubQueueID,
-                                NO_SQ_HEAD_CHANGE,
-                                pNVMeCmd->CDW0.CID,
-                                (PVOID)&pSrbExtension);
-
-                if ((pSrbExtension != NULL) &&
-                    (pSrbExtension->pSrb != NULL)) {
-#ifdef HISTORY
-                    NVMe_COMPLETION_QUEUE_ENTRY_DWORD_3 nullEntry = {0};
-                    TracePathComplete(COMPPLETE_CMD_RESET,
-                        pSQI->SubQueueID,
-                        pNVMeCmd->CDW0.CID, 0, nullEntry,
-                        (ULONGLONG)pSrbExtension->pNvmeCompletionRoutine,
-                        0);
-#endif
-                    pSrbExtension->pSrb->SrbStatus = SRB_STATUS_BUS_RESET;
-                    IO_StorPortNotification(RequestComplete,
-                                            pAE,
-                                            pSrbExtension->pSrb);
-                }
-
-                pSQI->SubQTailPtr = ((pSQI->SubQTailPtr) == 0)
-                    ? (pSQI->SubQEntries - 1) : (pSQI->SubQTailPtr - 1);
-
                 /*
-                 * Decrement tail and point to new command (one behind the
-                 * tail).
+         * detect and complete all commands
                  */
-                pNVMeCmd = (PNVMe_COMMAND)pSQI->pSubQStart;
-                pNVMeCmd += ((pSQI->SubQTailPtr) == 0)
-                    ? (pSQI->SubQEntries - 1) : (pSQI->SubQTailPtr - 1);
-            } /* end while */
-        } /* end for: for all submission queues */
+        NVMeDetectPendingCmds(pAE, TRUE);
 
         /*
          * Don't need to hold this anymore, we won't accept new IOs until the
@@ -2116,287 +2058,6 @@ BOOLEAN NVMeResetBus(
 
     return NVMeResetController((PNVME_DEVICE_EXTENSION)AdapterExtension, NULL);
 } /* NVMeResetBus */
-
-/*******************************************************************************
- * NVMeAERCompletion
- *
- * @brief Asynchronous Event Request Completion routine... responsible for
- *        issuing the DPC routine to handle AERs.
- *
- * @param pDevExt - Pointer to device extension
- * @param pSrbExt - Pointer to SRB extension
- *
- * @return BOOLEAN
- *    TRUE - DPC was successufully issued
- *    FALSE - DPC was unsuccessufully issued
- ******************************************************************************/
-BOOLEAN NVMeAERCompletion(
-    PNVME_DEVICE_EXTENSION pDevExt,
-    PNVME_SRB_EXTENSION pSrbExt
-    )
-{
-    PNVMe_COMPLETION_QUEUE_ENTRY pCqEntry = pSrbExt->pCplEntry;
-    ULONG storStatus;
-
-    storStatus = StorPortIssueDpc(pDevExt,
-                                  &pDevExt->AerDpc,
-                                  pSrbExt,
-                                  pCqEntry);
-
-    /* Return false, so the ISR doesn't complete this command to StorPort */
-    return FALSE;
-} /* NVMeAERCompletion */
-
-/*******************************************************************************
- * NVMeAERDpcRoutine
- *
- * @brief DPC routine for Asynchronous Event Request handling
- *
- * @param pDpc - Pointer to DPC
- * @param pHwDeviceExtension - Pointer to device extension
- * @param pSystemArgument1 - First generic argument
- * @param pSystemArgument2 - Second generic argument
- *
- * @return VOID
- ******************************************************************************/
-VOID NVMeAERDpcRoutine(
-    IN PSTOR_DPC pDpc,
-    IN PVOID pHwDeviceExtension,
-    IN PVOID pSystemArgument1,
-    IN PVOID pSystemArgument2
-)
-{
-    PNVME_SRB_EXTENSION pSrbExt = (PNVME_SRB_EXTENSION)pSystemArgument1;
-    PNVMe_COMPLETION_QUEUE_ENTRY pCqEntry =
-        (PNVMe_COMPLETION_QUEUE_ENTRY)pSystemArgument2;
-
-    /*
-     * If this is an AER completion, call the AER completion routine. If this
-     * is a GET LOG PAGE completion, then call the GET LOG PAGE completion
-     * routine.
-     */
-    if (pSrbExt->nvmeSqeUnit.CDW0.OPC == ADMIN_ASYNCHRONOUS_EVENT_REQUEST)
-        NVMeAERCompletionRoutine(pSrbExt, pCqEntry);
-    else if (pSrbExt->nvmeSqeUnit.CDW0.OPC == ADMIN_GET_LOG_PAGE)
-        NVMeAERGetLogPageCompletionRoutine(pSrbExt, pCqEntry);
-    else
-        ASSERT(FALSE);
-} /* NVMeAERDpcRoutine */
-
-/*******************************************************************************
- * NVMeAERCompletionRoutine
- *
- * @brief Asynchronous Event Request Completion routine... responsible for
- *        handling AER requests (running at DPC level)
- *
- *
- * @param pSrbExt - Pointer to SRB extension
- * @param pCqEntry - Pointer to completion queue entry
- *
- * @return VOID
- ******************************************************************************/
-VOID NVMeAERCompletionRoutine(
-    PNVME_SRB_EXTENSION pSrbExt,
-    PNVMe_COMPLETION_QUEUE_ENTRY pCqEntry
-)
-{
-    PNVME_DEVICE_EXTENSION pDevExt = pSrbExt->pNvmeDevExt;
-    PADMIN_ASYNCHRONOUS_EVENT_REQUEST_COMPLETION_DW0 pCqeDword0;
-    STOR_PHYSICAL_ADDRESS physAddr;
-    PHYSICAL_ADDRESS lowestAddr;
-    PHYSICAL_ADDRESS highestAddr;
-    PHYSICAL_ADDRESS boundaryAddr;
-    MEMORY_CACHING_TYPE cacheType;
-    NODE_REQUIREMENT preferredNode;
-    ULONG allocStatus;
-    ULONG paLength;
-    UCHAR logPage;
-    UCHAR logPageSize = 0;
-
-    /* DEBUG */
-    ASSERT((pSrbExt != NULL) && (pCqEntry != NULL));
-
-    /* Extract AER Info */
-    pCqeDword0 =
-        (PADMIN_ASYNCHRONOUS_EVENT_REQUEST_COMPLETION_DW0)pCqEntry->DW0;
-    logPage = (UCHAR)pCqeDword0->AssociatedLogPage;
-
-    if (logPage == ERROR_INFORMATION) {
-        logPageSize =
-            (UCHAR)sizeof(ADMIN_GET_LOG_PAGE_ERROR_INFORMATION_LOG_ENTRY);
-    } else if (logPage == SMART_HEALTH_INFORMATION) {
-        logPageSize = (UCHAR)
-            sizeof(ADMIN_GET_LOG_PAGE_SMART_HEALTH_INFORMATION_LOG_ENTRY);
-    } else if (logPage == FIRMWARE_SLOT_INFORMATION) {
-        logPageSize = (UCHAR)
-            sizeof(ADMIN_GET_LOG_PAGE_FIRMWARE_SLOT_INFORMATION_LOG_ENTRY);
-    } else {
-        ASSERT(FALSE);
-    }
-
-    /* Log the Error Status from CQE - DWORD 0 */
-    StorPortDebugPrint(INFO,
-                       "AER Notification: Event Type - %d, Event Info - %d\n",
-                       pCqeDword0->AsynchronousEventType,
-                       pCqeDword0->AsynchronousEventInformation);
-
-    /* Check to see if there is a persistant internal device error */
-    if ((pCqeDword0->AsynchronousEventType == ERROR_INFORMATION) &&
-        (pCqeDword0->AsynchronousEventInformation ==
-         PERSISTENT_INTERNAL_DEVICE_ERROR)) {
-        /*
-         * A failure occurred within the device that is persistent or the device
-         * is unable to isolate to a specific set of commands. If this error is
-         * indicated, then the CSTS.CFS bit may be set to '1' and the host
-         * should perform a rest as described in 7.3.
-         */
-    }
-
-    /* We can re-use the same AER SRB Extension for the NVME GET LOG PAGE */
-    memset(pSrbExt, 0, sizeof(NVME_SRB_EXTENSION));
-
-    /* Build NVME GET LOG PAGE command - Using the AER SRB Extension */
-    lowestAddr.QuadPart = 0;                   /* Full physical address range */
-    highestAddr.QuadPart = 0xFFFFFFFFFFFFFFFF; /* Full physical address range */
-    cacheType = MmNonCached;                   /* Non-Cached memory for DMA */
-    preferredNode = 0;                         /* Default to Node 0 */
-    boundaryAddr.QuadPart = 0;                 /* No aligned boundaries */
-
-    /* Get physically contigous memory for the PRP entry (GET LOG PAGE cmd) */
-    allocStatus = StorPortAllocateContiguousMemorySpecifyCacheNode(
-                      pDevExt, (size_t)logPageSize, lowestAddr,
-                      highestAddr, boundaryAddr, cacheType, preferredNode,
-                      pSrbExt->pDataBuffer);
-
-    if (allocStatus == STOR_STATUS_SUCCESS) {
-        pSrbExt->pParentIo = NULL;
-        pSrbExt->pChildIo = NULL;
-
-        /* Set up the GET LOG PAGE command */
-        memset(&pSrbExt->nvmeSqeUnit, 0, sizeof(NVMe_COMMAND));
-        pSrbExt->nvmeSqeUnit.CDW0.OPC = ADMIN_GET_LOG_PAGE;
-        pSrbExt->nvmeSqeUnit.CDW0.CID = 0;
-        pSrbExt->nvmeSqeUnit.CDW0.FUSE = FUSE_NORMAL_OPERATION;
-
-        /* DWORD 10 */
-        pSrbExt->nvmeSqeUnit.CDW10 = 0;
-        pSrbExt->nvmeSqeUnit.CDW10 |= (logPageSize << BYTE_SHIFT_2) &
-                                       LOG_PAGE_NUM_DWORDS_MASK;
-        pSrbExt->nvmeSqeUnit.CDW10 |= (logPage & DWORD_MASK_LOW_WORD);
-
-        /* Set the completion routine */
-        pSrbExt->pNvmeCompletionRoutine =
-            (PNVME_COMPLETION_ROUTINE)NVMeAERCompletion;
-
-        physAddr = StorPortGetPhysicalAddress(pDevExt,
-                                              NULL,
-                                              pSrbExt->pDataBuffer,
-                                              &paLength);
-
-        if (physAddr.QuadPart != 0) {
-            pSrbExt->nvmeSqeUnit.PRP1 = physAddr.QuadPart;
-            pSrbExt->nvmeSqeUnit.PRP2 = 0;
-
-            /* Issue the Get Log Page command */
-            if (ProcessIo(pDevExt, pSrbExt, NVME_QUEUE_TYPE_ADMIN, TRUE) == FALSE) {
-                StorPortDebugPrint(
-                    INFO,
-                    "AER DPC: ProcessIo GET LOG PAGE failed (pSrbExt = 0x%x)\n",
-                    pSrbExt);
-            }
-        } else {
-            StorPortDebugPrint(
-                INFO,
-                "AER DPC: Get Phy Addr GET LOG PAGE failed (pSrbExt = 0x%x)\n",
-                pSrbExt);
-        }
-    } else {
-        StorPortDebugPrint(INFO,
-                           "StorPortAllocateContiguousMemorySpecifyCacheNode ");
-        StorPortDebugPrint(INFO,
-                           "for GET LOG PAGE failed (pSrbExt = 0x%x)\n",
-                           pSrbExt);
-    }
-} /* NVMeAERCompletionRoutine */
-
-/*******************************************************************************
- * NVMeAERGetLogPageCompletionRoutine
- *
- * @brief Asynchronous Event Request Get Log Page completion routine
- *
- * @param pSrbExt - Pointer to SRB extension
- * @param pCqEntry - Pointer to completion queue entry
- *
- * @return VOID
- ******************************************************************************/
-VOID NVMeAERGetLogPageCompletionRoutine(
-    PNVME_SRB_EXTENSION pSrbExt,
-    PNVMe_COMPLETION_QUEUE_ENTRY pCqEntry
-)
-{
-    PNVME_DEVICE_EXTENSION pDevExt = pSrbExt->pNvmeDevExt;
-    USHORT logPageId;
-    USHORT logPageSize;
-
-    PADMIN_GET_LOG_PAGE_ERROR_INFORMATION_LOG_ENTRY
-        pErrorInfoLogPage = NULL;
-    PADMIN_GET_LOG_PAGE_SMART_HEALTH_INFORMATION_LOG_ENTRY
-        pSmartHealthLogPage = NULL;
-    PADMIN_GET_LOG_PAGE_FIRMWARE_SLOT_INFORMATION_LOG_ENTRY
-        pFwSlotLogPage = NULL;
-
-    logPageId = (USHORT)pSrbExt->nvmeSqeUnit.CDW10 & DWORD_MASK_LOW_WORD;
-    logPageSize = (USHORT)((pSrbExt->nvmeSqeUnit.CDW10 >> BYTE_SHIFT_2) &
-                           LOG_PAGE_NUM_DWORDS_MASK);
-
-    if (logPageId == ERROR_INFORMATION) {
-        pErrorInfoLogPage =
-            (PADMIN_GET_LOG_PAGE_ERROR_INFORMATION_LOG_ENTRY)
-                pSrbExt->pDataBuffer;
-    } else if (logPageId == SMART_HEALTH_INFORMATION) {
-        pSmartHealthLogPage =
-            (PADMIN_GET_LOG_PAGE_SMART_HEALTH_INFORMATION_LOG_ENTRY)
-                pSrbExt->pDataBuffer;
-    } else if (logPageId == FIRMWARE_SLOT_INFORMATION) {
-        pFwSlotLogPage =
-            (PADMIN_GET_LOG_PAGE_FIRMWARE_SLOT_INFORMATION_LOG_ENTRY)
-                pSrbExt->pDataBuffer;
-    } else {
-        ASSERT(FALSE);
-    }
-
-    /* Release the buffer in the SRB Extension */
-    StorPortFreeContiguousMemorySpecifyCache(pDevExt,
-                                             pSrbExt->pDataBuffer,
-                                             logPageSize,
-                                             MmNonCached);
-
-    /* Now, reissue the AER command again (use the same SRB Extension) */
-    memset(pSrbExt, 0, sizeof(NVME_SRB_EXTENSION));
-    pSrbExt->pParentIo = NULL;
-    pSrbExt->pChildIo = NULL;
-
-    /* Set up the AER command */
-    memset(&pSrbExt->nvmeSqeUnit, 0, sizeof(NVMe_COMMAND));
-    pSrbExt->nvmeSqeUnit.CDW0.OPC = ADMIN_ASYNCHRONOUS_EVENT_REQUEST;
-    pSrbExt->nvmeSqeUnit.CDW0.CID = 0;
-    pSrbExt->nvmeSqeUnit.CDW0.FUSE = FUSE_NORMAL_OPERATION;
-
-    /* Set the completion routine */
-    pSrbExt->pNvmeCompletionRoutine =
-        (PNVME_COMPLETION_ROUTINE)NVMeAERCompletion;
-
-    pSrbExt->nvmeSqeUnit.PRP1 = 0;
-    pSrbExt->nvmeSqeUnit.PRP2 = 0;
-
-    /* Re-Issue the AER command */
-    if (ProcessIo(pDevExt, pSrbExt, NVME_QUEUE_TYPE_ADMIN, TRUE) == FALSE) {
-        StorPortDebugPrint(
-            INFO,
-            "AER DPC Routine: ProcessIo for AER failed (pSrbExt = 0x%x)\n",
-            pSrbExt);
-    }
-} /* NVMeAERGetLogPageCompletionRoutine */
 
 /*******************************************************************************
  * NVMeInitSrbExtension
@@ -2516,7 +2177,7 @@ BOOLEAN NVMeHandleNVMePassthrough(
     }
 
     /* Copy the completion entry to NVME_PASS_THROUGH_IOCTL structure */
-    StorPortMoveMemory((PVOID)pNvmePtIoctl->CplEntry,
+    StorPortCopyMemory((PVOID)pNvmePtIoctl->CplEntry,
                         (PVOID)pSrbExtension->pCplEntry,
                        sizeof(NVMe_COMPLETION_QUEUE_ENTRY));
 
@@ -2759,6 +2420,7 @@ BOOLEAN NVMeIoctlGetLogPage(
 
     pGetLogPageDW10 =
         (PADMIN_GET_LOG_PAGE_COMMAND_DW10)&pNvmePtIoctl->NVMeCmd[10];
+    /* DW10 is zero based, so don't forget to add 1 */
     DataBufferSize = (pGetLogPageDW10->NUMD + 1) * sizeof(ULONG);
 
     /*
@@ -2870,7 +2532,7 @@ BOOLEAN NVMeIoctlFwDownload(
 
     pFirmwareImageDW10 = (PADMIN_FIRMWARE_IMAGE_DOWNLOAD_COMMAND_DW10)
                          &pNvmePtIoctl->NVMeCmd[10];
-
+    /* DW10 is zero based, so don't forget to add 1 */
     DataBufferSize = (pFirmwareImageDW10->NUMD + 1) * sizeof(ULONG);
 
     /* Ensure the command is supported */
@@ -3495,7 +3157,7 @@ BOOLEAN NVMeIoctlFormatNVMCallback(
                  * Copy the completion entry to
                  * NVME_PASS_THROUGH_IOCTL structure
                  */
-                StorPortMoveMemory((PVOID)pNvmePtIoctl->CplEntry,
+                StorPortCopyMemory((PVOID)pNvmePtIoctl->CplEntry,
                                    (PVOID)pSrbExt->pCplEntry,
                                    sizeof(NVMe_COMPLETION_QUEUE_ENTRY));
                 /*
@@ -3528,7 +3190,7 @@ BOOLEAN NVMeIoctlFormatNVMCallback(
                  * Copy the completion entry to
                  * NVME_PASS_THROUGH_IOCTL structure
                  */
-                StorPortMoveMemory((PVOID)pNvmePtIoctl->CplEntry,
+                StorPortCopyMemory((PVOID)pNvmePtIoctl->CplEntry,
                                    (PVOID)pSrbExt->pCplEntry,
                                    sizeof(NVMe_COMPLETION_QUEUE_ENTRY));
                 /*
@@ -4248,13 +3910,25 @@ BOOLEAN NVMeProcessPrivateIoctl(
                     case ADMIN_DELETE_IO_SUBMISSION_QUEUE:
                     case ADMIN_DELETE_IO_COMPLETION_QUEUE:
                     case ADMIN_ABORT:
-                    case ADMIN_ASYNCHRONOUS_EVENT_REQUEST:
                         /* Reject unsupported commands */
                         pSrbIoCtrl->ReturnCode =
                             NVME_IOCTL_UNSUPPORTED_ADMIN_CMD;
 
                         return IOCTL_COMPLETED;
                     break;
+
+                case ADMIN_ASYNCHRONOUS_EVENT_REQUEST:
+                /*
+                * Add this command to AERs already issued. Calculate if over
+                * the limit, if so, return FALSE. The AER limit indicated in
+                * Controller structure is 0-based.
+                */
+                if (++(pDevExt->DriverState.NumAERsIssued) >
+                    pDevExt->controllerIdentifyData.UAERL + 1) {
+                        pNvmePtIoctl->SrbIoCtrl.ControlCode = NVME_IOCTL_MAX_AER_REACHED;
+                        return IOCTL_COMPLETED;
+                }
+                break;
                     case ADMIN_GET_LOG_PAGE:
                         if (NVMeIoctlGetLogPage(pDevExt, pSrb, pNvmePtIoctl) ==
                                                 IOCTL_COMPLETED) {
@@ -4446,7 +4120,7 @@ BOOLEAN NVMeProcessPrivateIoctl(
                 }
             } /* Process NVM commands ends */
 
-            StorPortMoveMemory((PVOID)&pSrbExt->nvmeSqeUnit,
+        StorPortCopyMemory((PVOID)&pSrbExt->nvmeSqeUnit,
                                (PVOID)pNvmePtIoctl->NVMeCmd,
                                sizeof(NVMe_COMMAND));
     } else {
@@ -4484,19 +4158,19 @@ VOID NVMeBuildIdentify(
     id_data->CommandSetActive.SmartCommands = TRUE;
 
     /* Copy Serial Number */
-    StorPortMoveMemory(
+    StorPortCopyMemory(
         id_data->SerialNumber,
         pDevExt->controllerIdentifyData.SN,
         20);
 
     /* Copy Model Number */
-    StorPortMoveMemory(
+    StorPortCopyMemory(
         id_data->ModelNumber,
         pDevExt->controllerIdentifyData.MN,
         40);
 
     /* Copy Firmware Version */
-    StorPortMoveMemory(id_data->FirmwareRevision,
+    StorPortCopyMemory(id_data->FirmwareRevision,
         pDevExt->controllerIdentifyData.FR,
         8);
 

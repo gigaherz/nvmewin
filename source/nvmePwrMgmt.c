@@ -104,7 +104,7 @@ BOOLEAN NVMeAdapterControlPowerDown(
         status = TRUE;
     } else {
         /* Hibernate or Sleep - sanity check that there is no cmd pending */
-        if (NVMeDetectPendingCmds(pAE) == TRUE)
+        if (NVMeDetectPendingCmds(pAE, FALSE) == TRUE)
             return status;
 
         /* Stop the controller, but do not free the resources */

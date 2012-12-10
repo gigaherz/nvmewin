@@ -73,7 +73,8 @@ NVMeCompleteCmd(
 );
 
 BOOLEAN NVMeDetectPendingCmds(
-    PNVME_DEVICE_EXTENSION pAE
+    PNVME_DEVICE_EXTENSION pAE,
+    BOOLEAN completeCmd
 );
 
 #endif /* __NVME_IO_H__ */

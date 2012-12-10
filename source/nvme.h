@@ -614,6 +614,9 @@ typedef struct _ADMIN_GET_LOG_PAGE_ERROR_INFORMATION_LOG_ENTRY
   *PADMIN_GET_LOG_PAGE_ERROR_INFORMATION_LOG_ENTRY;
 
 
+/* Remove default compiler padding for SMART log page */
+#pragma pack(push, smart_log, 1)
+
 /*
  * Get Log Page - SMART/Health Information Log
  *
@@ -811,6 +814,7 @@ typedef struct _NVM_GET_LOG_PAGE_SMART_HEALTH_INFORMATION_LOG_ENTRY
     UCHAR Reserved2[320];
 } ADMIN_GET_LOG_PAGE_SMART_HEALTH_INFORMATION_LOG_ENTRY,
   *PADMIN_GET_LOG_PAGE_SMART_HEALTH_INFORMATION_LOG_ENTRY;
+#pragma pack(pop, smart_log)
 
 /*
  * Get Log Page - Firmware Slot Information

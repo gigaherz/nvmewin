@@ -158,10 +158,6 @@ PVOID NVMeAllocateMem(
     Status = StorPortAllocateContiguousMemorySpecifyCacheNode(
                  pAE, Size, Low, High, Align, MmCached, Node, (PVOID)&pBuf);
 
-    StorPortDebugPrint(INFO,
-                       "NVMeAllocateMem: Size=0x%x\n",
-                       Size);
-
     /* It fails, log the error and return 0 */
     if ((Status != 0) || (pBuf == NULL)) {
         StorPortDebugPrint(ERROR,
@@ -202,10 +198,6 @@ PVOID NVMeAllocatePool(
 
     /* Call StorPortAllocatePool to allocate the buffer */
     Status = StorPortAllocatePool(pAE, Size, Tag, (PVOID)&pBuf);
-
-    StorPortDebugPrint(TRACE,
-                       "NVMeAllocatePool: Size=0x%x\n",
-                       Size );
 
     /* It fails, log the error and return NULL */
     if ((Status != STOR_STATUS_SUCCESS) || (pBuf == NULL)) {
@@ -324,7 +316,7 @@ BOOLEAN NVMeEnumNumaCores(
         /* Find out the number of active cores of the NUMA node */
         pNNT->NumCores = NVMeActiveProcessorCount(GroupAffinity.Mask);
         pRMT->NumActiveCores += pNNT->NumCores;
-        StorPortMoveMemory((PVOID)&pNNT->GroupAffinity,
+        StorPortCopyMemory((PVOID)&pNNT->GroupAffinity,
                            (PVOID)&GroupAffinity,
                            sizeof(GROUP_AFFINITY));
     }
@@ -1141,6 +1133,7 @@ BOOLEAN NVMeResetAdapter(
     if (pAE->pCtrlRegister == NULL)
         return (FALSE);
 
+    StorPortDebugPrint(INFO, "NVMeResetAdapter:  Clearing EN...\n");
     /*
      * Immediately reset our start state to indicate that the controller
      * is ont ready
@@ -1246,6 +1239,8 @@ VOID NVMeEnableAdapter(
         (PULONG)(&pAE->pCtrlRegister->ACQ.HighPart),
         (ULONG)(pQI->pCplQueueInfo->CplQStart.HighPart));
 
+
+    StorPortDebugPrint(INFO, "NVMeEnableAdapter:  Setting EN...\n");
     /*
      * Set up Controller Configuration Register
      */
@@ -1555,6 +1550,7 @@ void HardCodeChatham2Data(
                       strlen(CHATHAM2_FR));
         pAE->controllerIdentifyData.SSVID = 0x2011;
         pAE->controllerIdentifyData.NN = 1;
+        pAE->controllerIdentifyData.MDTS = 5;
         pAE->controllerIdentifyData.RAB = 8;
         pAE->controllerIdentifyData.UAERL = 3;
         pAE->controllerIdentifyData.IEEMAC.IEEE = 0x423;
@@ -1627,6 +1623,8 @@ BOOLEAN NVMeInitCallback(
              */
             if ((pCplEntry->DW3.SF.SC == 0) &&
                 (pCplEntry->DW3.SF.SCT == 0)) {
+                ULONG maxXferSize;
+
                 /* Reset the counter and set next state */
                 pAE->DriverState.NextDriverState = NVMeWaitOnIdentifyNS;
                 pAE->DriverState.StateChkCount = 0;
@@ -1637,7 +1635,22 @@ BOOLEAN NVMeInitCallback(
                 StorPortCopyMemory(&pAE->controllerIdentifyData,
                                 pAE->DriverState.pDataBuffer,
                                 sizeof(ADMIN_IDENTIFY_CONTROLLER));
-
+                /*
+                 * we don't discover the HW xfer limit until after we've reported it
+                 * to storport so if we find out its smaller than what we'rve reported,
+                 * then all we can do is fail init and log and error.  The user will
+                 * have to reconfigure the regsitry and try again
+                  */
+                if (pAE->controllerIdentifyData.MDTS > 0) {
+                    maxXferSize = (1 << pAE->controllerIdentifyData.MDTS) *
+                        (1 << (12 + pAE->pCtrlRegister->CAP.MPSMIN)) ;
+                    if (pAE->InitInfo.MaxTxSize > maxXferSize) {
+                        StorPortDebugPrint(INFO, "ERROR: Ctrl reports smaller Max Xfer Sz than INF (0x%x < 0x%x)\n",
+                            maxXferSize, pAE->InitInfo.MaxTxSize);
+                        NVMeDriverFatalError(pAE,
+                                            (1 << START_MAX_XFER_MISMATCH_FAILURE));
+                    }
+                }
 #endif
             } else {
                 NVMeDriverFatalError(pAE,
@@ -1685,17 +1698,6 @@ BOOLEAN NVMeInitCallback(
         break;
         case NVMeWaitOnSetFeatures:
             NVMeSetFeaturesCompletion(pAE, pNVMeCmd, pCplEntry);
-        break;
-        case NVMeWaitOnAER:
-            if ((pCplEntry->DW3.SF.SC == 0) &&
-                (pCplEntry->DW3.SF.SCT == 0)) {
-                /* Reset the counter and set next state */
-                pAE->DriverState.NextDriverState = NVMeWaitOnIoCQ;
-                pAE->DriverState.StateChkCount = 0;
-            } else {
-                NVMeDriverFatalError(pAE,
-                                    (1 << START_STATE_AER_FAILURE));
-            }
         break;
         case NVMeWaitOnIoCQ:
             /*
@@ -2153,80 +2155,6 @@ BOOLEAN NVMeGetIdentifyStructures(
 } /* NVMeGetIdentifyStructures */
 
 /*******************************************************************************
- * NVMeIssueAERs
- *
- * @brief NVMeIssueAERs gets called to issue a number of Asynchronous Event
- *        Request commands. The number of commands to issue is determined by
- *        UAERL of ADMIN_IDENTIFY_CONTROLLER structure. If the number plus the
- *        already issued ones exceeds UAERL, the less number of AER commands
- *        are issued. The number of issued commands is returned.
- *
- * @param pAE - Pointer to hardware device extension.
- * @param NumCmds - Number of AERs to issue.
- *
- * @return UCHAR
- *     Actual number of AER commands issued in this invoke
- ******************************************************************************/
-UCHAR NVMeIssueAERs(
-    PNVME_DEVICE_EXTENSION pAE,
-    UCHAR NumCmds
-)
-{
-    PNVME_SRB_EXTENSION pNVMeSrbExt = NULL;
-    PNVMe_COMMAND pAER = NULL;
-    UCHAR NumCmdToIssue = NumCmds + pAE->DriverState.NumAERsIssued;
-    UCHAR CmdIssued = 0;
-
-    /*
-     * Determine how many commands to issue
-     * The AER limit indicated in Controller structure is 0-based.
-     */
-    if (NumCmdToIssue > pAE->controllerIdentifyData.UAERL + 1) {
-        NumCmdToIssue = pAE->controllerIdentifyData.UAERL + 1 -
-                        pAE->DriverState.NumAERsIssued;
-    } else {
-        NumCmdToIssue = NumCmds;
-    }
-
-    /* If over the limit, just return 0 now */
-    if (NumCmdToIssue == 0)
-        return (NumCmdToIssue);
-
-    for ( ; NumCmdToIssue > 0; NumCmdToIssue--) {
-        /*
-         * Need to allocate buffer for each SRB Extension here.
-         * When any of AER completes, the buffer needs to be freed
-         * If the allocation fails, simply return the number of command issued
-         */
-        pNVMeSrbExt = (PNVME_SRB_EXTENSION)NVMeAllocatePool(pAE,
-                                           sizeof(NVME_SRB_EXTENSION));
-
-        if (pNVMeSrbExt == NULL)
-            return (CmdIssued);
-
-        /* Populate SRB_EXTENSION fields */
-        pNVMeSrbExt->pNvmeDevExt = pAE;
-        pNVMeSrbExt->pNvmeCompletionRoutine = NVMeAERCompletion;
-
-        /* Populate submission entry fields */
-        pAER = (PNVMe_COMMAND)(&pNVMeSrbExt->nvmeSqeUnit);
-        pAER->CDW0.OPC = ADMIN_ASYNCHRONOUS_EVENT_REQUEST;
-
-        /*
-         * Now issue the command via Admin Doorbell register
-         * If fails, just return how many AERs are issued
-         */
-        if (ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN, FALSE) == FALSE)
-            return (CmdIssued);
-
-        CmdIssued++;
-        pAE->DriverState.NumAERsIssued++;
-    }
-
-    return (CmdIssued);
-} /* NVMeIssueAERs */
-
-/*******************************************************************************
  * NVMeCreateCplQueue
  *
  * @brief NVMeCreateCplQueue gets called to create one IO completion queue at a
@@ -2474,7 +2402,7 @@ BOOLEAN NVMeNormalShutdown(
     ULONG PollCount;
 
     /* Check for any pending cmds. */
-    if (NVMeDetectPendingCmds(pAE) == TRUE) {
+    if (NVMeDetectPendingCmds(pAE, FALSE) == TRUE) {
         return FALSE;
     }
 
@@ -3122,7 +3050,7 @@ BOOLEAN NVMeFetchRegistry(
         if (RANGE_CHK(*(PULONG)pBuf,
                       MIN_NAMESPACES,
                       MAX_NAMESPACES) == TRUE) {
-            memcpy((PVOID)(&pAE->InitInfo.Namespaces),
+            StorPortCopyMemory((PVOID)(&pAE->InitInfo.Namespaces),
                    (PVOID)pBuf,
                    sizeof(ULONG));
         }
@@ -3136,7 +3064,7 @@ BOOLEAN NVMeFetchRegistry(
                          pBuf,
                          (ULONG*)&Len ) == TRUE ) {
         if (RANGE_CHK(*(PULONG)pBuf, MIN_TX_SIZE, MAX_TX_SIZE) == TRUE) {
-            memcpy((PVOID)(&pAE->InitInfo.MaxTxSize),
+            StorPortCopyMemory((PVOID)(&pAE->InitInfo.MaxTxSize),
                    (PVOID)pBuf,
                    sizeof(ULONG));
         }
@@ -3152,7 +3080,7 @@ BOOLEAN NVMeFetchRegistry(
         if (RANGE_CHK(*(PULONG)pBuf,
                       MIN_AD_QUEUE_ENTRIES,
                       MAX_AD_QUEUE_ENTRIES) == TRUE) {
-            memcpy((PVOID)(&pAE->InitInfo.AdQEntries),
+            StorPortCopyMemory((PVOID)(&pAE->InitInfo.AdQEntries),
                    (PVOID)pBuf,
                    sizeof(ULONG));
         }
@@ -3168,7 +3096,7 @@ BOOLEAN NVMeFetchRegistry(
         if (RANGE_CHK(*(PULONG)pBuf,
                       MIN_IO_QUEUE_ENTRIES,
                       MAX_IO_QUEUE_ENTRIES) == TRUE) {
-            memcpy((PVOID)(&pAE->InitInfo.IoQEntries),
+            StorPortCopyMemory((PVOID)(&pAE->InitInfo.IoQEntries),
                    (PVOID)pBuf,
                    sizeof(ULONG));
         }
@@ -3184,7 +3112,7 @@ BOOLEAN NVMeFetchRegistry(
         if (RANGE_CHK(*(PLONG)pBuf,
                       MIN_INT_COALESCING_TIME,
                       MAX_INT_COALESCING_TIME) == TRUE) {
-            memcpy((PVOID)(&pAE->InitInfo.IntCoalescingTime),
+            StorPortCopyMemory((PVOID)(&pAE->InitInfo.IntCoalescingTime),
                    (PVOID)pBuf,
                    sizeof(ULONG));
         }
@@ -3200,7 +3128,7 @@ BOOLEAN NVMeFetchRegistry(
         if (RANGE_CHK(*(PLONG)pBuf,
                       MIN_INT_COALESCING_ENTRY,
                       MAX_INT_COALESCING_ENTRY) == TRUE) {
-            memcpy((PVOID)(&pAE->InitInfo.IntCoalescingEntry),
+            StorPortCopyMemory((PVOID)(&pAE->InitInfo.IntCoalescingEntry),
                    (PVOID)pBuf,
                    sizeof(ULONG));
         }
@@ -3221,7 +3149,7 @@ BOOLEAN NVMeFetchRegistry(
                              Type,
                              pBuf,
                              (ULONG*)&Len ) == TRUE ) {
-                memcpy((PVOID)(&pAE->InitInfo.NsSize),
+                StorPortCopyMemory((PVOID)(&pAE->InitInfo.NsSize),
                        (PVOID)pBuf,
                        sizeof(ULONGLONG));
         }
@@ -3232,7 +3160,7 @@ BOOLEAN NVMeFetchRegistry(
                              Type,
                              pBuf,
                              (ULONG*)&Len ) == TRUE ) {
-                memcpy((PVOID)(&pAE->InitInfo.HardCodeIdData),
+                StorPortCopyMemory((PVOID)(&pAE->InitInfo.HardCodeIdData),
                        (PVOID)pBuf,
                        sizeof(ULONGLONG));
         }
@@ -3243,7 +3171,7 @@ BOOLEAN NVMeFetchRegistry(
                              Type,
                              pBuf,
                              (ULONG*)&Len ) == TRUE ) {
-                memcpy((PVOID)(&pAE->InitInfo.Parm1),
+                StorPortCopyMemory((PVOID)(&pAE->InitInfo.Parm1),
                        (PVOID)pBuf,
                        sizeof(ULONGLONG));
         }
@@ -3254,7 +3182,7 @@ BOOLEAN NVMeFetchRegistry(
                              Type,
                              pBuf,
                              (ULONG*)&Len ) == TRUE ) {
-                memcpy((PVOID)(&pAE->InitInfo.Parm2),
+                StorPortCopyMemory((PVOID)(&pAE->InitInfo.Parm2),
                        (PVOID)pBuf,
                        sizeof(ULONGLONG));
         }
@@ -3265,7 +3193,7 @@ BOOLEAN NVMeFetchRegistry(
                              Type,
                              pBuf,
                              (ULONG*)&Len ) == TRUE ) {
-                memcpy((PVOID)(&pAE->InitInfo.Parm3),
+                StorPortCopyMemory((PVOID)(&pAE->InitInfo.Parm3),
                        (PVOID)pBuf,
                        sizeof(ULONGLONG));
         }
@@ -3276,7 +3204,7 @@ BOOLEAN NVMeFetchRegistry(
                              Type,
                              pBuf,
                              (ULONG*)&Len ) == TRUE ) {
-                memcpy((PVOID)(&pAE->InitInfo.Parm4),
+                StorPortCopyMemory((PVOID)(&pAE->InitInfo.Parm4),
                        (PVOID)pBuf,
                        sizeof(ULONGLONG));
         }

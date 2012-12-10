@@ -667,7 +667,7 @@ VOID SntiTranslateUnitSerialPage(
     pSerialNumberPage->Reserved            = INQ_RESERVED;
     pSerialNumberPage->PageLength          = INQ_SERIAL_NUMBER_LENGTH;
 
-    memcpy(pSerialNumberPage->SerialNumber,
+    StorPortCopyMemory(pSerialNumberPage->SerialNumber,
            pDevExt->controllerIdentifyData.SN,
            INQ_SERIAL_NUMBER_LENGTH);
 
@@ -724,7 +724,7 @@ VOID SntiTranslateDeviceIdentificationPage(
     pIdDescriptor->IdentifierType      = VpdIdentifierTypeEUI64;
     pIdDescriptor->IdentifierLength    = EUI64_16_ID_SZ;
 
-    memcpy(pIdDescriptor->Identifier + INQ_DEV_ID_DESCRIPTOR_OFFSET,
+    StorPortCopyMemory(pIdDescriptor->Identifier + INQ_DEV_ID_DESCRIPTOR_OFFSET,
            &Eui64Id,
            INQ_DEV_ID_DESCRIPTOR_OFFSET);
 
@@ -911,15 +911,15 @@ VOID SntiTranslateStandardInquiryPage(
      */
 
     /* Vendor Id */
-    StorPortMoveMemory(pStdInquiry->VendorId, "NVMe    ", VENDOR_ID_SIZE);
+    StorPortCopyMemory(pStdInquiry->VendorId, "NVMe    ", VENDOR_ID_SIZE);
 
     /* Product Id - First 16 bytes of model # in Controller Identify structure*/
-    StorPortMoveMemory(pStdInquiry->ProductId,
+    StorPortCopyMemory(pStdInquiry->ProductId,
                        pDevExt->controllerIdentifyData.MN,
                        PRODUCT_ID_SIZE);
 
     /* Product Revision Level */
-    StorPortMoveMemory(pStdInquiry->ProductRevisionLevel,
+    StorPortCopyMemory(pStdInquiry->ProductRevisionLevel,
                        pDevExt->controllerIdentifyData.FR,
                        PRODUCT_REVISION_LEVEL_SIZE);
 
@@ -1207,6 +1207,9 @@ SNTI_TRANSLATION_STATUS SntiTranslateReadCapacity10(
         else
             lastLba = (UINT32)namespaceSize;
 
+        /* NSZE is not zero based */
+        lastLba--;
+
         /* Must byte swap these as they are returned in big endian */
         REVERSE_BYTES(&pReadCapacityData->LogicalBlockAddress, &lastLba);
         REVERSE_BYTES(&pReadCapacityData->BytesPerBlock, &lbaLength);
@@ -1281,6 +1284,9 @@ SNTI_TRANSLATION_STATUS SntiTranslateReadCapacity16(
         /* Get the Data Protection Settings (DPS) */
         dps = pLunExt->identifyData.DPS.ProtectionEnabled;
         lastLba = pLunExt->identifyData.NSZE;
+
+        /* NSZE is not zero based */
+        lastLba--;
 
         if (!dps) {
             /* If the DPS settings are 0, then protection is disabled */
