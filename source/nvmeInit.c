@@ -1793,7 +1793,7 @@ BOOLEAN NVMeInitCallback(
 
                 /* possibly no NS exists at all, either way this isn't fatal */
                 StorPortDebugPrint(INFO,
-                    "NVMeInitCallback: WARNING: no learning possible, SC 0x% SCT 0x%x\n",
+                    "NVMeInitCallback: WARNING: no learning possible, SC 0x%x SCT 0x%x\n",
                      pCplEntry->DW3.SF.SC, pCplEntry->DW3.SF.SCT);
                 pAE->LearningCores = pRMT->NumActiveCores;
                 pAE->DriverState.NextDriverState = NVMeStartComplete;

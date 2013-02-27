@@ -3808,23 +3808,19 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeData(
         blockDescLength = pModeHeader6->BlockDescriptorLength;
 
         /* Set pointer to Mode Param Desc Block - if any */
-        pModeParamBlock =
-            (PMODE_PARAMETER_BLOCK)(pModeHeader6 +
-                                    sizeof(MODE_PARAMETER_HEADER));
+        pModeParamBlock = (PMODE_PARAMETER_BLOCK)(pModeHeader6 + 1);
     } else {
         /* Mode Select 10 */
         pModeHeader10 = (PMODE_PARAMETER_HEADER10)(GET_DATA_BUFFER(pSrb));
 
-#pragma prefast(suppress:6011,"This pointer is not NULL")
-        blockDescLength = pModeHeader6->BlockDescriptorLength;
+        blockDescLength = (UINT16) ((pModeHeader10->BlockDescriptorLength[BYTE_0] << 8) | 
+                                    (pModeHeader10->BlockDescriptorLength[BYTE_1])); 
 
         /* Get LONGLBA */
         longLba = pModeHeader10->Reserved[BYTE_0] & LONG_LBA_MASK;
 
         /* Set pointer to Mode Param Desc Block - if any */
-        pModeParamBlock =
-            (PMODE_PARAMETER_BLOCK)(pModeHeader10 +
-                                    sizeof(MODE_PARAMETER_HEADER10));
+        pModeParamBlock = (PMODE_PARAMETER_BLOCK)(pModeHeader10 + 1);
     }
 
     /*
@@ -3851,7 +3847,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeData(
         g_modeParamBlock.BlockLength[BYTE_2] =
             pModeParamBlock->BlockLength[BYTE_2];
 
-        pModePagePtr = (PUCHAR)(pModeParamBlock + blockDescLength);
+        pModePagePtr = (PUCHAR)(pModeParamBlock + numBlockDesc);
     } else {
         /* No block descriptors to parse... go straight to Mode Page */
         pModePagePtr = (PUCHAR)pModeParamBlock;
@@ -3868,7 +3864,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeData(
             } else {
             /* Command requires NVMe Get Features to adapter - build DWORD 11 */
             pCacheModePage = (PMODE_CACHING_PAGE)pModePagePtr;
-            dword11 &= (pCacheModePage->WriteCacheEnable ? 1 : 0);
+            dword11 = (pCacheModePage->WriteCacheEnable ? 1 : 0);
 
             SntiBuildSetFeaturesCmd(pSrbExt, VOLATILE_WRITE_CACHE, dword11);
 
