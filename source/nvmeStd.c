@@ -936,6 +936,7 @@ BOOLEAN NVMeBuildIo(
      */
     if ((Srb->PathId != VALID_NVME_PATH_ID) ||
         (Srb->TargetId != VALID_NVME_TARGET_ID) ||
+        (pAdapterExtension->pLunExtensionTable[0] == NULL) ||
         ((pAdapterExtension->pLunExtensionTable[Srb->Lun]->slotStatus !=
           ONLINE) &&
          (SRB_FUNCTION_IO_CONTROL != Srb->Function))) {

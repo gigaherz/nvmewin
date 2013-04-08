@@ -393,8 +393,8 @@ typedef enum _snti_status
     SNTI_INVALID_REQUEST,
     SNTI_INVALID_PARAMETER,
     SNTI_INVALID_PATH_TARGET_ID,
-    SNTI_NO_MEMORY
-
+    SNTI_NO_MEMORY,
+    SNTI_COMPLETE_CMD
     /* TBD: Add fields as necessary */
 
 } SNTI_STATUS;

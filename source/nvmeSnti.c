@@ -360,12 +360,22 @@ SNTI_TRANSLATION_STATUS SntiTranslateCommand(
         case SCSIOP_READ12:
         case SCSIOP_READ16:
             returnStatus = SntiTranslateRead(pSrb);
+            if (returnStatus == SNTI_COMMAND_COMPLETED) {
+                pSrb->SrbStatus = SRB_STATUS_SUCCESS;
+                pSrb->ScsiStatus = SCSISTAT_GOOD;
+                pSrb->DataTransferLength = 0;
+            }
         break;
         case SCSIOP_WRITE6:
         case SCSIOP_WRITE:
         case SCSIOP_WRITE12:
         case SCSIOP_WRITE16:
             returnStatus = SntiTranslateWrite(pSrb);
+            if (returnStatus == SNTI_COMMAND_COMPLETED) {
+                pSrb->SrbStatus = SRB_STATUS_SUCCESS;
+                pSrb->ScsiStatus = SCSISTAT_GOOD;
+                pSrb->DataTransferLength = 0;
+            }
         break;
         case SCSIOP_INQUIRY:
             returnStatus = SntiTranslateInquiry(pSrb);
@@ -1420,6 +1430,13 @@ SNTI_TRANSLATION_STATUS SntiTranslateWrite(
         break;
     }; /* end switch */
 
+    /* 
+     * When number of LBAs is zero in Read/Write Commands (except Read6/Write6),
+     * complete the request successfully and immediately
+     */
+    if (status == SNTI_COMPLETE_CMD)
+        return SNTI_COMMAND_COMPLETED;
+
     if (status != SNTI_SUCCESS)
         returnStatus = SNTI_FAILURE_CHECK_RESPONSE_DATA;
 
@@ -1447,10 +1464,14 @@ SNTI_STATUS SntiTranslateWrite6(
     PSCSI_REQUEST_BLOCK pSrb = pSrbExt->pSrb;
 
     UINT32 lba = 0;
-    UINT8 length = 0;
+    UINT16 length = 0;
 
     lba = GET_U24_FROM_CDB(pSrb, WRITE_6_CDB_LBA_OFFSET);
     length = GET_U8_FROM_CDB(pSrb, WRITE_6_CDB_TX_LEN_OFFSET);
+
+    /* For Read6/Write6, it means 256 LBAs when length is 0 */
+    if (length == 0)
+        length = READ_WRITE_6_MAX_LBA;
 
     /* Mask off the unnecessary bits and validate the LBA range */
     lba &= WRITE_6_CDB_LBA_MASK;
@@ -1507,10 +1528,14 @@ SNTI_STATUS SntiTranslateWrite10(
     fua = GET_U8_FROM_CDB(pSrb, WRITE_CDB_FUA_OFFSET);
     fua &= WRITE_CDB_FUA_MASK;
 
-    status = SntiValidateLbaAndLength(pLunExt,
-                                      pSrbExt,
-                                      (UINT64)lba,
-                                      (UINT32)length);
+    /* When number of LBAs is zero, complete the request right away */
+    if (length == 0)
+        status = SNTI_COMPLETE_CMD;
+    else
+        status = SntiValidateLbaAndLength(pLunExt,
+                                          pSrbExt,
+                                          (UINT64)lba,
+                                          (UINT32)length);
 
     if (status == SNTI_SUCCESS) {
         /* Command DWORD 10/11 - Starting LBA */
@@ -1559,10 +1584,14 @@ SNTI_TRANSLATION_STATUS SntiTranslateWrite12(
     fua = GET_U8_FROM_CDB(pSrb, WRITE_CDB_FUA_OFFSET);
     fua &= WRITE_CDB_FUA_MASK;
 
-    status = SntiValidateLbaAndLength(pLunExt,
-                                      pSrbExt,
-                                      (UINT64)lba,
-                                      (UINT32)length);
+    /* When number of LBAs is zero, complete the request right away */
+    if (length == 0)
+        status = SNTI_COMPLETE_CMD;
+    else
+        status = SntiValidateLbaAndLength(pLunExt,
+                                          pSrbExt,
+                                          (UINT64)lba,
+                                          (UINT32)length);
 
     if (status == SNTI_SUCCESS) {
         /* Command DWORD 10/11 - Starting LBA */
@@ -1616,7 +1645,14 @@ SNTI_TRANSLATION_STATUS SntiTranslateWrite16(
     fua = GET_U8_FROM_CDB(pSrb, WRITE_CDB_FUA_OFFSET);
     fua &= WRITE_CDB_FUA_MASK;
 
-    status = SntiValidateLbaAndLength(pLunExt, pSrbExt, lba, length);
+    /* When number of LBAs is zero, complete the request right away */
+    if (length == 0)
+        status = SNTI_COMPLETE_CMD;
+    else
+        status = SntiValidateLbaAndLength(pLunExt,
+                                          pSrbExt,
+                                          (UINT64)lba,
+                                          (UINT32)length);
 
     if (status == SNTI_SUCCESS) {
         /* Command DWORD 10/11 - Starting LBA */
@@ -1713,6 +1749,13 @@ SNTI_TRANSLATION_STATUS SntiTranslateRead(
         break;
     }; /* end switch */
 
+    /* 
+     * When number of LBAs is zero in Read/Write Commands (except Read6/Write6),
+     * complete the request successfully and immediately
+     */
+    if (status == SNTI_COMPLETE_CMD)
+        return SNTI_COMMAND_COMPLETED;
+
     if (status != SNTI_SUCCESS)
         returnStatus = SNTI_FAILURE_CHECK_RESPONSE_DATA;
 
@@ -1740,10 +1783,14 @@ SNTI_STATUS SntiTranslateRead6(
     PSCSI_REQUEST_BLOCK pSrb = pSrbExt->pSrb;
 
     UINT32 lba = 0;
-    UINT8 length = 0;
+    UINT16 length = 0;
 
     lba = GET_U24_FROM_CDB(pSrb, READ_6_CDB_LBA_OFFSET);
     length = GET_U8_FROM_CDB(pSrb, READ_6_CDB_TX_LEN_OFFSET);
+
+    /* For Read6/Write6, it means 256 LBAs when length is 0 */
+    if (length == 0)
+        length = READ_WRITE_6_MAX_LBA;
 
     /* Mask off the unnecessary bits and validate the LBA range */
     lba &= READ_6_CDB_LBA_MASK;
@@ -1800,10 +1847,14 @@ SNTI_STATUS SntiTranslateRead10(
     fua = GET_U8_FROM_CDB(pSrb, READ_CDB_FUA_OFFSET);
     fua &= READ_CDB_FUA_MASK;
 
-    status = SntiValidateLbaAndLength(pLunExt,
-                                      pSrbExt,
-                                      (UINT64)lba,
-                                      (UINT32)length);
+    /* When number of LBAs is zero, complete the request right away */
+    if (length == 0)
+        status = SNTI_COMPLETE_CMD;
+    else
+        status = SntiValidateLbaAndLength(pLunExt,
+                                          pSrbExt,
+                                          (UINT64)lba,
+                                          (UINT32)length);
 
     if (status == SNTI_SUCCESS) {
         /* Command DWORD 10/11 - Starting LBA */
@@ -1853,10 +1904,14 @@ SNTI_TRANSLATION_STATUS SntiTranslateRead12(
     fua = GET_U8_FROM_CDB(pSrb, READ_CDB_FUA_OFFSET);
     fua &= READ_CDB_FUA_MASK;
 
-    status = SntiValidateLbaAndLength(pLunExt,
-                                      pSrbExt,
-                                      (UINT64)lba,
-                                      (UINT32)length);
+    /* When number of LBAs is zero, complete the request right away */
+    if (length == 0)
+        status = SNTI_COMPLETE_CMD;
+    else
+        status = SntiValidateLbaAndLength(pLunExt,
+                                          pSrbExt,
+                                          (UINT64)lba,
+                                          (UINT32)length);
 
     if (status == SNTI_SUCCESS) {
         /* Command DWORD 10/11 - Starting LBA */
@@ -1913,7 +1968,14 @@ SNTI_TRANSLATION_STATUS SntiTranslateRead16(
     fua = GET_U8_FROM_CDB(pSrb, READ_CDB_FUA_OFFSET);
     fua &= READ_CDB_FUA_MASK;
 
-    status = SntiValidateLbaAndLength(pLunExt, pSrbExt, lba, length);
+    /* When number of LBAs is zero, complete the request right away */
+    if (length == 0)
+        status = SNTI_COMPLETE_CMD;
+    else
+        status = SntiValidateLbaAndLength(pLunExt,
+                                          pSrbExt,
+                                          (UINT64)lba,
+                                          (UINT32)length);
 
     if (status == SNTI_SUCCESS) {
         /* Command DWORD 10/11 - Starting LBA */
@@ -4185,6 +4247,9 @@ SNTI_STATUS SntiValidateLbaAndLength(
 {
     PSCSI_REQUEST_BLOCK pSrb = pSrbExt->pSrb;
     SNTI_STATUS status = SNTI_SUCCESS;
+    UINT32 lbaSize = 0;
+    UINT32 lbaLengthPower = 0;
+    UINT8 flbas;
 
     if ((lba + length) > (pLunExt->identifyData.NSZE + 1)) {
         SntiSetScsiSenseData(pSrb,
@@ -4208,6 +4273,26 @@ SNTI_STATUS SntiValidateLbaAndLength(
         pSrb->SrbStatus |= SRB_STATUS_INVALID_REQUEST;
         pSrb->DataTransferLength = 0;
         status = SNTI_INVALID_PARAMETER;
+    }
+
+    /* Need to check if there is buffer over-run or under-run case */
+    flbas = pLunExt->identifyData.FLBAS.SupportedCombination;
+    lbaLengthPower = pLunExt->identifyData.LBAFx[flbas].LBADS;
+    lbaSize = 1 << lbaLengthPower;
+    if ((length * lbaSize) > pSrb->DataTransferLength) {
+        SntiSetScsiSenseData(pSrb,
+                             SCSISTAT_CHECK_CONDITION,
+                             SCSI_SENSE_ILLEGAL_REQUEST,
+                             SCSI_ADSENSE_INVALID_CDB,
+                             SCSI_ADSENSE_NO_SENSE);
+
+        pSrb->SrbStatus |= SRB_STATUS_DATA_OVERRUN;
+        pSrb->DataTransferLength = 0;
+        status = SNTI_INVALID_PARAMETER;
+    }
+
+    if ((length * lbaSize) < pSrb->DataTransferLength) {
+        pSrb->DataTransferLength = length * lbaSize;
     }
 
     return status;

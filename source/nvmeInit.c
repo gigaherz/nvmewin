@@ -1311,6 +1311,8 @@ VOID NVMeSetFeaturesCompletion(
     PADMIN_SET_FEATURES_COMMAND_LBA_RANGE_TYPE_DW11 pSetFeaturesCDW11 = NULL;
     NS_VISBILITY visibility = IGNORED;
     ULONG lunId;
+    UINT8 flbas;
+    UINT16 metadataSize;
 
     /*
      * Mark down the resulted information if succeeded. Otherwise, log the error
@@ -1394,18 +1396,26 @@ VOID NVMeSetFeaturesCompletion(
 
                     visibility =
                         pLbaRangeTypeEntry->Attributes.Hidden ? HIDDEN:VISIBLE;
-                        pLunExt->ReadOnly =
+                    pLunExt->ReadOnly =
                             pLbaRangeTypeEntry->Attributes.Overwriteable ?
                                 FALSE:TRUE;
+                    /*
+                     *  When the namespace is formatted using metadata, 
+                     *  don't advertise it for now 
+                     */
+                    flbas = pLunExt->identifyData.FLBAS.SupportedCombination;
+                    metadataSize = pLunExt->identifyData.LBAFx[flbas].MS;
+                    if (metadataSize != 0)
+                       visibility = HIDDEN;
 
-                    } else {
-                        /*
+                } else {
+                    /*
                      * Don't support more than one entry per NS. Mark it IGNORED
-                         */
+                     */
                     visibility = IGNORED;
                 }
 
-                    pAE->DriverState.ConfigLbaRangeNeeded = FALSE;
+                pAE->DriverState.ConfigLbaRangeNeeded = FALSE;
                 pAE->DriverState.TtlLbaRangeExamined++;
                 if (visibility == VISIBLE) {
                     pLunExt->slotStatus = ONLINE;

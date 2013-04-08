@@ -356,6 +356,7 @@
 #define READ_PROTECTION_CODE_3                        3
 #define READ_PROTECTION_CODE_4                        4
 #define READ_PROTECTION_CODE_5                        5
+#define READ_WRITE_6_MAX_LBA                        256
 
 /* Security Protocol In/Out Defines */
 #define SECURITY_PROTOCOL_CDB_SEC_PROT_OFFSET         1

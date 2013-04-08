@@ -651,6 +651,7 @@ VOID NVMeRunningWaitOnLearnMapping(
             (pRMT->InterruptType == INT_TYPE_MSI) ||
             (pQI->NumCplIoQAllocated < pRMT->NumActiveCores) ||
             (pAE->DriverState.IdentifyNamespaceFetched == 0) ||
+            (pAE->visibleLuns == 0) ||
             (pLunExt == NULL)) {
 #endif
             /*
@@ -688,7 +689,7 @@ VOID NVMeRunningWaitOnLearnMapping(
         PhysAddr = NVMeGetPhysAddr(pAE, pNVMeSrbExt->pDataBuffer);
         pCmd->CDW0.OPC = NVME_READ;
         pCmd->PRP1 = (ULONGLONG)PhysAddr.QuadPart;
-        pCmd->NSID = 1;
+        pCmd->NSID = pLunExt->namespaceId;
 
         /* Now issue the command via IO queue */
         if (FALSE == ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_IO, FALSE)) {
