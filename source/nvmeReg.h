@@ -127,12 +127,12 @@ typedef union _NVMe_CONTROLLER_CAPABILITIES
          * supported. The field is bit significant. If a bit is set to ‘1’, then 
          * the corresponding command set is supported. If a bit is cleared to 
          * ‘0’, then the corresponding command set is not supported. Bit 37 == 
-         * NVM Command Set. Bits 38-40 Reserved.
+         * NVM Command Set. Bits 38-44 Reserved.
          */
-        USHORT CSS :4; 
+        USHORT CSS :8; // NVMe1.0E 
 
-        /* Bits 41-47 */
-        USHORT Reserved3 :7;
+        /* Bits 45-47 */
+        USHORT Reserved3 :3; // NVMe1.0E
 
         /* 
          * [Memory Page Size Minimum] This field indicates the minimum host 

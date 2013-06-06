@@ -389,6 +389,13 @@ typedef struct _NVMe_COMPLETION_QUEUE_ENTRY
 /* Format NVM */
 #define INVALID_FORMAT                                  0xA
 
+/* Firmware Activate */
+#define FIRMWARE_APP_REQUIRES_CONVENTIONAL_RESET        0xB // NVMe1.0E
+
+/* Delete I/O Completion Queue */
+#define INVALID_QUEUE_DELETION                          0xC // NVMe1.0E
+
+
 /*
  * Status Code - Command Specific Error Values, NVM Command Set
  *
@@ -2031,8 +2038,8 @@ typedef struct _ADMIN_SET_FEATURES_COMMAND_ASYNCHRONOUS_EVENT_CONFIGURATION_DW11
      * when the corresponding critical warning bit is set to ‘1’ in the SMART /
      * Health Information Log.
      */
-    ULONG   SMART_HealthCriticalWarnings :16;
-    ULONG   Reserved                     :16;
+    ULONG   SMART_HealthCriticalWarnings :8; // NVMe1.0E
+    ULONG   Reserved                     :24; // NVMe1.0E
 } ADMIN_SET_FEATURES_COMMAND_ASYNCHRONOUS_EVENT_CONFIGURATION_DW11,
   *PADMIN_SET_FEATURES_COMMAND_ASYNCHRONOUS_EVENT_CONFIGURATION_DW11;
 
