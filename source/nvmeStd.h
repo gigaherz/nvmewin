@@ -70,6 +70,7 @@ ULONG ChathamNlb; /* Number of logical blocks */
 #define MIN_WAIT_TIMEOUT            500 /* One unit (500 milliseonds) */
 #define REGISTRY_KEY_NOT_FOUND      0xFFFFFFFF
 #define PAGE_SIZE_IN_4KB            0x1000
+#define PAGE_SIZE_IN_DWORDS         PAGE_SIZE_IN_4KB / 4
 #define RESOURCE_SHARED             0xFFFF
 #define DFT_ASYNC_EVENT_REQ_NUMBER  4
 #define NVME_ADMIN_MSG_ID           0
@@ -1004,6 +1005,21 @@ typedef struct _nvme_srb_extension
     /* Callback completion routine, if needed */
     PNVME_COMPLETION_ROUTINE     pNvmeCompletionRoutine;
 
+    /*
+     * dsmBuffer adds a DWORD-aligned 2K buffer that -- when combined with 
+     * the prpList which immediately follows it -- serves as a 4K area that is 
+     * used to house DSM range definitions when issuing DSM commands in 
+     * processing SCSI UNMAP requests. 
+     * 
+     * THIS MUST REMAIN IMMEDIATELY IN FRONT OF prpList IN ORDER TO ACHIEVE 4K 
+     * OF BUFFER SPACE (OTHERWISE, IF SRB EXTENSION SIZE IS NOT A CONCERN, IT 
+     * COULD SIMPLY BE DEFINED AS PAGE_SIZE_IN_DWORDS TO ELIMINATE DEPENDANCY)
+     */
+
+#define PRP_LIST_SIZE            sizeof(UINT64) * (MAX_TX_SIZE / PAGE_SIZE)
+
+    UINT32                       dsmBuffer[PAGE_SIZE_IN_DWORDS -
+                                        PRP_LIST_SIZE /sizeof(UINT32)];
     /* Temp PRP List */
     UINT64                       prpList[MAX_TX_SIZE / PAGE_SIZE];
     UINT32                       numberOfPrpEntries;

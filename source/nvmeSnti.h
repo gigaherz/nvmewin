@@ -449,6 +449,23 @@ SNTI_TRANSLATION_STATUS SntiTranslateExtendedInquiryDataPage(
     PSCSI_REQUEST_BLOCK pSrb
 );
 
+
+#if _WIN32_WINNT > _WIN32_WINNT_WIN7
+VOID SntiTranslateBlockLimitsPage(
+   PSCSI_REQUEST_BLOCK pSrb
+);
+
+VOID SntiTranslateBlockDeviceCharacteristicsPage(
+   PSCSI_REQUEST_BLOCK pSrb
+);
+
+VOID SntiTranslateLogicalBlockProvisioningPage(
+   PSCSI_REQUEST_BLOCK pSrb,
+   PNVME_LUN_EXTENSION pLunExt
+);
+#endif
+
+
 VOID SntiTranslateStandardInquiryPage(
     PSCSI_REQUEST_BLOCK pSrb
 );
@@ -539,6 +556,21 @@ SNTI_TRANSLATION_STATUS SntiTransitionPowerState(
     UINT8 powerCondMod,
     UINT8 start
 );
+
+
+#if _WIN32_WINNT > _WIN32_WINNT_WIN7
+SNTI_STATUS SntiValidateUnmapLbaAndLength(
+    PNVME_LUN_EXTENSION pLunExt,
+    PNVME_SRB_EXTENSION pSrbExt,
+    UINT64 lba,
+    UINT32 length
+);
+
+SNTI_TRANSLATION_STATUS SntiTranslateUnmap(
+    PSCSI_REQUEST_BLOCK pSrb
+);
+#endif
+
 
 SNTI_TRANSLATION_STATUS SntiTranslateWriteBuffer(
     PSCSI_REQUEST_BLOCK pSrb

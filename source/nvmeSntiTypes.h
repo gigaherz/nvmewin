@@ -223,6 +223,15 @@
 #define BYTE_1                                        1
 #define BYTE_2                                        2
 #define BYTE_3                                        3
+#define BYTE_4                                        4
+#define BYTE_5                                        5
+#define BYTE_6                                        6
+
+/* 
+  Set the following to 1 if your NVMe controller returns zeros when LBAs 
+  that have been previously UNMAPED (via DSM dealloc) are read
+*/
+#define ZEROS_RETURNED_INDICATOR                      1
 
 /* Diagnostig page codes */
 #define DIAG_SUPPORTED_LOG                         0x00
@@ -251,8 +260,27 @@
 #define INQ_DEVICE_IDENTIFICATION_PAGE             0x83
 #define INQ_EXTENDED_INQUIRY_DATA_PAGE             0x86
 #define INQ_SERIAL_NUMBER_LENGTH                   0x14
+/* For Win 8 UNMAP support, there are additional VPD pages
+   we provide such as logical block provisioning
+*/ 
+#if _WIN32_WINNT > _WIN32_WINNT_WIN7
+#define INQ_NUM_SUPPORTED_VPD_PAGES                   6
+#else 
 #define INQ_NUM_SUPPORTED_VPD_PAGES                   3
+#endif
 #define INQ_RESERVED                                  0
+#define BLOCK_LIMITS_PAGE_LENGTH                   0x3C
+#define BLOCK_DEVICE_CHAR_PAGE_LENGTH              0x3C
+#define LOGICAL_BLOCK_PROVISIONING_PAGE_LENGTH     0x04
+#define MAX_UNMAP_BLOCK_DESCRIPTOR_COUNT            256
+/* Rotation rate of 1 indicates non-rotating (SSD) */
+#define MEDIUM_ROTATIONAL_RATE                   0x0001
+#define FORM_FACTOR_NOT_REPORTED                      0
+#define NO_THIN_PROVISIONING_THRESHHOLD               0
+#define WR_SAME_16_TO_UNMAP_NOT_SUPPORTED             0
+#define WR_SAME_10_TO_UNMAP_NOT_SUPPORTED             0
+#define ANC_NOT_SUPPORTED                             0
+#define NO_PROVISIONING_GROUP_DESCRIPTOR              0
 #define UNREMOVABLE_MEDIA                             0
 #define VERSION_SPC_4                              0x06
 #define ACA_UNSUPPORTED                               0

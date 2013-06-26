@@ -321,7 +321,8 @@ SNTI_RESPONSE_BLOCK mediaErrorTable[] = {
  *          open source driver)
  *
  *        - UNMAP (NVME_DATASET_MANAGEMENT is required for translation and this
- *          command will not be supported in the Windows open source driver)
+ *          command was not initially supported in Windows open source driver, but
+ *          now when compiled for Windows 8, the support is provided)
  *
  *
  * @param pAdapterExtension - pointer to the adapter device extension
@@ -473,6 +474,14 @@ SNTI_TRANSLATION_STATUS SntiTranslateCommand(
         case SCSIOP_WRITE_DATA_BUFF:
             returnStatus = SntiTranslateWriteBuffer(pSrb);
         break;
+
+        /*UNMAP not supported prior to Win 8*/
+        #if _WIN32_WINNT > _WIN32_WINNT_WIN7
+        case SCSIOP_UNMAP:
+            returnStatus = SntiTranslateUnmap(pSrb);
+        break;
+        #endif
+
         default:
             StorPortDebugPrint(INFO,
                                "SNTI: UNSUPPORTED opcode - 0x%02x\n",
@@ -559,6 +568,23 @@ SNTI_TRANSLATION_STATUS SntiTranslateInquiry(
             case VPD_DEVICE_IDENTIFIERS:
                 SntiTranslateDeviceIdentificationPage(pSrb);
             break;
+
+            /* 
+              UNMAP and related VPD pages not supported prior to Win 8 
+              (Note: VPD_BLOCK_LIMITS, etc. not defined in Win 7 WDK)
+            */
+            #if _WIN32_WINNT > _WIN32_WINNT_WIN7
+            case VPD_BLOCK_LIMITS:
+                SntiTranslateBlockLimitsPage(pSrb);
+            break;
+            case VPD_BLOCK_DEVICE_CHARACTERISTICS:
+                SntiTranslateBlockDeviceCharacteristicsPage(pSrb);
+            break;
+            case VPD_LOGICAL_BLOCK_PROVISIONING:
+                SntiTranslateLogicalBlockProvisioningPage(pSrb, pLunExt);
+            break;
+            #endif
+
             default:
                 SntiSetScsiSenseData(pSrb,
                                      SCSISTAT_CHECK_CONDITION,
@@ -626,14 +652,24 @@ VOID SntiTranslateSupportedVpdPages(
     allocLength = GET_INQ_ALLOC_LENGTH(pSrb);
 
     memset(pSupportedVpdPages, 0, allocLength);
-    pSupportedVpdPages->DeviceType           = DIRECT_ACCESS_DEVICE;
-    pSupportedVpdPages->DeviceTypeQualifier  = DEVICE_CONNECTED;
-    pSupportedVpdPages->PageCode             = VPD_SUPPORTED_PAGES;
-    pSupportedVpdPages->Reserved             = INQ_RESERVED;
-    pSupportedVpdPages->PageLength           = INQ_NUM_SUPPORTED_VPD_PAGES;
-    pSupportedVpdPages->SupportedPageList[BYTE_0] = VPD_SUPPORTED_PAGES;
-    pSupportedVpdPages->SupportedPageList[BYTE_1] = VPD_SERIAL_NUMBER;
-    pSupportedVpdPages->SupportedPageList[BYTE_2] = VPD_DEVICE_IDENTIFIERS;
+    pSupportedVpdPages->DeviceType                  = DIRECT_ACCESS_DEVICE;
+    pSupportedVpdPages->DeviceTypeQualifier         = DEVICE_CONNECTED;
+    pSupportedVpdPages->PageCode                    = VPD_SUPPORTED_PAGES;
+    pSupportedVpdPages->Reserved                    = INQ_RESERVED;
+    pSupportedVpdPages->PageLength                  = INQ_NUM_SUPPORTED_VPD_PAGES;
+    pSupportedVpdPages->SupportedPageList[BYTE_0]   = VPD_SUPPORTED_PAGES;
+    pSupportedVpdPages->SupportedPageList[BYTE_1]   = VPD_SERIAL_NUMBER;
+    pSupportedVpdPages->SupportedPageList[BYTE_2]   = VPD_DEVICE_IDENTIFIERS;
+
+    /* 
+      For Windows 8 Unmap support, we supply these additional VPD pages 
+      (Note: #defines for VPD_BLOCK_LIMITS etc. are not defined in Win 7 WDK)
+    */
+    #if _WIN32_WINNT > _WIN32_WINNT_WIN7
+    pSupportedVpdPages->SupportedPageList[BYTE_3]   = VPD_BLOCK_LIMITS;
+    pSupportedVpdPages->SupportedPageList[BYTE_4]   = VPD_BLOCK_DEVICE_CHARACTERISTICS;
+    pSupportedVpdPages->SupportedPageList[BYTE_5]   = VPD_LOGICAL_BLOCK_PROVISIONING;
+    #endif 
 
     pSrb->DataTransferLength = min(allocLength,
         (FIELD_OFFSET(VPD_SUPPORTED_PAGES_PAGE, SupportedPageList) +
@@ -741,6 +777,183 @@ VOID SntiTranslateDeviceIdentificationPage(
     pSrb->DataTransferLength =
         min(DEVICE_IDENTIFICATION_PAGE_SIZE, allocLength);
 } /* SntiTranslateDeviceIdentificationPage */
+
+#if _WIN32_WINNT > _WIN32_WINNT_WIN7
+/******************************************************************************
+ * SntiTranslateBlockLimitsPage
+ *
+ * @brief Translates the SCSI Block Limits VPD page.
+ *        Populates the appropriate block limits page fields based on the
+ *        NVMe Translation spec. Do not need to create SQE here as we just
+ *        complete the command in the build phase (by returning FALSE to
+ *        StorPort with SRB status of SUCCESS).
+ *
+ * @param pSrb - This parameter specifies the SCSI I/O request. SNTI expects
+ *               that the user can access the SCSI CDB, response, and data from
+ *               this pointer. For example, if there is a failure in translation
+ *               resulting in sense data, then SNTI will call the appropriate
+ *               internal error handling code and set the status info/data and
+ *               pass the pSrb pointer as a parameter.
+ *
+ * @return VOID
+ ******************************************************************************/
+VOID SntiTranslateBlockLimitsPage(
+    PSCSI_REQUEST_BLOCK pSrb
+)
+{
+    UINT16 allocLen = 0;
+    UINT32 tempVar32 = 0;
+    PNVME_SRB_EXTENSION pSrbExt = NULL;
+    PVPD_BLOCK_LIMITS_PAGE pBLPage = NULL;
+    PADMIN_IDENTIFY_CONTROLLER pCntrlIdData = NULL;
+
+    pBLPage = (PVPD_BLOCK_LIMITS_PAGE)GET_DATA_BUFFER(pSrb);
+    allocLen = GET_INQ_ALLOC_LENGTH(pSrb);
+    pSrbExt = (PNVME_SRB_EXTENSION)(pSrb->SrbExtension);
+    pCntrlIdData = &(pSrbExt->pNvmeDevExt->controllerIdentifyData);
+
+    memset(pBLPage, 0, allocLen);
+    pBLPage->DeviceType = DIRECT_ACCESS_DEVICE;
+    pBLPage->DeviceTypeQualifier = DEVICE_CONNECTED;
+    pBLPage->PageCode = VPD_BLOCK_LIMITS;
+    /* This field in VPD page needs data in big endian format */
+    pBLPage->PageLength[1] = BLOCK_LIMITS_PAGE_LENGTH;
+
+    if (pCntrlIdData->ONCS.SupportsDataSetManagement == 1) {
+        /* These fields in VPD page also need data in big endian format */
+        tempVar32 = NVME_MAX_NUM_BLOCKS_PER_READ_WRITE;
+        REVERSE_BYTES(pBLPage->MaximumUnmapLBACount, &tempVar32);
+
+        tempVar32 = MAX_UNMAP_BLOCK_DESCRIPTOR_COUNT;
+        REVERSE_BYTES(pBLPage->MaximumUnmapBlockDescriptorCount, &tempVar32);
+    } else {
+        *(PUINT32)(pBLPage->MaximumUnmapLBACount) = 0;
+        *(PUINT32)(pBLPage->MaximumUnmapBlockDescriptorCount) = 0;
+    }
+
+    pSrb->DataTransferLength = min(sizeof(VPD_BLOCK_LIMITS_PAGE), allocLen);
+} /* SntiTranslateBlockLimitsPage */
+#endif 
+
+#if _WIN32_WINNT > _WIN32_WINNT_WIN7
+/******************************************************************************
+ * SntiTranslateBlockDeviceCharacteristicsPage
+ *
+ * @brief Translates the SCSI Block Device Characterics VPD page.
+ *        Populates the appropriate block device Characterics page fields based 
+ *        on the NVMe Translation spec. Do not need to create SQE here as we 
+ *        just complete the command in the build phase (by returning FALSE to
+ *        StorPort with SRB status of SUCCESS).
+ *
+ * @param pSrb - This parameter specifies the SCSI I/O request. SNTI expects
+ *               that the user can access the SCSI CDB, response, and data from
+ *               this pointer. For example, if there is a failure in translation
+ *               resulting in sense data, then SNTI will call the appropriate
+ *               internal error handling code and set the status info/data and
+ *               pass the pSrb pointer as a parameter.
+ *
+ * @return VOID
+ ******************************************************************************/
+VOID SntiTranslateBlockDeviceCharacteristicsPage(
+    PSCSI_REQUEST_BLOCK pSrb
+)
+{
+    UINT16 allocLen = 0;
+    PVPD_BLOCK_DEVICE_CHARACTERISTICS_PAGE pBDCPage = NULL;
+    
+    pBDCPage = (PVPD_BLOCK_DEVICE_CHARACTERISTICS_PAGE)GET_DATA_BUFFER(pSrb);
+    allocLen = GET_INQ_ALLOC_LENGTH(pSrb);
+
+    memset(pBDCPage, 0, allocLen);
+    pBDCPage->DeviceType = DIRECT_ACCESS_DEVICE;
+    pBDCPage->DeviceTypeQualifier = DEVICE_CONNECTED;
+    pBDCPage->PageCode = VPD_BLOCK_DEVICE_CHARACTERISTICS;
+    pBDCPage->PageLength = BLOCK_DEVICE_CHAR_PAGE_LENGTH;
+    pBDCPage->MediumRotationRateLsb = (UCHAR)MEDIUM_ROTATIONAL_RATE;
+    pBDCPage->MediumRotationRateMsb = (UCHAR)(MEDIUM_ROTATIONAL_RATE >> 8);
+    pBDCPage->NominalFormFactor = FORM_FACTOR_NOT_REPORTED;
+
+    pSrb->DataTransferLength = 
+        min(sizeof(VPD_BLOCK_DEVICE_CHARACTERISTICS_PAGE), allocLen);
+} /* SntiTranslateBlockDeviceCharacteristicsPage */
+#endif
+
+#if _WIN32_WINNT > _WIN32_WINNT_WIN7
+/******************************************************************************
+ * SntiTranslateLogicalBlockProvisioningPage
+ *
+ * @brief Translates the SCSI Logical Block Provisioning VPD page.
+ *        Populates the appropriate logical block provisioning page fields 
+ *        based on the NVMe Translation spec. Do not need to create SQE here as
+ *        we just complete the command in the build phase (by returning FALSE 
+ *        to StorPort with SRB status of SUCCESS).
+ *
+ * @param pSrb - This parameter specifies the SCSI I/O request. SNTI expects
+ *               that the user can access the SCSI CDB, response, and data from
+ *               this pointer. For example, if there is a failure in translation
+ *               resulting in sense data, then SNTI will call the appropriate
+ *               internal error handling code and set the status info/data and
+ *               pass the pSrb pointer as a parameter.
+ *
+ * @return SNTI_TRANSLATION_STATUS
+ *     Indicates translation status
+ ******************************************************************************/
+VOID SntiTranslateLogicalBlockProvisioningPage(
+    PSCSI_REQUEST_BLOCK pSrb,
+    PNVME_LUN_EXTENSION pLunExt
+)
+{
+    UINT16 allocLen = 0;
+    SNTI_STATUS status;
+    PNVME_SRB_EXTENSION pSrbExt = NULL;
+    PADMIN_IDENTIFY_CONTROLLER pCntrlIdData = NULL;
+    PVPD_LOGICAL_BLOCK_PROVISIONING_PAGE pLBPPage = NULL;
+    
+    pSrbExt = (PNVME_SRB_EXTENSION)(pSrb->SrbExtension);
+    pCntrlIdData = &(pSrbExt->pNvmeDevExt->controllerIdentifyData);
+
+    pLBPPage = (PVPD_LOGICAL_BLOCK_PROVISIONING_PAGE)GET_DATA_BUFFER(pSrb);
+    allocLen = GET_INQ_ALLOC_LENGTH(pSrb);
+        
+    memset(pLBPPage, 0, allocLen);
+    pLBPPage->DeviceType = DIRECT_ACCESS_DEVICE;
+    pLBPPage->DeviceTypeQualifier = DEVICE_CONNECTED;
+    pLBPPage->PageCode = VPD_LOGICAL_BLOCK_PROVISIONING;
+    /* This field in VPD page needs data in big endian format */
+    pLBPPage->PageLength[1] = LOGICAL_BLOCK_PROVISIONING_PAGE_LENGTH;
+
+    pLBPPage->ThresholdExponent = NO_THIN_PROVISIONING_THRESHHOLD;
+    if (pCntrlIdData->ONCS.SupportsDataSetManagement == 1) {
+        /* LBPU set indicates that we support UNMAP */
+        pLBPPage->LBPU = 1;
+
+        /* 
+           LBPRZ set indicates whether zeros are returned when deallocated
+           LBAs are subsequently read after UNMAP
+        */
+        pLBPPage->LBPRZ = ZEROS_RETURNED_INDICATOR;    
+    } else {
+        pLBPPage->LBPU = 0;
+    }
+    pLBPPage->LBPWS = WR_SAME_16_TO_UNMAP_NOT_SUPPORTED;
+    pLBPPage->LBPWS10 = WR_SAME_10_TO_UNMAP_NOT_SUPPORTED;
+    pLBPPage->ANC_SUP = ANC_NOT_SUPPORTED;
+    pLBPPage->DP = NO_PROVISIONING_GROUP_DESCRIPTOR;
+
+    if (pCntrlIdData->ONCS.SupportsDataSetManagement == 1) {
+        pLBPPage->ProvisioningType = PROVISIONING_TYPE_RESOURCE;
+    } else {
+        if(pLunExt->identifyData.NSFEAT.SupportsThinProvisioning == 1){
+            pLBPPage->ProvisioningType = PROVISIONING_TYPE_THIN;
+        } else {
+            pLBPPage->ProvisioningType = PROVISIONING_TYPE_UNKNOWN;
+        }
+    }
+
+    pSrb->DataTransferLength = 
+        min(sizeof(VPD_LOGICAL_BLOCK_PROVISIONING_PAGE), allocLen);
+} /* SntiTranslateLogicalBlockProvisioningPage */
+#endif
 
 /******************************************************************************
  * SntiTranslateExtendedInquiryDataPage
@@ -2378,10 +2591,241 @@ SNTI_TRANSLATION_STATUS SntiTransitionPowerState(
     return returnStatus;
 } /* SntiTransitionPowerState */
 
+#if _WIN32_WINNT > _WIN32_WINNT_WIN7
+/******************************************************************************
+ * SntiTranslateUnmap
+ *
+ * @brief Translates the SCSI Unmap command based on the NVMe Translation
+ *        spec, and generates an NVMe Dataset Managment command. SCSI
+ *        Unmap block descriptors describing the LBA ranges to be Unmapped
+ *        are translated to NVMe DataSet Managment range definitions.
+ *
+ * @param pSrb - This parameter specifies the SCSI I/O request. SNTI expects
+ *               that the user can access the SCSI CDB, response, and data from
+ *               this pointer. For example, if there is a failure in translation
+ *               resulting in sense data, then SNTI will call the appropriate
+ *               internal error handling code and set the status info/data and
+ *               pass the pSrb pointer as a parameter.
+ *
+ * @return SNTI_TRANSLATION_STATUS
+ *     Indicates translation status
+ ******************************************************************************/
+SNTI_TRANSLATION_STATUS SntiTranslateUnmap(
+    PSCSI_REQUEST_BLOCK pSrb
+)
+{
+    ULONG paLength = 0;
+    UINT16 numBlockDescriptors = 0;
+    STOR_PHYSICAL_ADDRESS physAddr;
+    SNTI_STATUS status = SNTI_SUCCESS;
+    UINT16 blockDescriptorDataLength = 0;
+    PNVME_SRB_EXTENSION pSrbExt = NULL;
+    PNVME_LUN_EXTENSION pLunExt = NULL;
+    PNVM_DATASET_MANAGEMENT_COMMAND_DW10 pCdw10 = NULL;
+    PNVM_DATASET_MANAGEMENT_COMMAND_DW11 pCdw11 = NULL;
+    PNVM_DATASET_MANAGEMENT_RANGE pCurrentDsmRange = NULL;
+    PUNMAP_BLOCK_DESCRIPTOR pCurrentUnmapBlockDescriptor = NULL; 
+    SNTI_TRANSLATION_STATUS returnStatus = SNTI_TRANSLATION_SUCCESS;
+
+    pSrbExt = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb);
+
+    status = GetLunExtension(pSrbExt, &pLunExt);
+    if (status != SNTI_SUCCESS) {
+        /* Map the translation error to a SCSI error */
+        SntiMapInternalErrorStatus(pSrb, status);
+        return SNTI_FAILURE_CHECK_RESPONSE_DATA;
+    }
+
+    /* 
+       First, get the number of SCSI Unmap block descriptors and ensure
+       that this is within legal range.
+       (Must swap bytes, as Unmap request has data in big endian format)
+    */
+
+    REVERSE_BYTES_SHORT(&blockDescriptorDataLength, 
+        ((UNMAP_LIST_HEADER*)(pSrb->DataBuffer))->BlockDescrDataLength);
+
+    numBlockDescriptors = blockDescriptorDataLength / 
+        sizeof(UNMAP_BLOCK_DESCRIPTOR);
+
+    if (numBlockDescriptors > MAX_UNMAP_BLOCK_DESCRIPTOR_COUNT) {
+        SntiSetScsiSenseData(pSrb, 
+            SCSISTAT_CHECK_CONDITION,
+            SCSI_SENSE_ILLEGAL_REQUEST,
+            SCSI_ADSENSE_INVALID_FIELD_PARAMETER_LIST,
+            SCSI_ADSENSE_NO_SENSE);
+
+        pSrb->SrbStatus |= SRB_STATUS_INVALID_REQUEST;
+        returnStatus = SNTI_FAILURE_CHECK_RESPONSE_DATA;
+    } else {
+        /* Set up common portions of the NVMe DSM command */
+        memset(&pSrbExt->nvmeSqeUnit, 0, sizeof(NVMe_COMMAND));
+        /* CDW0 */
+        pSrbExt->nvmeSqeUnit.CDW0.OPC = NVM_DATASET_MANAGEMENT;
+        pSrbExt->nvmeSqeUnit.CDW0.CID = 0;
+        pSrbExt->nvmeSqeUnit.CDW0.FUSE = FUSE_NORMAL_OPERATION;
+        pSrbExt->nvmeSqeUnit.NSID = pLunExt->namespaceId;
+
+        /* 
+           CDW10 -- zero for now - we will increment NR field as number of
+           ranges are counted up
+        */
+        pCdw10 = (PNVM_DATASET_MANAGEMENT_COMMAND_DW10)
+            &(pSrbExt->nvmeSqeUnit.CDW10);
+        pCdw10->NR=0;
+
+        /* CDW11 -- set AD bit indicating an attribute of Deallocate*/
+        pCdw11 = (PNVM_DATASET_MANAGEMENT_COMMAND_DW11)
+            &(pSrbExt->nvmeSqeUnit.CDW11);
+        pCdw11->AD = 1;
+
+           /* Point PRP1 to our dedicated DSM range definition buffer */
+        physAddr = StorPortGetPhysicalAddress(pSrbExt->pNvmeDevExt, 
+            NULL, 
+            pSrbExt->dsmBuffer, 
+            &paLength);
+
+        if (physAddr.QuadPart != 0) { 
+            pSrbExt->nvmeSqeUnit.PRP1 = physAddr.QuadPart;
+            pSrbExt->nvmeSqeUnit.PRP2 = 0;
+        } else { 
+            StorPortDebugPrint(INFO, 
+                "SNTI: Get PhysAddr for UNMAP failed (pSrbExt = 0x%x)\n",
+                pSrbExt);
+            ASSERT(FALSE);
+        }
+        pSrbExt->numberOfPrpEntries = 1;
+
+        pCurrentUnmapBlockDescriptor = 
+            (PUNMAP_BLOCK_DESCRIPTOR)((UCHAR*)(pSrb->DataBuffer) +
+            sizeof(UNMAP_LIST_HEADER));
+        
+        pCurrentDsmRange = 
+            (PNVM_DATASET_MANAGEMENT_RANGE)(pSrbExt->dsmBuffer);
+
+        /* 
+           Iterate over all Unmap block descriptors, converting from big endian
+           and moving into NVMe DSM range definitiion entries (true these are
+           being "moved" prior to validation, but the number of ranges counter
+           and range definition pointer will only be updated if descriptors
+           prove to be valid)
+        */  
+
+        while ((0 != numBlockDescriptors--) && (status == SNTI_SUCCESS)) {
+            REVERSE_BYTES(&(pCurrentDsmRange->LengthInLogicalBlocks), 
+                pCurrentUnmapBlockDescriptor->LbaCount);
+            REVERSE_BYTES_QUAD(&(pCurrentDsmRange->StartingLBA), 
+                pCurrentUnmapBlockDescriptor->StartingLba);
+
+            /* Validate incoming SCSI Unmap block descriptor */
+            status = SntiValidateUnmapLbaAndLength(pLunExt, 
+                pSrbExt, 
+                pCurrentDsmRange->StartingLBA, 
+                pCurrentDsmRange->LengthInLogicalBlocks);
+
+            
+            /* 
+                Per SCSI spec, a length of zero is not considered to 
+                be an error, so we simply skip any that have zero length
+            */
+            if (status == SNTI_SUCCESS) {
+                if (pCurrentDsmRange->LengthInLogicalBlocks != 0) {
+                    pCurrentDsmRange++;
+                    pCdw10->NR++;
+                }
+
+                pCurrentUnmapBlockDescriptor++; 
+            } 
+        } /*while there are block descriptors to process*/
+
+        if (status == SNTI_SUCCESS) {
+            /* Adjust, as NR is a 0 based value */
+            if (pCdw10->NR > 0) pCdw10->NR--;
+            else
+            /* 
+               If lengths in all descriptors happened to have been zero
+               then there is no command to send down, so report
+               that things are complete.
+            */
+            returnStatus = SNTI_COMMAND_COMPLETED;
+        } else {
+            returnStatus = SNTI_FAILURE_CHECK_RESPONSE_DATA;
+        }
+
+    }   /* If valid number of block descriptors to process */
+
+    return returnStatus;
+} /* SntiTranslateUnmap  */
+#endif
+
+#if _WIN32_WINNT > _WIN32_WINNT_WIN7
+/******************************************************************************
+ * SntiValidateUnmapLbaAndLength
+ *
+ * @brief Validates the LBA and number of requested logical blocks within an
+ *        UNMAP block descriptor associated with a SCSI UNMAP command. If the
+ *        LBA + number of logical blocks exceeds the capacity of the namespace,
+ *        a check condition with ILLEGAL REQUEST - LBA Out Of Range (5/2100)
+ *        shall be returned.
+ *
+ *        If the total number of logical blocks exceeds the value indicated in
+ *        the MAXIMUM UNMAP LBA COUNT field in the Block Limits VPD
+ *        Page (which contains NVME_MAX_NUM_BLOCKS_PER_READ_WRITE), a
+ *        check condition with ILLEGAL REQUEST and the additional sense
+ *        code set to INVALID FIELD IN PARAMETER LIST shall be returned.
+ *
+ *
+ *        NOTE: Namespace Size is in logical blocks (per NVM Express 1.0b)
+ *
+ * @param: pLunExt - Pointer to LUN extension
+ * @param: pSrbExt - Pointer to SRB extension
+ * @param: lba - LBA to verify
+ * @param: length - Length to verify
+ *
+ * @return SNTI_STATUS
+ *     Indicates internal tranlsation status
+ ******************************************************************************/
+SNTI_STATUS SntiValidateUnmapLbaAndLength(
+    PNVME_LUN_EXTENSION pLunExt,
+    PNVME_SRB_EXTENSION pSrbExt,
+    UINT64 lba,
+    UINT32 length
+)
+{
+    PSCSI_REQUEST_BLOCK pSrb = pSrbExt->pSrb;
+    SNTI_STATUS status = SNTI_SUCCESS;
+
+    if ((lba + length) > (pLunExt->identifyData.NSZE + 1)) {
+        SntiSetScsiSenseData(pSrb,
+                             SCSISTAT_CHECK_CONDITION,
+                             SCSI_SENSE_ILLEGAL_REQUEST,
+                             SCSI_ADSENSE_ILLEGAL_BLOCK,
+                             SCSI_ADSENSE_NO_SENSE);
+
+        pSrb->SrbStatus |= SRB_STATUS_INVALID_REQUEST;
+        status = SNTI_INVALID_PARAMETER;
+    }
+
+    if (length > NVME_MAX_NUM_BLOCKS_PER_READ_WRITE) {
+        SntiSetScsiSenseData(pSrb,
+                             SCSISTAT_CHECK_CONDITION,
+                             SCSI_SENSE_ILLEGAL_REQUEST,
+                             SCSI_ADSENSE_INVALID_FIELD_PARAMETER_LIST,
+                             SCSI_ADSENSE_NO_SENSE);
+
+        pSrb->SrbStatus |= SRB_STATUS_INVALID_REQUEST;
+        status = SNTI_INVALID_PARAMETER;
+    }
+
+    return status;
+} /* SntiValidateUnmapLbaAndLength*/
+#endif
+
+
 /******************************************************************************
  * SntiTranslateWriteBuffer
  *
- * @bried Translates the SCSI Write Buffer command based on the NVMe Translation
+ * @brief Translates the SCSI Write Buffer command based on the NVMe Translation
  *        spec to a NVMe Firmware Image Download and/or Firmware Activate
  *        command and populates a temporary SQE stored in the SRB Extension.
  *

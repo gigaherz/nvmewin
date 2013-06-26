@@ -208,6 +208,11 @@ NVMeFindAdapter(
     /* Initialize the hardware device extension structure. */
     memset ((void*)pAE, 0, sizeof(NVME_DEVICE_EXTENSION));
 
+    #if _WIN32_WINNT > _WIN32_WINNT_WIN7 
+    /* Ensure Storport allocates the DMA adapter object */
+    StorPortGetUncachedExtension(pAE, pPCI, 1);
+    #endif 
+
     /*
      * Get memory-mapped access range information
      * NVMe Adapter needs to request one access range for accessing
