@@ -133,6 +133,7 @@ ULONG ChathamNlb; /* Number of logical blocks */
 
 #define MASK_INT                    0xFFFFFFFF
 #define CLEAR_INT                   0
+#define MODE_SNS_MAX_BUF_SIZE       256
 
 /* IOCTL return codes */
 #define IOCTL_COMPLETED  TRUE
@@ -1030,6 +1031,12 @@ typedef struct _nvme_srb_extension
     /* Child/Parent pointers for child I/O's needed when holes in SGL's */
     PVOID                        pChildIo;
     PVOID                        pParentIo;
+
+    /* 
+	 * Temporary buffer to prepare the modesense data before copying into 
+	 * pSrb->DataBuffer
+	 */
+	UCHAR                        modeSenseBuf[MODE_SNS_MAX_BUF_SIZE];
 
 #if DBG
     /* used for debug learning the vector/core mappings */

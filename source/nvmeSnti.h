@@ -669,7 +669,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeData(
 );
 
 VOID SntiCreateModeDataHeader(
-    PSCSI_REQUEST_BLOCK pSrb,
+    PNVME_SRB_EXTENSION pSrbExt,
     PMODE_PARAMETER_BLOCK *ppModeParamBlock,
     PUINT16 pModeDataLength,
     UINT16 blockDescLength,

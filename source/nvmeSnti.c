@@ -3511,6 +3511,8 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeSense(
                    MODE_SENSE_CDB_PAGE_CONTROL_SHIFT;
     pageCode &= MODE_SENSE_CDB_PAGE_CODE_MASK;
 
+	memset((PVOID)(pSrbExt->modeSenseBuf), 0, MODE_SNS_MAX_BUF_SIZE);
+
     /* Set the completion routine - no translation necessary on completion */
     pSrbExt->pNvmeCompletionRoutine = NULL;
 
@@ -3703,7 +3705,7 @@ VOID SntiCreateControlModePage(
         blockDescLength = LONG_DESC_BLOCK;
 
     /* Mode Page Header */
-    SntiCreateModeDataHeader(pSrb,
+    SntiCreateModeDataHeader(pSrbExt,
                              &pModeParamBlock,
                              &modeDataLength,
                              (disableBlockDesc ? 0 : blockDescLength),
@@ -3757,13 +3759,13 @@ VOID SntiCreateControlModePage(
     /* Now go back and set the Mode Data Length in the header */
     if (modeSense10 == FALSE) {
         /* Get the correct header that starts at the buffer beginning */
-        pModeHeader6 = (PMODE_PARAMETER_HEADER)(GET_DATA_BUFFER(pSrb));
+        pModeHeader6 = (PMODE_PARAMETER_HEADER)(pSrbExt->modeSenseBuf);
 
         /* Subtract 1 from mode data length - MODE DATA LENGTH field */
         pModeHeader6->ModeDataLength = (UCHAR)(modeDataLength - 1);
     } else {
         /* Get the correct header that starts at the buffer beginning */
-        pModeHeader10 = (PMODE_PARAMETER_HEADER10)(GET_DATA_BUFFER(pSrb));
+        pModeHeader10 = (PMODE_PARAMETER_HEADER10)(pSrbExt->modeSenseBuf);
 
         /* Subtract 2 from mode data length - MODE DATA LENGTH field */
         pModeHeader10->ModeDataLength[BYTE_0] =
@@ -3773,6 +3775,9 @@ VOID SntiCreateControlModePage(
     }
 
     pSrb->DataTransferLength = min(modeDataLength, allocLength);
+    StorPortCopyMemory((PVOID)pSrb->DataBuffer, 
+		(PVOID)(pSrbExt->modeSenseBuf), pSrb->DataTransferLength);
+
 } /* SntiCreateControlModePage*/
 
 VOID SntiHardCodeCacheModePage(
@@ -3799,7 +3804,7 @@ VOID SntiHardCodeCacheModePage(
         blockDescLength = LONG_DESC_BLOCK;
 
     /* Mode Page Header */
-    SntiCreateModeDataHeader(pSrb,
+    SntiCreateModeDataHeader(pSrbExt,
                              &pModeParamBlock,
                              &modeDataLength,
                              (disableBlockDesc ? 0 : blockDescLength),
@@ -3829,12 +3834,12 @@ VOID SntiHardCodeCacheModePage(
 
     /* Now go back and set the Mode Data Length in the header */
     if (modeSense10 == FALSE) {
-        pModeHeader6 = (PMODE_PARAMETER_HEADER)(GET_DATA_BUFFER(pSrb));
+        pModeHeader6 = (PMODE_PARAMETER_HEADER)(pSrbExt->modeSenseBuf);
 
         /* Subtract 1 from the mode data length - MODE DATA LENGTH field */
         pModeHeader6->ModeDataLength = (UCHAR)(modeDataLength - 1);
     } else {
-        pModeHeader10 = (PMODE_PARAMETER_HEADER10)(GET_DATA_BUFFER(pSrb));
+        pModeHeader10 = (PMODE_PARAMETER_HEADER10)(pSrbExt->modeSenseBuf);
 
         /* Subtract 2 from mode data length - MODE DATA LENGTH field */
         pModeHeader10->ModeDataLength[BYTE_0] = ((modeDataLength - 2) &
@@ -3844,6 +3849,8 @@ VOID SntiHardCodeCacheModePage(
     }
 
     pSrb->DataTransferLength = min(modeDataLength, allocLength);
+    StorPortCopyMemory((PVOID)pSrb->DataBuffer, 
+		(PVOID)(pSrbExt->modeSenseBuf), pSrb->DataTransferLength);
 } /* SntiHardCodeCacheModePage */
 
 /******************************************************************************
@@ -3888,7 +3895,7 @@ VOID SntiCreatePowerConditionControlModePage(
         blockDescLength = LONG_DESC_BLOCK;
 
     /* Mode Page Header */
-    SntiCreateModeDataHeader(pSrb,
+    SntiCreateModeDataHeader(pSrbExt,
                              &pModeParamBlock,
                              &modeDataLength,
                              (disableBlockDesc ? 0 : blockDescLength),
@@ -3917,12 +3924,12 @@ VOID SntiCreatePowerConditionControlModePage(
 
     /* Now go back and set the Mode Data Length in the header */
     if (modeSense10 == FALSE) {
-        pModeHeader6 = (PMODE_PARAMETER_HEADER)(GET_DATA_BUFFER(pSrb));
+        pModeHeader6 = (PMODE_PARAMETER_HEADER)(pSrbExt->modeSenseBuf);
 
         /* Subtract 1 from the mode data length - MODE DATA LENGTH field */
         pModeHeader6->ModeDataLength = (UCHAR)(modeDataLength - 1);
     } else {
-        pModeHeader10 = (PMODE_PARAMETER_HEADER10)(GET_DATA_BUFFER(pSrb));
+        pModeHeader10 = (PMODE_PARAMETER_HEADER10)(pSrbExt->modeSenseBuf);
 
         /* Subtract 2 from mode data length - MODE DATA LENGTH field */
         pModeHeader10->ModeDataLength[BYTE_0] = ((modeDataLength - 2) &
@@ -3932,6 +3939,8 @@ VOID SntiCreatePowerConditionControlModePage(
     }
 
     pSrb->DataTransferLength = min(modeDataLength, allocLength);
+    StorPortCopyMemory((PVOID)pSrb->DataBuffer, 
+		(PVOID)(pSrbExt->modeSenseBuf), pSrb->DataTransferLength);
 } /* SntiCreatePowerConditionControlModePage */
 
 /******************************************************************************
@@ -3976,7 +3985,7 @@ VOID SntiCreateInformationalExceptionsControlModePage(
         blockDescLength = LONG_DESC_BLOCK;
 
     /* Mode Page Header */
-    SntiCreateModeDataHeader(pSrb,
+    SntiCreateModeDataHeader(pSrbExt,
                              &pModeParamBlock,
                              &modeDataLength,
                              (disableBlockDesc ? 0 : blockDescLength),
@@ -4006,12 +4015,12 @@ VOID SntiCreateInformationalExceptionsControlModePage(
 
     /* Now go back and set the Mode Data Length in the header */
     if (modeSense10 == FALSE) {
-        pModeHeader6 = (PMODE_PARAMETER_HEADER)(GET_DATA_BUFFER(pSrb));
+        pModeHeader6 = (PMODE_PARAMETER_HEADER)(pSrbExt->modeSenseBuf);
 
         /* Subtract 1 from the mode data length - MODE DATA LENGTH field*/
         pModeHeader6->ModeDataLength = (UCHAR)(modeDataLength - 1);
     } else {
-        pModeHeader10 = (PMODE_PARAMETER_HEADER10)(GET_DATA_BUFFER(pSrb));
+        pModeHeader10 = (PMODE_PARAMETER_HEADER10)(pSrbExt->modeSenseBuf);
 
         /* Subtract 2 from mode data length - MODE DATA LENGTH field */
         pModeHeader10->ModeDataLength[BYTE_0] = ((modeDataLength - 2) &
@@ -4021,6 +4030,9 @@ VOID SntiCreateInformationalExceptionsControlModePage(
     }
 
     pSrb->DataTransferLength = min(modeDataLength, allocLength);
+    StorPortCopyMemory((PVOID)pSrb->DataBuffer, 
+		(PVOID)(pSrbExt->modeSenseBuf), pSrb->DataTransferLength);
+
 } /* SntiCreateInformationalExceptionsControlModePage*/
 
 /******************************************************************************
@@ -4059,8 +4071,7 @@ VOID SntiReturnAllModePages(
     UINT16 modeDataLength = 0;
     UINT16 blockDescLength = 0;
 
-    //memset(GET_DATA_BUFFER(pSrb), 0, allocLength);
-    memset(GET_DATA_BUFFER(pSrb), 0, MODE_SENSE_ALL_PAGES_LENGTH);
+    memset(GET_DATA_BUFFER(pSrb), 0, min(pSrb->DataTransferLength, allocLength));
 
     /* Determine which Mode Parameter Descriptor Block to use (8 or 16) */
     if (longLbaAccepted == 0)
@@ -4071,7 +4082,7 @@ VOID SntiReturnAllModePages(
     /* Only use the 8 byte mode parameter block desc... spec errata */
 
     /* Mode Page Header */
-    SntiCreateModeDataHeader(pSrb,
+    SntiCreateModeDataHeader(pSrbExt,
                              &pModeParamBlock,
                              &modeDataLength,
                              (disableBlockDesc ? 0 : blockDescLength),
@@ -4161,13 +4172,13 @@ VOID SntiReturnAllModePages(
     /* Now go back and set the Mode Data Length in the header */
     if (modeSense10 == FALSE) {
         /* Get the correct header that starts at the buffer beginning */
-        pModeHeader6 = (PMODE_PARAMETER_HEADER)(GET_DATA_BUFFER(pSrb));
+        pModeHeader6 = (PMODE_PARAMETER_HEADER)(pSrbExt->modeSenseBuf);
 
         /* Subtract 1 from the mode data length - MODE DATA LENGTH field */
         pModeHeader6->ModeDataLength = (UCHAR)(modeDataLength - 1);
     } else {
         /* Get the correct header that starts at the buffer beginning */
-        pModeHeader10 = (PMODE_PARAMETER_HEADER10)(GET_DATA_BUFFER(pSrb));
+        pModeHeader10 = (PMODE_PARAMETER_HEADER10)(pSrbExt->modeSenseBuf);
 
         /* Subtract 2 from mode data length - MODE DATA LENGTH field */
         pModeHeader10->ModeDataLength[BYTE_0] = ((modeDataLength - 2) &
@@ -4182,6 +4193,9 @@ VOID SntiReturnAllModePages(
     }
 
     pSrb->DataTransferLength = min(modeDataLength, allocLength);
+    StorPortCopyMemory((PVOID)pSrb->DataBuffer, 
+		(PVOID)(pSrbExt->modeSenseBuf), pSrb->DataTransferLength);
+
 } /* SntiReturnAllModePages */
 
 /******************************************************************************
@@ -4428,7 +4442,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeData(
  * @return VOID
  ******************************************************************************/
 VOID SntiCreateModeDataHeader(
-    PSCSI_REQUEST_BLOCK pSrb,
+    PNVME_SRB_EXTENSION pSrbExt,
     PMODE_PARAMETER_BLOCK *ppModeParamBlock,
     PUINT16 pModeDataLength,
     UINT16 blockDescLength,
@@ -4440,7 +4454,7 @@ VOID SntiCreateModeDataHeader(
 
     if (modeSense10 == FALSE) {
         /* MODE SENSE 6 */
-        pModeHeader6 = (PMODE_PARAMETER_HEADER)(GET_DATA_BUFFER(pSrb));
+        pModeHeader6 = (PMODE_PARAMETER_HEADER)(pSrbExt->modeSenseBuf);
 
         /* Set necessary fields */
         memset(pModeHeader6, 0, sizeof(MODE_PARAMETER_HEADER));
@@ -4459,7 +4473,7 @@ VOID SntiCreateModeDataHeader(
         *pModeDataLength += sizeof(MODE_PARAMETER_HEADER);
     } else {
         /* MODE SENSE 10 */
-        pModeHeader10 = (PMODE_PARAMETER_HEADER10)(GET_DATA_BUFFER(pSrb));
+        pModeHeader10 = (PMODE_PARAMETER_HEADER10)(pSrbExt->modeSenseBuf);
 
         /* Set necessary fields */
         memset(pModeHeader10, 0, sizeof(MODE_PARAMETER_HEADER10));
@@ -5769,7 +5783,7 @@ VOID SntiTranslateCachingModePageResponse(
         blockDescLength = LONG_DESC_BLOCK;
 
     /* Mode Page Header */
-    SntiCreateModeDataHeader(pSrb,
+    SntiCreateModeDataHeader(pSrbExt,
                              &pModeParamBlock,
                              &modeDataLength,
                              (disableBlockDesc ? 0 : blockDescLength),
@@ -5800,11 +5814,11 @@ VOID SntiTranslateCachingModePageResponse(
     /* Now go back and set the Mode Data Length in the header */
     if (modeSense10 == FALSE) {
         /* Get the correct header that starts at the buffer beginning */
-        pModeHeader6 = (PMODE_PARAMETER_HEADER)(GET_DATA_BUFFER(pSrb));
+        pModeHeader6 = (PMODE_PARAMETER_HEADER)(pSrbExt->modeSenseBuf);
         pModeHeader6->ModeDataLength = (UCHAR)(modeDataLength - 1);
     } else {
         /* Get the correct header that starts at the buffer beginning */
-        pModeHeader10 = (PMODE_PARAMETER_HEADER10)(GET_DATA_BUFFER(pSrb));
+        pModeHeader10 = (PMODE_PARAMETER_HEADER10)(pSrbExt->modeSenseBuf);
         pModeHeader10->ModeDataLength[0] =
             ((modeDataLength - 2) & WORD_HIGH_BYTE_MASK) >> BYTE_SHIFT_1;
         pModeHeader10->ModeDataLength[1] =
@@ -5812,6 +5826,8 @@ VOID SntiTranslateCachingModePageResponse(
     }
 
     pSrb->DataTransferLength = min(modeDataLength, allocLength);
+    StorPortCopyMemory((PVOID)pSrb->DataBuffer, 
+		(PVOID)(pSrbExt->modeSenseBuf), pSrb->DataTransferLength);
 
     pSrbExt->pSrb->ScsiStatus = SCSISTAT_GOOD;
     pSrbExt->pSrb->SrbStatus = SRB_STATUS_SUCCESS;

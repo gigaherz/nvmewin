@@ -1060,6 +1060,7 @@ ULONG NVMeInitCplQueue(
     PtrTemp = (ULONG_PTR)((PUCHAR)pSQI->pSubQStart);
     pCQI->pCplQStart = (PVOID)(PtrTemp + queueSize);
 
+    queueSize = pSQI->SubQEntries * sizeof(NVMe_COMPLETION_QUEUE_ENTRY);
     memset(pCQI->pCplQStart, 0, queueSize);
     pCQI->pCplQStart = PAGE_ALIGN_BUF_PTR(pCQI->pCplQStart);
 
