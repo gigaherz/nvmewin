@@ -896,9 +896,21 @@ ULONG NVMeInitSubQueue(
     USHORT Entries;
     ULONG dbIndex = 0;
 
+    NVMe_CONTROLLER_CAPABILITIES CAP = {0};
+
     /* Ensure the QueueID is valid via the number of active cores in system */
     if (QueueID > pRMT->NumActiveCores)
         return ( STOR_STATUS_INVALID_PARAMETER );
+
+#if (_WIN32_WINNT > _WIN32_WINNT_WIN7) && defined(_WIN64)
+    CAP.AsUlonglong = StorPortReadRegisterUlong64(pAE,
+        (PULONG64)(&pAE->pCtrlRegister->CAP));
+#else
+    CAP.HighPart = StorPortReadRegisterUlong(pAE,
+        (PULONG)(&pAE->pCtrlRegister->CAP.HighPart));
+    CAP.LowPart = StorPortReadRegisterUlong(pAE,
+        (PULONG)(&pAE->pCtrlRegister->CAP.LowPart));
+#endif
 
     /* Initialize static fields of SUB_QUEUE_INFO structure */
     pSQI->SubQEntries = (QueueID != 0) ? pQI->NumIoQEntriesAllocated :
@@ -907,10 +919,12 @@ ULONG NVMeInitSubQueue(
     pSQI->FreeSubQEntries = pSQI->SubQEntries;
 
      /* calculate byte offset per 1.0c spec formula */
-    dbIndex = 2 * QueueID * (4 << pAE->pCtrlRegister->CAP.DSTRD);
+    dbIndex = 2 * QueueID * (4 << CAP.DSTRD);
+
     /* convert to index */
     dbIndex = dbIndex / sizeof(NVMe_QUEUE_Y_DOORBELL);
     pSQI->pSubTDBL = (PULONG)(&pAE->pCtrlRegister->IODB[dbIndex].QHT );
+
     StorPortDebugPrint(INFO,
                        "NVMeInitSubQueue : SQ 0x%x pSubTDBL 0x%x at index  0x%x\n",
                        QueueID, pSQI->pSubTDBL, dbIndex);
@@ -999,9 +1013,21 @@ ULONG NVMeInitCplQueue(
     ULONG queueSize = 0;
     ULONG dbIndex = 0;
 
+    NVMe_CONTROLLER_CAPABILITIES CAP = {0};
+
     /* Ensure the QueueID is valid via the number of active cores in system */
     if (QueueID > pRMT->NumActiveCores)
         return ( STOR_STATUS_INVALID_PARAMETER );
+
+#if (_WIN32_WINNT > _WIN32_WINNT_WIN7) && defined(_WIN64)
+    CAP.AsUlonglong = StorPortReadRegisterUlong64(pAE,
+        (PULONG64)(&pAE->pCtrlRegister->CAP));
+#else
+    CAP.HighPart = StorPortReadRegisterUlong(pAE,
+        (PULONG)(&pAE->pCtrlRegister->CAP.HighPart));
+    CAP.LowPart = StorPortReadRegisterUlong(pAE,
+        (PULONG)(&pAE->pCtrlRegister->CAP.LowPart));
+#endif
 
     pSQI = pQI->pSubQueueInfo + QueueID;
     pCQI = pQI->pCplQueueInfo + QueueID;
@@ -1011,10 +1037,12 @@ ULONG NVMeInitCplQueue(
     pCQI->CplQEntries = pSQI->SubQEntries;
 
     /* calculate byte offset per 10.c spec formula  */
-    dbIndex = (2 * QueueID + 1) * (4 << pAE->pCtrlRegister->CAP.DSTRD);
+    dbIndex = (2 * QueueID + 1) * (4 << CAP.DSTRD);
+
     /* convert to index */
     dbIndex = dbIndex / sizeof(NVMe_QUEUE_Y_DOORBELL);
     pCQI->pCplHDBL = (PULONG)(&pAE->pCtrlRegister->IODB[dbIndex].QHT );
+
     StorPortDebugPrint(INFO,
                        "NVMeInitCplQueue : CQ 0x%x pCplHDBL 0x%x at index  0x%x\n",
                        QueueID, pCQI->pCplHDBL, dbIndex);
@@ -1177,11 +1205,12 @@ BOOLEAN NVMeWaitOnReady(
      * In case the read back unit is 0, make it 1, i.e., 500 ms wait.
      */
     for (PollCount = 0; PollCount < PollMax; PollCount++) {
-        CSTS.AsUlong = StorPortReadRegisterUlong(pAE,
-                                           (PULONG)(&pAE->pCtrlRegister->CSTS));
+        CSTS.AsUlong = StorPortReadRegisterUlong(
+            pAE, (PULONG)(&pAE->pCtrlRegister->CSTS));
 
         if (CSTS.RDY == 0)
             return TRUE;
+
         NVMeStallExecution(pAE, MAX_STATE_STALL_us);
     }
 
@@ -1625,6 +1654,8 @@ BOOLEAN NVMeInitCallback(
     PNVMe_COMPLETION_QUEUE_ENTRY pCplEntry = pSrbExt->pCplEntry;
     PQUEUE_INFO pQI = &pAE->QueueInfo;
 
+    NVMe_CONTROLLER_CAPABILITIES CAP = {0};
+
     switch (pAE->DriverState.NextDriverState) {
         case NVMeWaitOnIdentifyCtrl:
             /*
@@ -1646,6 +1677,17 @@ BOOLEAN NVMeInitCallback(
                 StorPortCopyMemory(&pAE->controllerIdentifyData,
                                 pAE->DriverState.pDataBuffer,
                                 sizeof(ADMIN_IDENTIFY_CONTROLLER));
+
+#if (_WIN32_WINNT > _WIN32_WINNT_WIN7) && defined(_WIN64)
+                CAP.AsUlonglong = StorPortReadRegisterUlong64(pAE,
+                    (PULONG64)(&pAE->pCtrlRegister->CAP));
+#else
+                CAP.HighPart = StorPortReadRegisterUlong(pAE,
+                    (PULONG)(&pAE->pCtrlRegister->CAP.HighPart));
+                CAP.LowPart = StorPortReadRegisterUlong(pAE,
+                    (PULONG)(&pAE->pCtrlRegister->CAP.LowPart));
+#endif
+
                 /*
                  * we don't discover the HW xfer limit until after we've reported it
                  * to storport so if we find out its smaller than what we'rve reported,
@@ -1654,7 +1696,7 @@ BOOLEAN NVMeInitCallback(
                   */
                 if (pAE->controllerIdentifyData.MDTS > 0) {
                     maxXferSize = (1 << pAE->controllerIdentifyData.MDTS) *
-                        (1 << (12 + pAE->pCtrlRegister->CAP.MPSMIN)) ;
+                        (1 << (12 + CAP.MPSMIN)) ;
                     if (pAE->InitInfo.MaxTxSize > maxXferSize) {
                         StorPortDebugPrint(INFO, "ERROR: Ctrl reports smaller Max Xfer Sz than INF (0x%x < 0x%x)\n",
                             maxXferSize, pAE->InitInfo.MaxTxSize);

@@ -201,6 +201,8 @@ NVMeFindAdapter(
     PRES_MAPPING_TBL pRMT = NULL;
     ULONG pciStatus = 0;
 
+    NVMe_CONTROLLER_CAPABILITIES CAP = {0};
+
     UNREFERENCED_PARAMETER( Reserved1 );
     UNREFERENCED_PARAMETER( Reserved2 );
     UNREFERENCED_PARAMETER( Reserved3 );
@@ -261,14 +263,24 @@ NVMeFindAdapter(
     if (NVMeStrCompare("dump=1", ArgumentString) == TRUE)
         pAE->ntldrDump = TRUE;
 
+#if (_WIN32_WINNT > _WIN32_WINNT_WIN7) && defined(_WIN64)
+    CAP.AsUlonglong = StorPortReadRegisterUlong64(pAE,
+        (PULONG64)(&pAE->pCtrlRegister->CAP));
+#else
+    CAP.HighPart = StorPortReadRegisterUlong(pAE,
+        (PULONG)(&pAE->pCtrlRegister->CAP.HighPart));
+    CAP.LowPart = StorPortReadRegisterUlong(pAE,
+        (PULONG)(&pAE->pCtrlRegister->CAP.LowPart));
+#endif
+
     /* setup ctrl timeout and stride info */
-    pAE->uSecCrtlTimeout = (ULONG)(pAE->pCtrlRegister->CAP.TO * MIN_WAIT_TIMEOUT);
+    pAE->uSecCrtlTimeout = (ULONG)(CAP.TO * MIN_WAIT_TIMEOUT);
     pAE->uSecCrtlTimeout = (pAE->uSecCrtlTimeout == 0) ?
         MIN_WAIT_TIMEOUT : pAE->uSecCrtlTimeout;
     pAE->uSecCrtlTimeout *= MILLI_TO_MICRO;
 
     /* save off the DB Stride Size */
-    pAE->strideSz = 1 << (2 + pAE->pCtrlRegister->CAP.DSTRD);
+    pAE->strideSz = 1 << (2 + CAP.DSTRD);
     StorPortDebugPrint(INFO, "NVMeFindAdapter: Stride Size set to 0x%x\n", pAE->strideSz);
 
     /*
@@ -321,10 +333,10 @@ NVMeFindAdapter(
         NVMeFetchRegistry(pAE);
 
         /* regardless of hardcoded or reg overrides, IOQ is limited by CAP */
-        if (pAE->InitInfo.IoQEntries > (ULONG)(pAE->pCtrlRegister->CAP.MQES + 1)) {
+        if (pAE->InitInfo.IoQEntries > (ULONG)(CAP.MQES + 1)) {
             StorPortDebugPrint(INFO, "IO Q size limited by HW to 0x%x\n",
                 (pAE->pCtrlRegister->CAP.MQES + 1));
-            pAE->InitInfo.IoQEntries = pAE->pCtrlRegister->CAP.MQES + 1;
+            pAE->InitInfo.IoQEntries = CAP.MQES + 1;
         }
 
         /* updte in case someone used the registry to change MaxTxSie */
