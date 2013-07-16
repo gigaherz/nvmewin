@@ -209,11 +209,10 @@ NVMeFindAdapter(
 
     /* Initialize the hardware device extension structure. */
     memset ((void*)pAE, 0, sizeof(NVME_DEVICE_EXTENSION));
-
-    #if _WIN32_WINNT > _WIN32_WINNT_WIN7 
+#if (NTDDI_VERSION > NTDDI_WIN7)
     /* Ensure Storport allocates the DMA adapter object */
     StorPortGetUncachedExtension(pAE, pPCI, 1);
-    #endif 
+#endif 
 
     /*
      * Get memory-mapped access range information
@@ -263,7 +262,7 @@ NVMeFindAdapter(
     if (NVMeStrCompare("dump=1", ArgumentString) == TRUE)
         pAE->ntldrDump = TRUE;
 
-#if (_WIN32_WINNT > _WIN32_WINNT_WIN7) && defined(_WIN64)
+#if (NTDDI_VERSION > NTDDI_WIN7) && defined(_WIN64)
     CAP.AsUlonglong = StorPortReadRegisterUlong64(pAE,
         (PULONG64)(&pAE->pCtrlRegister->CAP));
 #else

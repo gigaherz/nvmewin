@@ -263,7 +263,7 @@
 /* For Win 8 UNMAP support, there are additional VPD pages
    we provide such as logical block provisioning
 */ 
-#if _WIN32_WINNT > _WIN32_WINNT_WIN7
+#if (NTDDI_VERSION > NTDDI_WIN7)
 #define INQ_NUM_SUPPORTED_VPD_PAGES                   6
 #else 
 #define INQ_NUM_SUPPORTED_VPD_PAGES                   3

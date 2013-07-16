@@ -476,11 +476,11 @@ SNTI_TRANSLATION_STATUS SntiTranslateCommand(
         break;
 
         /*UNMAP not supported prior to Win 8*/
-        #if _WIN32_WINNT > _WIN32_WINNT_WIN7
+#if (NTDDI_VERSION > NTDDI_WIN7)
         case SCSIOP_UNMAP:
             returnStatus = SntiTranslateUnmap(pSrb);
         break;
-        #endif
+#endif
 
         default:
             StorPortDebugPrint(INFO,
@@ -573,7 +573,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateInquiry(
               UNMAP and related VPD pages not supported prior to Win 8 
               (Note: VPD_BLOCK_LIMITS, etc. not defined in Win 7 WDK)
             */
-            #if _WIN32_WINNT > _WIN32_WINNT_WIN7
+#if (NTDDI_VERSION > NTDDI_WIN7)
             case VPD_BLOCK_LIMITS:
                 SntiTranslateBlockLimitsPage(pSrb);
             break;
@@ -583,7 +583,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateInquiry(
             case VPD_LOGICAL_BLOCK_PROVISIONING:
                 SntiTranslateLogicalBlockProvisioningPage(pSrb, pLunExt);
             break;
-            #endif
+#endif
 
             default:
                 SntiSetScsiSenseData(pSrb,
@@ -665,11 +665,11 @@ VOID SntiTranslateSupportedVpdPages(
       For Windows 8 Unmap support, we supply these additional VPD pages 
       (Note: #defines for VPD_BLOCK_LIMITS etc. are not defined in Win 7 WDK)
     */
-    #if _WIN32_WINNT > _WIN32_WINNT_WIN7
+#if (NTDDI_VERSION > NTDDI_WIN7)
     pSupportedVpdPages->SupportedPageList[BYTE_3]   = VPD_BLOCK_LIMITS;
     pSupportedVpdPages->SupportedPageList[BYTE_4]   = VPD_BLOCK_DEVICE_CHARACTERISTICS;
     pSupportedVpdPages->SupportedPageList[BYTE_5]   = VPD_LOGICAL_BLOCK_PROVISIONING;
-    #endif 
+#endif 
 
     pSrb->DataTransferLength = min(allocLength,
         (FIELD_OFFSET(VPD_SUPPORTED_PAGES_PAGE, SupportedPageList) +
@@ -778,7 +778,7 @@ VOID SntiTranslateDeviceIdentificationPage(
         min(DEVICE_IDENTIFICATION_PAGE_SIZE, allocLength);
 } /* SntiTranslateDeviceIdentificationPage */
 
-#if _WIN32_WINNT > _WIN32_WINNT_WIN7
+#if (NTDDI_VERSION > NTDDI_WIN7)
 /******************************************************************************
  * SntiTranslateBlockLimitsPage
  *
@@ -835,7 +835,7 @@ VOID SntiTranslateBlockLimitsPage(
 } /* SntiTranslateBlockLimitsPage */
 #endif 
 
-#if _WIN32_WINNT > _WIN32_WINNT_WIN7
+#if (NTDDI_VERSION > NTDDI_WIN7)
 /******************************************************************************
  * SntiTranslateBlockDeviceCharacteristicsPage
  *
@@ -878,7 +878,7 @@ VOID SntiTranslateBlockDeviceCharacteristicsPage(
 } /* SntiTranslateBlockDeviceCharacteristicsPage */
 #endif
 
-#if _WIN32_WINNT > _WIN32_WINNT_WIN7
+#if (NTDDI_VERSION > NTDDI_WIN7)
 /******************************************************************************
  * SntiTranslateLogicalBlockProvisioningPage
  *
@@ -2591,7 +2591,7 @@ SNTI_TRANSLATION_STATUS SntiTransitionPowerState(
     return returnStatus;
 } /* SntiTransitionPowerState */
 
-#if _WIN32_WINNT > _WIN32_WINNT_WIN7
+#if (NTDDI_VERSION > NTDDI_WIN7)
 /******************************************************************************
  * SntiTranslateUnmap
  *
@@ -2758,7 +2758,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateUnmap(
 } /* SntiTranslateUnmap  */
 #endif
 
-#if _WIN32_WINNT > _WIN32_WINNT_WIN7
+#if (NTDDI_VERSION > NTDDI_WIN7)
 /******************************************************************************
  * SntiValidateUnmapLbaAndLength
  *

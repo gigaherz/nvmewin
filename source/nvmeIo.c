@@ -608,6 +608,10 @@ BOOLEAN NVMeDetectPendingCmds(
      */
     /* return FALSE; */
 
+    /* Simply return FALSE when buffer had been freed */
+    if (pQI->pSubQueueInfo == NULL)
+        return retValue;
+
     /* Search all submission queues */
     for (QueueID = 0; QueueID <= pQI->NumSubIoQCreated; QueueID++) {
         pSQI = pQI->pSubQueueInfo + QueueID;

@@ -902,7 +902,7 @@ ULONG NVMeInitSubQueue(
     if (QueueID > pRMT->NumActiveCores)
         return ( STOR_STATUS_INVALID_PARAMETER );
 
-#if (_WIN32_WINNT > _WIN32_WINNT_WIN7) && defined(_WIN64)
+#if (NTDDI_VERSION > NTDDI_WIN7) && defined(_WIN64)
     CAP.AsUlonglong = StorPortReadRegisterUlong64(pAE,
         (PULONG64)(&pAE->pCtrlRegister->CAP));
 #else
@@ -1019,7 +1019,7 @@ ULONG NVMeInitCplQueue(
     if (QueueID > pRMT->NumActiveCores)
         return ( STOR_STATUS_INVALID_PARAMETER );
 
-#if (_WIN32_WINNT > _WIN32_WINNT_WIN7) && defined(_WIN64)
+#if (NTDDI_VERSION > NTDDI_WIN7) && defined(_WIN64)
     CAP.AsUlonglong = StorPortReadRegisterUlong64(pAE,
         (PULONG64)(&pAE->pCtrlRegister->CAP));
 #else
@@ -1678,7 +1678,7 @@ BOOLEAN NVMeInitCallback(
                                 pAE->DriverState.pDataBuffer,
                                 sizeof(ADMIN_IDENTIFY_CONTROLLER));
 
-#if (_WIN32_WINNT > _WIN32_WINNT_WIN7) && defined(_WIN64)
+#if (NTDDI_VERSION > NTDDI_WIN7) && defined(_WIN64)
                 CAP.AsUlonglong = StorPortReadRegisterUlong64(pAE,
                     (PULONG64)(&pAE->pCtrlRegister->CAP));
 #else
@@ -2538,33 +2538,41 @@ VOID NVMeFreeBuffers (
     PSUB_QUEUE_INFO pSQI = NULL;
 
     /* First, free the Start State Data buffer memory allocated by driver */
-    if (pAE->DriverState.pDataBuffer != NULL)
+    if (pAE->DriverState.pDataBuffer != NULL) {
         StorPortFreeContiguousMemorySpecifyCache((PVOID)pAE,
                                                  pAE->DriverState.pDataBuffer,
                                                  PAGE_SIZE, MmCached);
-
+        pAE->DriverState.pDataBuffer = NULL;
+    }
     /* Free the NVME_LUN_EXTENSION memory allocated by driver */
-    if (pAE->pLunExtensionTable[0] != NULL)
+    if (pAE->pLunExtensionTable[0] != NULL) {
         StorPortFreeContiguousMemorySpecifyCache((PVOID)pAE,
                                                  pAE->pLunExtensionTable[0],
                                                  pAE->LunExtSize,
                                                  MmCached);
+        pAE->pLunExtensionTable[0] = NULL;
+    }
 
     /* Free the allocated queue entry and PRP list buffers */
     if (pQI->pSubQueueInfo != NULL) {
         for (QueueID = 0; QueueID <= pRMT->NumActiveCores; QueueID++) {
             pSQI = pQI->pSubQueueInfo + QueueID;
-            if (pSQI->pQueueAlloc != NULL)
+            if (pSQI->pQueueAlloc != NULL) {
                 StorPortFreeContiguousMemorySpecifyCache((PVOID)pAE,
                                                          pSQI->pQueueAlloc,
                                                          pSQI->QueueAllocSize,
                                                          MmCached);
+                pSQI->pQueueAlloc = NULL;
+            }
 
-            if (pSQI->pPRPListAlloc != NULL)
+            if (pSQI->pPRPListAlloc != NULL) {
                 StorPortFreeContiguousMemorySpecifyCache((PVOID)pAE,
                                                          pSQI->pPRPListAlloc,
                                                          pSQI->PRPListAllocSize,
                                                          MmCached);
+                pSQI->pPRPListAlloc = NULL;
+            }
+
 
 #ifdef DUMB_DRIVER
             if (pSQI->pDblBuffAlloc != NULL)
@@ -2604,30 +2612,43 @@ VOID NVMeFreeNonContiguousBuffers (
     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
 
     /* Free the Start State Machine SRB EXTENSION allocated by driver */
-    if (pAE->DriverState.pSrbExt != NULL)
+    if (pAE->DriverState.pSrbExt != NULL) {
         StorPortFreePool((PVOID)pAE, pAE->DriverState.pSrbExt);
+        pAE->DriverState.pSrbExt = NULL;
+    }
 
     /* Free the resource mapping tables if allocated */
-    if (pRMT->pMsiMsgTbl != NULL)
+    if (pRMT->pMsiMsgTbl != NULL) {
         StorPortFreePool((PVOID)pAE, pRMT->pMsiMsgTbl);
+        pRMT->pMsiMsgTbl = NULL;
+    }
 
-    if (pRMT->pCoreTbl != NULL)
+    if (pRMT->pCoreTbl != NULL) {
         StorPortFreePool((PVOID)pAE, pRMT->pCoreTbl);
+        pRMT->pCoreTbl = NULL;
+    }
 
-    if (pRMT->pNumaNodeTbl != NULL)
+    if (pRMT->pNumaNodeTbl != NULL) {
         StorPortFreePool((PVOID)pAE, pRMT->pNumaNodeTbl);
+        pRMT->pNumaNodeTbl = NULL;
+    }
 
     /* Free the allocated SUB/CPL_QUEUE_INFO structures memory */
-    if ( pQI->pSubQueueInfo != NULL )
+    if ( pQI->pSubQueueInfo != NULL ) {
         StorPortFreePool((PVOID)pAE, pQI->pSubQueueInfo);
+        pQI->pSubQueueInfo = NULL;
+    }
 
-    if ( pQI->pCplQueueInfo != NULL )
+    if ( pQI->pCplQueueInfo != NULL ) {
         StorPortFreePool((PVOID)pAE, pQI->pCplQueueInfo);
+        pQI->pCplQueueInfo = NULL;
+    }
 
 #ifdef COMPLETE_IN_DPC
     /* Free the DPC array memory */
     if (pAE->pDpcArray != NULL) {
         StorPortFreePool((PVOID)pAE, pAE->pDpcArray);
+        pAE->pDpcArray = NULL;
     }
 #endif
 

@@ -450,7 +450,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateExtendedInquiryDataPage(
 );
 
 
-#if _WIN32_WINNT > _WIN32_WINNT_WIN7
+#if (NTDDI_VERSION > NTDDI_WIN7)
 VOID SntiTranslateBlockLimitsPage(
    PSCSI_REQUEST_BLOCK pSrb
 );
@@ -558,7 +558,7 @@ SNTI_TRANSLATION_STATUS SntiTransitionPowerState(
 );
 
 
-#if _WIN32_WINNT > _WIN32_WINNT_WIN7
+#if (NTDDI_VERSION > NTDDI_WIN7)
 SNTI_STATUS SntiValidateUnmapLbaAndLength(
     PNVME_LUN_EXTENSION pLunExt,
     PNVME_SRB_EXTENSION pSrbExt,
