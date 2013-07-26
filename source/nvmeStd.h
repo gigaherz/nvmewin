@@ -950,11 +950,9 @@ typedef struct _nvme_device_extension
     STOR_DPC                    RecoveryDpc;
     BOOLEAN                     RecoveryAttemptPossible;
 
-#ifdef COMPLETE_IN_DPC
     /* IO Completion DPC Array Info */
     PVOID                       pDpcArray;
     ULONG                       NumDpc;
-#endif
 
     /* INTx interrupt mask flag */
     BOOLEAN                     IntxMasked;
@@ -1123,7 +1121,7 @@ ULONG NVMeMapCore2Queue(
     __inout USHORT* pCplQueue
 );
 
-#ifdef COMPLETE_IN_DPC
+
 VOID
 IoCompletionDpcRoutine(
     IN PSTOR_DPC  pDpc,
@@ -1131,7 +1129,7 @@ IoCompletionDpcRoutine(
     IN PVOID  pSystemArgument1,
     IN PVOID  pSystemArgument2
     );
-#endif
+
 
 VOID NVMeInitFreeQ(
     __in PSUB_QUEUE_INFO pSQI,

@@ -4572,7 +4572,7 @@ VOID SntiTranslateSglToPrp(
     UINT32 sgElementSize;
     UINT32 index;
     ULONGLONG localPrpEntry = 0;
-    ULONG lengthIncrement;
+    ULONG lengthIncrement = PAGE_SIZE;
     ULONG offset;
     PULONGLONG pPrp1 = &pSrbExt->nvmeSqeUnit.PRP1;
     PULONGLONG pPrp2 = &pSrbExt->nvmeSqeUnit.PRP2;

@@ -2644,13 +2644,12 @@ VOID NVMeFreeNonContiguousBuffers (
         pQI->pCplQueueInfo = NULL;
     }
 
-#ifdef COMPLETE_IN_DPC
     /* Free the DPC array memory */
     if (pAE->pDpcArray != NULL) {
         StorPortFreePool((PVOID)pAE, pAE->pDpcArray);
         pAE->pDpcArray = NULL;
     }
-#endif
+
 
 } /* NVMeFreeNonContiguousBuffer */
 
