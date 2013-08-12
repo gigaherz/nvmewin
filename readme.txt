@@ -17,6 +17,7 @@ SVN source code revision number:
 
 Contents:
 - readme.txt
+- Visual Studio 2012 solution/project files (under nvme directory) 
 - installation package (under installations directory), you may find directories:
   - Windows7 (installation package for Windows 7 and Server 2008 R2)
   - Windows8 (installation package for Windows 8 and Server 2012, TRIM enabled)
@@ -41,6 +42,11 @@ Driver building:
 - For Windows Server 2012(TRIM enabled) and Windows 8(TRIM enabled)
   You should build the driver within Visual Studio 2012 when configured for Windows8
   in Project Property.
+- To open nvme solution within Visual Studio 2012 build environment, you may simply
+  double-click the released solution file(nvme.sln) under nvme directory if you have
+  Visual Studio 2012 and Windows 8 WDK installed properly.
+- After nvme solution is built, you may find the test signed packages under nvme\x64
+  directory.
 
 Limitations:
 - The driver supports Windows 7/8, Server 2008 R2/2012.
