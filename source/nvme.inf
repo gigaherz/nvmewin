@@ -7,9 +7,9 @@ Signature="$Windows NT$"
 Provider=%COMM%
 ClassGUID={4D36E97B-E325-11CE-BFC1-08002BE10318}
 Class=SCSIAdapter
-DriverVer=04/24/2012, 1.0.0.0
+DriverVer=11/15/2013, 1.2.0.0
 ;CatalogFile.NTAMD64 = nvme64.cat
-;CatalogFile.NTx8664 = nvme86.cat
+;CatalogFile.NTx86   = nvme86.cat
 
 [PackageInfo]
 Name=NVMe

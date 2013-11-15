@@ -1526,8 +1526,14 @@ IoCompletionDpcRoutine(
     USHORT indexCheckQueue = 0;
     BOOLEAN InterruptClaimed = FALSE;
     STOR_LOCK_HANDLE DpcLockhandle = { 0 };
+    STOR_LOCK_HANDLE StartLockHandle = { 0 };
 
+
+    if (pAE->MultipleCoresToSingleQueueFlag) {
+        StorPortAcquireSpinLock(pAE, StartIoLock, NULL, &StartLockHandle);
+    } else {
         StorPortAcquireSpinLock(pAE, DpcLock, pDpc, &DpcLockhandle);
+    }
 
     /* Use the message id to find the correct entry in the MSI_MESSAGE_TBL */
     pMMT = pRMT->pMsiMsgTbl + MsgID;
@@ -1698,7 +1704,11 @@ IoCompletionDpcRoutine(
         pAE->IntxMasked = FALSE;
     }
 #endif
-    StorPortReleaseSpinLock(pAE, &DpcLockhandle);
+    if (pAE->MultipleCoresToSingleQueueFlag) {
+        StorPortReleaseSpinLock(pAE, &StartLockHandle);
+    } else {
+        StorPortReleaseSpinLock(pAE, &DpcLockhandle);
+    }
 
 } /* IoCompletionDpcRoutine */
 

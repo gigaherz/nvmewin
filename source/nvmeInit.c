@@ -160,11 +160,26 @@ PVOID NVMeAllocateMem(
 
     /* It fails, log the error and return 0 */
     if ((Status != 0) || (pBuf == NULL)) {
-        StorPortDebugPrint(ERROR,
-                           "NVMeAllocateMem:<Error> Failure, sts=0x%x\n",
-                           Status);
-        return NULL;
+        /* If the memory allocation for other than Node 0
+		 * we will try to allocate from Node 0, which not
+		 * expected to fail, If Node 0 memory also fails
+		 * we don't have choice we will bail out and driver
+		 * will not load
+		 */
+
+        Node = 0;
+        Status = StorPortAllocateContiguousMemorySpecifyCacheNode(
+                  pAE, Size, Low, High, Align, MmCached, Node, (PVOID)&pBuf);
+        if ((Status != 0) || (pBuf == NULL)) {
+            StorPortDebugPrint(ERROR, 
+				"NVMeAllocateMem:<Error> Failure, sts=0x%x, pBuf=%x, Node=%x\n",
+                 Status, pBuf, 0);
+            return NULL;
+        }
     }
+
+    StorPortDebugPrint(INFO,
+                       "NVMeAllocateMem:<Success> Node=%x, pBuf=%x, size=%x\n", Node, pBuf, Size);
 
     /* Zero out the buffer before return */
     memset(pBuf, 0, Size);
@@ -2806,9 +2821,13 @@ BOOLEAN NVMeAllocIoQueues(
                         }
 
                         pQI->NumSubIoQAllocated = pQI->NumCplIoQAllocated = 1;
+        
+                        pAE->MultipleCoresToSingleQueueFlag = TRUE;
                         return (TRUE);
                     } /* fall back to use only one queue */
                 } /* failure case */
+            } else {
+                pAE->MultipleCoresToSingleQueueFlag = TRUE;
             }
 
                 /* Succeeded! Mark down the number of queues allocated */
@@ -2895,19 +2914,17 @@ ULONG NVMeGetCmdEntry(
 
     pSQI = pQI->pSubQueueInfo + QueueID;
 
-    /* Retrieve a free CMD_INFO entry for the request */
-    pListEntry = RemoveHeadList(&pSQI->FreeQList);
-
-    /* If the retrieved pointer is the ListHead, no free entry indicated */
-    if (pListEntry == &pSQI->FreeQList) {
+    if (!IsListEmpty(&pSQI->FreeQList)) {
+        /* Retrieve a free CMD_INFO entry for the request */
+        pListEntry = RemoveHeadList(&pSQI->FreeQList);
+        pCmdEntry = (PCMD_ENTRY)CONTAINING_RECORD(pListEntry, CMD_ENTRY, ListEntry);
+    } else {
         StorPortDebugPrint(ERROR,
                            "NVMeGetCmdEntry: <Error> Queue#%d is full!\n",
                            QueueID);
-
         return (STOR_STATUS_INSUFFICIENT_RESOURCES);
     }
 
-    pCmdEntry = (PCMD_ENTRY) pListEntry;
 
     /* Mark down it's used and save the original context */
     pCmdEntry->Context = Context;

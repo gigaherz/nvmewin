@@ -967,6 +967,9 @@ typedef struct _nvme_device_extension
     /* counter used to determine in learning the vector/core table */
     ULONG                       LearningCores;
 
+    /* Flag to indicate multiple cores are sharing a single queue */
+    BOOLEAN                     MultipleCoresToSingleQueueFlag;
+
 #if DBG
     /* part of debug code to sanity check learning */
     BOOLEAN                     LearningComplete;
