@@ -1401,8 +1401,46 @@ VOID NVMeSetFeaturesCompletion(
                (pSetFeaturesCDW10->FID == LBA_RANGE_TYPE)) {
         /* first check completion status code */
         if (pCplEntry->DW3.SF.SC != 0) {
-            NVMeDriverFatalError(pAE,
-                                (1 << START_STATE_LBA_RANGE_CHK_FAILURE));
+           /* Support for LBA Range Type is optional,
+            * handle the case that it's not supported 
+            */
+            if ((pCplEntry->DW3.SF.SC == INVALID_FIELD_IN_COMMAND) &&
+                (pCplEntry->DW3.SF.SCT == GENERIC_COMMAND_STATUS)) {
+                /*
+                 * The device doesn't support the optional LBA Range Type
+                 * command so assume the slot is online/visible and writable
+                 */
+                lunId = pAE->DriverState.VisibleNamespacesExamined;
+
+                pLunExt = pAE->pLunExtensionTable[lunId];
+                pLunExt->slotStatus = ONLINE;
+                pLunExt->ReadOnly = FALSE;
+                pAE->DriverState.VisibleNamespacesExamined++;
+                pAE->DriverState.ConfigLbaRangeNeeded = FALSE;
+                pAE->DriverState.TtlLbaRangeExamined++;
+
+                /* Reset the counter and set next state accordingly */
+                pAE->DriverState.StateChkCount = 0;
+                if (pAE->DriverState.TtlLbaRangeExamined ==
+                    pAE->controllerIdentifyData.NN) {
+                    /* We have called identify namespace as well as get/set
+                     * features for each of the NN namespaces that exist.
+                     * Move on to the next state in the state machine.
+                     */
+
+                    pAE->visibleLuns = pAE->DriverState.VisibleNamespacesExamined;
+                    pAE->DriverState.NextDriverState = NVMeWaitOnSetupQueues;
+                } else {
+                    /* We have more namespaces to identify so
+                     * we'll set the state to NVMeWaitOnIdentifyNS in order
+                     * to identify the remaining namespaces.
+                     */
+                    pAE->DriverState.NextDriverState = NVMeWaitOnIdentifyNS;
+                }
+            } else {
+                NVMeDriverFatalError(pAE,
+                                    (1 << START_STATE_LBA_RANGE_CHK_FAILURE));
+            }
         } else {
             /*
              * When Get Features command completes, exam the completed data to
