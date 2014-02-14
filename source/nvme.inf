@@ -7,7 +7,7 @@ Signature="$Windows NT$"
 Provider=%COMM%
 ClassGUID={4D36E97B-E325-11CE-BFC1-08002BE10318}
 Class=SCSIAdapter
-DriverVer=02/11/2014, 1.2.1014.21
+DriverVer=02/14/2014, 1.2.1014.22
 ;CatalogFile.NTAMD64 = nvme64.cat
 ;CatalogFile.NTx86   = nvme86.cat
 
@@ -116,8 +116,8 @@ AddService = nvme, 0x00000002 , nvme_Service_Inst, nvme_EventLog_Inst
 ;
 ; Localizable Strings
 ;
-diskId1 = "NVME Installation Disk"
-CommNvme.DeviceDesc = "Community NVME Storport Miniport"
+diskId1 = "NVMe Installation Disk"
+CommNvme.DeviceDesc = "Community NVMe 1.0e Storport Miniport"
 ;COMMNvmeChat.DeviceDesc = "Intel Chatham Prototype Hardware"
 COMM = "Community"
 

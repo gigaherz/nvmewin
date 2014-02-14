@@ -404,6 +404,10 @@ NVMeFindAdapter(
 
     /* Specify NVMe MSI/MSI-X ISR here */
     pPCI->HwMSInterruptRoutine = NVMeIsrMsix;
+    
+    /* requesting memory buffers in crash dump or hibernation mode. */
+    pPCI->RequestedDumpBufferSize = DUMP_BUFFER_SIZE;
+    pAE->pPCI = pPCI;    
 
     pPCI->WmiDataProvider = FALSE;
 
@@ -634,17 +638,18 @@ BOOLEAN NVMeInitialize(
     if (pAE == NULL)
         return (FALSE);
 
-    Status = StorPortInitializePerfOpts(pAE, TRUE, &perfData);
-    ASSERT(STOR_STATUS_SUCCESS == Status);
-    if (STOR_STATUS_SUCCESS == Status) {
-        /* Allow optimization of storport DPCs */
-        if (perfData.Flags & STOR_PERF_DPC_REDIRECTION) {
-            perfData.Flags = STOR_PERF_DPC_REDIRECTION;
-        }
-        Status = StorPortInitializePerfOpts(pAE, FALSE, &perfData);
+    if (pAE->ntldrDump == FALSE) {
+        Status = StorPortInitializePerfOpts(pAE, TRUE, &perfData);
         ASSERT(STOR_STATUS_SUCCESS == Status);
+        if (STOR_STATUS_SUCCESS == Status) {
+            /* Allow optimization of storport DPCs */
+            if (perfData.Flags & STOR_PERF_DPC_REDIRECTION) {
+                perfData.Flags = STOR_PERF_DPC_REDIRECTION;
+            }
+            Status = StorPortInitializePerfOpts(pAE, FALSE, &perfData);
+            ASSERT(STOR_STATUS_SUCCESS == Status);
+        }
     }
-
     CC.AsUlong =
         StorPortReadRegisterUlong(pAE, (PULONG)(&pAE->pCtrlRegister->CC));
 
@@ -660,19 +665,7 @@ BOOLEAN NVMeInitialize(
          * not recommended.  The spec is not clear on whether we need
          * to wait for RDY to transition EN back to 0 or not.
          */
-         CSTS.AsUlong =
-             StorPortReadRegisterUlong(pAE,
-                                       &pAE->pCtrlRegister->CSTS.AsUlong);
-         while (CSTS.RDY != 1) {
-            NVMeCrashDelay(STORPORT_TIMER_CB_us);
-            time += STORPORT_TIMER_CB_us;
-            if (time > pAE->uSecCrtlTimeout) {
-                return (FALSE);
-            }
-            CSTS.AsUlong =
-                StorPortReadRegisterUlong(pAE,
-                                          &pAE->pCtrlRegister->CSTS.AsUlong);
-         };
+        NVMeWaitForCtrlRDY(pAE, 1);
 
         StorPortDebugPrint(INFO, "NVMeInitialize:  Clearing EN...\n");
         /* Now reset */
@@ -680,6 +673,9 @@ BOOLEAN NVMeInitialize(
         StorPortWriteRegisterUlong(pAE,
                                    (PULONG)(&pAE->pCtrlRegister->CC),
                                    CC.AsUlong);
+
+        /* Need to ensure it's cleared in CSTS */
+        NVMeWaitForCtrlRDY(pAE, 0);
     }
 
     /*
@@ -710,6 +706,12 @@ BOOLEAN NVMeInitialize(
 
         return (TRUE);
     } else {
+        if (pAE->DumpBuffer == NULL) {
+            pAE->DumpBuffer = pAE->pPCI->DumpRegion.VirtualBase;
+            ASSERT(DUMP_BUFFER_SIZE == pAE->pPCI->DumpRegion.Length);
+        }
+        pAE->DumpBufferBytesAllocated = 0;
+        
         /* Initialize members of resource mapping table first */
         pRMT->InterruptType = INT_TYPE_INTX;
         pRMT->NumActiveCores = 1;
@@ -747,8 +749,12 @@ BOOLEAN NVMeInitialize(
              * decide number of queue entries to allocate.  Learning mode is
              * not applicable for INTX
              */
-            QEntries = (QueueID == 0) ? pAE->InitInfo.AdQEntries:
-                                        pAE->InitInfo.IoQEntries;
+            if (pAE->ntldrDump == FALSE) {
+                QEntries = (QueueID == 0) ? pAE->InitInfo.AdQEntries:
+                                            pAE->InitInfo.IoQEntries;
+            } else {
+                QEntries = MIN_IO_QUEUE_ENTRIES;
+            }
 
             Status = NVMeAllocQueues(pAE,
                                      QueueID,
@@ -894,6 +900,7 @@ SCSI_ADAPTER_CONTROL_STATUS NVMeAdapterControl(
         break;
         /* StopAdapter routine called just before power down of adapter */
         case ScsiStopAdapter:
+            StorPortDebugPrint(INFO,"NVMeAdapterControl: ScsiStopAdapter\n");
             status = NVMeAdapterControlPowerDown(pAE);
             scsiStatus = (status ? ScsiAdapterControlSuccess :
                                    ScsiAdapterControlUnsuccessful);
@@ -904,6 +911,7 @@ SCSI_ADAPTER_CONTROL_STATUS NVMeAdapterControl(
          * cycle, we can just restore the scripts and reinitialize the chip.
          */
         case ScsiRestartAdapter:
+            StorPortDebugPrint(INFO,"NVMeAdapterControl: ScsiRestartAdapter\n");
             status = NVMeAdapterControlPowerUp(pAE);
             scsiStatus = (status ? ScsiAdapterControlSuccess :
                                     ScsiAdapterControlUnsuccessful);
@@ -949,8 +957,8 @@ BOOLEAN NVMeBuildIo(
     if ((Srb->PathId != VALID_NVME_PATH_ID) ||
         (Srb->TargetId != VALID_NVME_TARGET_ID) ||
         (pAdapterExtension->pLunExtensionTable[0] == NULL) ||
-        ((pAdapterExtension->pLunExtensionTable[Srb->Lun]->slotStatus !=
-          ONLINE) &&
+        (pAdapterExtension->RecoveryAttemptPossible != TRUE && 
+        (pAdapterExtension->pLunExtensionTable[Srb->Lun]->slotStatus != ONLINE) && 
          (SRB_FUNCTION_IO_CONTROL != Srb->Function))) {
         Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
         IO_StorPortNotification(RequestComplete, AdapterExtension, Srb);
@@ -958,7 +966,7 @@ BOOLEAN NVMeBuildIo(
     }
 
     /* Check to see if the controller has started yet */
-    if ((pAdapterExtension != NULL) &&
+    if ((Function != SRB_FUNCTION_POWER) && (pAdapterExtension != NULL) &&
          (pAdapterExtension->DriverState.NextDriverState != NVMeStartComplete)) {
         Srb->SrbStatus = SRB_STATUS_BUSY;
         IO_StorPortNotification(RequestComplete, AdapterExtension, Srb);
@@ -1215,7 +1223,8 @@ BOOLEAN NVMeStartIo(
      * resources, slot and command history. Check if command processing should
      * happen.
      */
-    if (pAdapterExtension->DriverState.NextDriverState != NVMeStartComplete) {
+    if ((Function != SRB_FUNCTION_POWER) && 
+        (pAdapterExtension->DriverState.NextDriverState != NVMeStartComplete)) {
         Srb->SrbStatus = SRB_STATUS_NO_DEVICE;
         IO_StorPortNotification(RequestComplete, pAdapterExtension, Srb);
         return TRUE;
@@ -1255,6 +1264,11 @@ BOOLEAN NVMeStartIo(
                                    NVME_QUEUE_TYPE_ADMIN,
                                    FALSE);
             } else {
+                /* If already completed by BuildIo, no need to process. */
+                if (pAdapterExtension->ntldrDump == TRUE &&
+                    Srb->SrbStatus == SRB_STATUS_SUCCESS) {
+                    return TRUE; 
+                }
                 status = ProcessIo(pAdapterExtension,
                                    pSrbExtension,
                                    NVME_QUEUE_TYPE_IO,
@@ -1528,17 +1542,19 @@ IoCompletionDpcRoutine(
     STOR_LOCK_HANDLE DpcLockhandle = { 0 };
     STOR_LOCK_HANDLE StartLockHandle = { 0 };
 
-
-    if (pAE->MultipleCoresToSingleQueueFlag) {
-        StorPortAcquireSpinLock(pAE, StartIoLock, NULL, &StartLockHandle);
-    } else {
-        StorPortAcquireSpinLock(pAE, DpcLock, pDpc, &DpcLockhandle);
-    }
-
+    if (pDpc != NULL) {
+        ASSERT(pAE->ntldrDump == FALSE);
+		if (pAE->MultipleCoresToSingleQueueFlag) {
+			StorPortAcquireSpinLock(pAE, StartIoLock, NULL, &StartLockHandle);
+		} else {
+			StorPortAcquireSpinLock(pAE, DpcLock, pDpc, &DpcLockhandle);
+		}
+	}
+    
     /* Use the message id to find the correct entry in the MSI_MESSAGE_TBL */
     pMMT = pRMT->pMsiMsgTbl + MsgID;
 
-    if (pMMT->Shared == FALSE) {
+    if (pAE->ntldrDump == FALSE && pMMT->Shared == FALSE) {
         /* Determine which CQ to look in based on start state */
         if (pAE->DriverState.NextDriverState == NVMeStartComplete) {
 
@@ -1669,6 +1685,13 @@ IoCompletionDpcRoutine(
                             pSrbExtension->pNvmeCompletionRoutine(pAE, (PVOID)pSrbExtension)
                             && (pSrbExtension->pSrb != NULL);
                     }
+                    /*
+                     *This is to signal to NVMeIsrMsix()and ultimately ProcessIo() in dump mode
+                     *  that the Admin request has been completed.
+                     */
+                    if (pAE->ntldrDump && pSystemArgument1 != NULL) {
+                        *(BOOLEAN*)pSystemArgument1 = TRUE;
+                    }
 
                     /* for async calls, call storport if needed */
                     if (callStorportNotification) {
@@ -1704,12 +1727,13 @@ IoCompletionDpcRoutine(
         pAE->IntxMasked = FALSE;
     }
 #endif
-    if (pAE->MultipleCoresToSingleQueueFlag) {
-        StorPortReleaseSpinLock(pAE, &StartLockHandle);
-    } else {
-        StorPortReleaseSpinLock(pAE, &DpcLockhandle);
-    }
-
+    if (pDpc != NULL) {
+		if (pAE->MultipleCoresToSingleQueueFlag) {
+			StorPortReleaseSpinLock(pAE, &StartLockHandle);
+		} else {
+			StorPortReleaseSpinLock(pAE, &DpcLockhandle);
+		}
+	}
 } /* IoCompletionDpcRoutine */
 
 
@@ -1734,7 +1758,7 @@ NVMeIsrMsix (
     PRES_MAPPING_TBL              pRMT = &pAE->ResMapTbl;
     PMSI_MESSAGE_TBL              pMMT = pRMT->pMsiMsgTbl;
     ULONG                         qNum = 0;
-    BOOLEAN                       status;
+    BOOLEAN                       status = FALSE;
 
 #if defined(CHATHAM2)
     if (pAE->ResMapTbl.NumMsiMsgGranted == 0) {
@@ -1742,6 +1766,12 @@ NVMeIsrMsix (
     }
 #endif
 
+    if (pAE->ntldrDump == TRUE) {
+    	/* status will return TRUE, if the request has been completed. */
+        IoCompletionDpcRoutine(NULL, AdapterExtension, &status, 0);
+        return status;
+    }
+    
     /*
      * For shared mode, we'll use the DPC for queue 0,
      * otherwise we'll use the DPC assoiated with the known
@@ -1761,6 +1791,38 @@ NVMeIsrMsix (
 }
 
 
+
+/*******************************************************************************
+ * NVMeWaitForCtrlRDY
+ *
+ * @brief helper routine to wait for controller status RDY transition
+ *
+ * @param pAE - Pointer to device extension
+ *
+ * @return VOID
+ ******************************************************************************/
+VOID NVMeWaitForCtrlRDY(
+    __in PNVME_DEVICE_EXTENSION pAE,
+    __in ULONG expectedValue
+)
+{   
+    NVMe_CONTROLLER_STATUS CSTS = {0};
+    ULONG time = 0;
+
+     CSTS.AsUlong =
+         StorPortReadRegisterUlong(pAE,
+                                   &pAE->pCtrlRegister->CSTS.AsUlong);
+     while (CSTS.RDY != expectedValue) {
+        NVMeCrashDelay(STORPORT_TIMER_CB_us, pAE->ntldrDump);
+        time += STORPORT_TIMER_CB_us;
+        if (time > pAE->uSecCrtlTimeout) {
+            return ;
+        }
+        CSTS.AsUlong =
+            StorPortReadRegisterUlong(pAE,
+                                      &pAE->pCtrlRegister->CSTS.AsUlong);
+     };
+}
 
 /*******************************************************************************
  * RecoveryDpcRoutine
@@ -1784,8 +1846,9 @@ VOID RecoveryDpcRoutine(
     PNVME_DEVICE_EXTENSION pAE = (PNVME_DEVICE_EXTENSION)pHwDeviceExtension;
     PSCSI_REQUEST_BLOCK pSrb = (PSCSI_REQUEST_BLOCK)pSystemArgument1;
     STOR_LOCK_HANDLE startLockhandle = { 0 };
+    NVMe_CONTROLLER_CONFIGURATION CC = {0};
 
-    DbgPrint("RecoveryDpcRoutine: Entry\n");
+    StorPortDebugPrint(INFO, "RecoveryDpcRoutine: Entry\n");
 #ifdef HISTORY
     TraceEvent(DPC_RESET,0,0,0,0, 0,0);
 #endif
@@ -1794,6 +1857,32 @@ VOID RecoveryDpcRoutine(
      * completion threads happening before or during reset
      */
     StorPortAcquireSpinLock(pAE, StartIoLock, NULL, &startLockhandle);
+    
+    CC.AsUlong =
+            StorPortReadRegisterUlong(pAE, (PULONG)(&pAE->pCtrlRegister->CC));
+    
+    if (CC.EN == 1) {
+        StorPortDebugPrint(INFO, "RecoveryDpcRoutine:  EN already set, wait for RDY...\n");        
+        /*
+              * Before we transition to 0, make sure the ctrl is actually RDY
+              * NOTE:  Some HW implementations may not require this wait and
+              * if not then it could be removed as waiting at this IRQL is
+              * not recommended.  The spec is not clear on whether we need
+              * to wait for RDY to transition EN back to 0 or not.
+              */
+        NVMeWaitForCtrlRDY(pAE, 1);
+        
+
+        StorPortDebugPrint(INFO, "RecoveryDpcRoutine:  Clearing EN...\n");
+        /* Now reset */
+        CC.EN = 0;
+        StorPortWriteRegisterUlong(pAE,
+                                   (PULONG)(&pAE->pCtrlRegister->CC),
+                                   CC.AsUlong);
+
+        /* Need to ensure it's cleared in CSTS */
+        NVMeWaitForCtrlRDY(pAE, 0);                                   
+    }
 
     /*
      * Reset the controller; if any steps fail we just quit which
@@ -1850,6 +1939,11 @@ BOOLEAN NVMeResetController(
 {
     BOOLEAN storStatus = FALSE;
 
+    /* In Hibernation/CrashDump mode, reset command is ignored. */
+    if (pAdapterExtension->ntldrDump == TRUE) {
+        return TRUE; 
+    }
+    
     /**
      * We only allow one recovery attempt at a time
      * if the DPC is sceduled then one has started,
@@ -1873,6 +1967,7 @@ BOOLEAN NVMeResetController(
         }
     } else {
         DbgPrint("NVMeResetController: reset called but already pending\n");
+        storStatus = TRUE;
     }
 
     return storStatus;

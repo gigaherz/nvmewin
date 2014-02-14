@@ -5195,6 +5195,8 @@ VOID SntiBuildFlushCmd(
     /* Set up common portions of the NVMe WRITE command */
     memset(&pSrbExt->nvmeSqeUnit, 0, sizeof(NVMe_COMMAND));
 
+    /* this Cmd is currently called not specific to one particular, but all namespaces */
+    pSrbExt->nvmeSqeUnit.NSID = 0xFFFFFFFF;
     pSrbExt->nvmeSqeUnit.CDW0.OPC = NVM_FLUSH;
     pSrbExt->nvmeSqeUnit.CDW0.CID = 0;
     pSrbExt->nvmeSqeUnit.CDW0.FUSE = FUSE_NORMAL_OPERATION;

@@ -70,10 +70,14 @@ STOR_PHYSICAL_ADDRESS NVMeGetPhysAddr(
 
     /* Zero out the receiving buffer before converting */
     PhysAddr.QuadPart = 0;
-    PhysAddr = StorPortGetPhysicalAddress(pAE,
-                                          NULL,
-                                          pVirtAddr,
-                                          &MappedSize);
+    if (pAE->ntldrDump == FALSE) {
+        PhysAddr = StorPortGetPhysicalAddress(pAE,
+                                              NULL,
+                                              pVirtAddr,
+                                              &MappedSize);
+    } else {
+        PhysAddr = MmGetPhysicalAddress(pVirtAddr);
+    }
 
     /* If fails, log the event and print out the error */
     if ( PhysAddr.QuadPart == 0) {
@@ -150,13 +154,28 @@ PVOID NVMeAllocateMem(
     PHYSICAL_ADDRESS Align;
     PVOID pBuf = NULL;
     ULONG Status = 0;
-
-    /* Set up preferred range and alignment before allocating */
-    Low.QuadPart = 0;
-    High.QuadPart = (-1);
-    Align.QuadPart = 0;
-    Status = StorPortAllocateContiguousMemorySpecifyCacheNode(
-                 pAE, Size, Low, High, Align, MmCached, Node, (PVOID)&pBuf);
+    ULONG NewBytesAllocated;
+    
+    if (pAE->ntldrDump == FALSE) {
+        /* Set up preferred range and alignment before allocating */
+        Low.QuadPart = 0;
+        High.QuadPart = (-1);
+        Align.QuadPart = 0;
+        Status = StorPortAllocateContiguousMemorySpecifyCacheNode(
+                     pAE, Size, Low, High, Align, MmCached, Node, (PVOID)&pBuf);
+    } else {     
+        NewBytesAllocated = pAE->DumpBufferBytesAllocated + Size;
+        if (NewBytesAllocated <= DUMP_BUFFER_SIZE) {
+            pBuf = pAE->DumpBuffer + pAE->DumpBufferBytesAllocated;               
+            pAE->DumpBufferBytesAllocated = NewBytesAllocated;
+        } else {
+            StorPortDebugPrint(ERROR,
+                               "Unable to allocate %d bytes at DumpBuffer offset %d.\n",
+                               Size,
+                               pAE->DumpBufferBytesAllocated);
+            return NULL;
+        }
+    }
 
     /* It fails, log the error and return 0 */
     if ((Status != 0) || (pBuf == NULL)) {
@@ -210,9 +229,23 @@ PVOID NVMeAllocatePool(
     ULONG Tag = 'eMVN';
     PVOID pBuf = NULL;
     ULONG Status = STOR_STATUS_SUCCESS;
+    ULONG NewBytesAllocated;
 
-    /* Call StorPortAllocatePool to allocate the buffer */
-    Status = StorPortAllocatePool(pAE, Size, Tag, (PVOID)&pBuf);
+    if (pAE->ntldrDump == FALSE) {
+        /* Call StorPortAllocatePool to allocate the buffer */
+        Status = StorPortAllocatePool(pAE, Size, Tag, (PVOID)&pBuf);
+    } else {     
+        NewBytesAllocated = pAE->DumpBufferBytesAllocated + Size;
+        if (NewBytesAllocated <= DUMP_BUFFER_SIZE) {
+            pBuf = pAE->DumpBuffer + pAE->DumpBufferBytesAllocated;               
+            pAE->DumpBufferBytesAllocated = NewBytesAllocated;
+        } else {
+             StorPortDebugPrint(ERROR,
+                                "Unable to allocate %d bytes at DumpBuffer offset %d.\n",
+                                Size,
+                                pAE->DumpBufferBytesAllocated);
+        }
+    }    
 
     /* It fails, log the error and return NULL */
     if ((Status != STOR_STATUS_SUCCESS) || (pBuf == NULL)) {
@@ -653,6 +686,11 @@ ULONG NVMeMapCore2Queue(
     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
     PCORE_TBL pCT = NULL;
 
+    if (pAE->ntldrDump == TRUE) {
+        *pSubQueue = *pCplQueue = 1;
+        return (STOR_STATUS_SUCCESS);
+    }
+    
     /* Ensure the core number is valid first */
     if (pPN->Number >= pRMT->NumActiveCores) {
         StorPortDebugPrint(ERROR,
@@ -729,10 +767,7 @@ VOID NVMeInitFreeQ(
 
         /* Save the address of current list for calculating next list */
         CurPRPList = (ULONG_PTR)pCmdInfo->pPRPList;
-        pCmdInfo->prpListPhyAddr = StorPortGetPhysicalAddress(pAE,
-                                      NULL,
-                                      pCmdInfo->pPRPList,
-                                      &prpListSz);
+        pCmdInfo->prpListPhyAddr = NVMeGetPhysAddr(pAE, pCmdInfo->pPRPList);
 
 #ifdef DUMB_DRIVER
         PtrTemp = (ULONG_PTR)((PUCHAR)pSQI->pDlbBuffStartVa);
@@ -1915,6 +1950,9 @@ BOOLEAN NVMeInitCallback(
                 }
             }
         break;
+        case NVMeStartComplete:
+            ASSERT(pAE->ntldrDump);
+        break;
         default:
             NVMeDriverFatalError(pAE,
                                 (1 << START_STATE_UNKNOWN_STATE_FAILURE));
@@ -2205,6 +2243,7 @@ BOOLEAN NVMeGetIdentifyStructures(
     pIdentify->CDW0.OPC = ADMIN_IDENTIFY;
 
     if (NamespaceID == IDEN_CONTROLLER) {
+        StorPortDebugPrint(INFO,"NVMeGetIdentifyStructures: IDEN_CONTROLLER\n");
         /* Indicate it's for Controller structure */
         pIdentifyCDW10 = (PADMIN_IDENTIFY_COMMAND_DW10) &pIdentify->CDW10;
         pIdentifyCDW10->CNS = 1;
@@ -2222,6 +2261,7 @@ BOOLEAN NVMeGetIdentifyStructures(
         if ( pIdenCtrl == NULL )
             return (FALSE);
 
+        StorPortDebugPrint(INFO,"NVMeGetIdentifyStructures: IDEN_NAMESPACE\n");
         /* Indicate it's for Namespace structure */
         pIdentifyCDW10 = (PADMIN_IDENTIFY_COMMAND_DW10) &pIdentify->CDW10;
         pIdentifyCDW10->CNS = 0;
@@ -2772,6 +2812,20 @@ BOOLEAN NVMeAllocIoQueues(
 
     pQI->NumSubIoQAllocated = pQI->NumCplIoQAllocated = 0;
 
+    if (pAE->ntldrDump == TRUE) {
+        QEntries = MIN_IO_QUEUE_ENTRIES; 
+        Status = NVMeAllocQueues(pAE,
+                                 QueueID + 1,
+                                 QEntries,
+                                 0);
+    
+        if (Status == STOR_STATUS_SUCCESS) {
+            pQI->NumSubIoQAllocated = ++pQI->NumCplIoQAllocated;
+            return (TRUE);
+        } else {
+            return (FALSE);
+        }
+    } else {
         for (Node = 0; Node < pRMT->NumNumaNodes; Node++) {
             pNNT = pRMT->pNumaNodeTbl + Node;
             for (Core = pNNT->FirstCoreNum; Core <= pNNT->LastCoreNum; Core++) {
@@ -2878,7 +2932,7 @@ BOOLEAN NVMeAllocIoQueues(
         } /* current NUMA node */
 
         return (TRUE);
-
+    }
 } /* NVMeAllocIoQueues */
 /*******************************************************************************
  * NVMeAcqQueueEntry

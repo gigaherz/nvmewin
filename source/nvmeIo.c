@@ -240,12 +240,16 @@ ProcessIo(
                                     &hStartIoLock);
         }
 
-    StorStatus = StorPortGetCurrentProcessorNumber((PVOID)pAdapterExtension,
-                                                   &ProcNumber);
+    if (pAdapterExtension->ntldrDump == FALSE) {
+        StorStatus = StorPortGetCurrentProcessorNumber((PVOID)pAdapterExtension,
+                                                       &ProcNumber);
         if (StorStatus != STOR_STATUS_SUCCESS) {
             IoStatus = NOT_SUBMITTED;
             __leave;
         }
+    } else {
+        memset(&ProcNumber, 0, sizeof(PROCESSOR_NUMBER));
+    }
 
 #if DBG
         /* save off the submitting core info for debug CT learning purposes */
@@ -439,11 +443,13 @@ ProcessIo(
      */
     if ((pAdapterExtension->ntldrDump == TRUE) &&
         (QueueType == NVME_QUEUE_TYPE_ADMIN)   &&
+        (pAdapterExtension->DriverState.NextDriverState != NVMeStateFailed) && 
+        (pAdapterExtension->DriverState.NextDriverState != NVMeStartComplete) &&
         (StorStatus == STOR_STATUS_SUCCESS)) {
         ULONG pollCount = 0;
 
         while (FALSE == NVMeIsrMsix(pAdapterExtension, NVME_ADMIN_MSG_ID)) {
-            NVMeCrashDelay(pAdapterExtension->DriverState.CheckbackInterval);
+            NVMeCrashDelay(pAdapterExtension->DriverState.CheckbackInterval, TRUE);
             if (++pollCount > DUMP_POLL_CALLS) {
                 /* a polled admin command timeout is considered fatal */
                 pAdapterExtension->DriverState.DriverErrorStatus |=

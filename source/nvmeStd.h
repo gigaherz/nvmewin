@@ -122,6 +122,7 @@ ULONG ChathamNlb; /* Number of logical blocks */
 #define MAX_IO_QUEUE_ENTRIES        4096
 #endif
 
+#define DUMP_BUFFER_SIZE            (5*64*1024)
 
 #define DFT_INT_COALESCING_TIME     80
 #define MIN_INT_COALESCING_TIME     0
@@ -899,6 +900,9 @@ typedef struct _nvme_device_extension
     /* Controller register base address */
     PNVMe_CONTROLLER_REGISTERS  pCtrlRegister;
 
+    /* PCI configuration information for the controller */ 
+    PPORT_CONFIGURATION_INFORMATION pPCI;
+
     /* NVMe queue information structure */
     QUEUE_INFO                  QueueInfo;
     BOOLEAN                     IoQueuesAllocated;
@@ -940,9 +944,14 @@ typedef struct _nvme_device_extension
     /* Used to determine if we are in crashdump mode */
     BOOLEAN                     ntldrDump;
 
+    /* The bytes of memory have been allocated from the dump/hibernation buffer*/
+    ULONG                       DumpBufferBytesAllocated;
+    /* The memory buffer in dump/hibernation mode. */
+    PUCHAR                      DumpBuffer;
+
     /* saved a few calc'd values based on CAP fields */
     ULONG                       uSecCrtlTimeout;
-    ULONG                        strideSz;
+    ULONG                       strideSz;
 
     /* DPCs needed for SNTI, AER, and error recovery */
     STOR_DPC                    SntiDpc;
@@ -1068,7 +1077,8 @@ BOOLEAN NVMeGetCurCoreNumber(
 );
 
 VOID NVMeCrashDelay(
-    ULONG delayInUsec
+    ULONG delayInUsec,
+    BOOLEAN ntldrDump
 );
 
 PVOID NVMeAllocateMem(
@@ -1401,6 +1411,11 @@ SCSI_ADAPTER_CONTROL_STATUS NVMeAdapterControl(
     __in PVOID AdapterExtension,
     __in SCSI_ADAPTER_CONTROL_TYPE ControlType,
     __in PVOID Parameters
+);
+
+VOID NVMeWaitForCtrlRDY(
+    __in PNVME_DEVICE_EXTENSION pAE,
+    __in ULONG expectedValue
 );
 
 VOID RecoveryDpcRoutine(
