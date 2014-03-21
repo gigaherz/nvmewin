@@ -1225,7 +1225,14 @@ BOOLEAN NVMeResetAdapter(
                                (PULONG)(&pAE->pCtrlRegister->CC),
                                CC.AsUlong);
 
-    pAE->DriverState.NextDriverState = NVMeWaitOnRDY;
+    if (NVMeWaitOnReady(pAE) == FALSE) {
+        StorPortDebugPrint(INFO,
+                       "NVMeResetAdapter: EN bit is not getting Cleared\n");
+        return (FALSE);
+    }
+
+
+ 	pAE->DriverState.NextDriverState = NVMeWaitOnRDY;
 
     return (TRUE);
 } /* NVMeResetAdapter */
@@ -1278,14 +1285,23 @@ BOOLEAN NVMeWaitOnReady(
  *
  * @param pAE - Pointer to hardware device extension.
  *
- * @return VOID
+ * @return BOOLEAN
+ *  TRUE  - if Adapter is enabled correctly
+ *  FALSE - if anything goes wrong
  ******************************************************************************/
-VOID NVMeEnableAdapter(
+BOOLEAN NVMeEnableAdapter(
     PNVME_DEVICE_EXTENSION pAE
 )
 {
     PQUEUE_INFO pQI = &pAE->QueueInfo;
     NVMe_CONTROLLER_CONFIGURATION CC = {0};
+
+    /* 
+     * Disable the adapter
+     */
+    if (NVMeResetAdapter(pAE) != TRUE) {
+        return (FALSE);
+    }
 
     /*
      * Program Admin queue registers before enabling the adapter:
@@ -1335,6 +1351,7 @@ VOID NVMeEnableAdapter(
     StorPortWriteRegisterUlong(pAE,
                                (PULONG)(&pAE->pCtrlRegister->CC),
                                CC.AsUlong);
+    return TRUE;
 } /* NVMeEnableAdapter */
 
 /*******************************************************************************
@@ -2553,24 +2570,13 @@ BOOLEAN NVMeNormalShutdown(
     }
 
     /* Delete all queues */
-    NVMeResetAdapter(pAE);
+    if (NVMeResetAdapter(pAE) != TRUE) {
+        return (FALSE);
+    }
 
     /* Need to to ensure the Controller registers are memory-mapped properly */
     if ( pAE->pCtrlRegister == FALSE ) {
         return (FALSE);
-    }
-
-    /* Ensure all queues are deleted after the controller reset */
-    for (PollCount = 0; PollCount < PollMax; PollCount++) {
-        CSTS.AsUlong = StorPortReadRegisterUlong(pAE,
-                           (PULONG)(&pAE->pCtrlRegister->CSTS.AsUlong));
-
-        if (CSTS.RDY == 0) {
-            /* Move on if RDY bit is cleared */
-            break;
-        }
-
-        NVMeStallExecution(pAE, MAX_STATE_STALL_us);
     }
 
     /*

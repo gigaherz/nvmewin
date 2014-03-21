@@ -2871,7 +2871,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateWriteBuffer(
     switch (mode & WRITE_BUFFER_CDB_MODE_MASK) {
         case DOWNLOAD_SAVE_ACTIVATE:
             /* Issue NVME FIRMWARE IMAGE DOWNLOAD command */
-            dword10 |= paramListLength;
+            dword10 |= paramListLength/sizeof(UINT32);
             dword11 |= bufferOffset;
 
             SntiBuildFirmwareImageDownloadCmd(pSrbExt, dword10, dword11);
@@ -2880,7 +2880,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateWriteBuffer(
         break;
         case DOWNLOAD_SAVE_DEFER_ACTIVATE:
             /* Issue NVME FIRMWARE IMAGE DOWNLOAD command */
-            dword10 |= paramListLength;
+            dword10 |= paramListLength/sizeof(UINT32);
             dword11 |= bufferOffset;
 
             SntiBuildFirmwareImageDownloadCmd(pSrbExt, dword10, dword11);
@@ -6083,6 +6083,28 @@ BOOLEAN SntiMapCompletionStatus(
                 returnValue = FALSE;
             break;
         }
+
+        if(pSrb->Function == SRB_FUNCTION_ABORT_COMMAND){                
+            if ((pSrb->SrbStatus & SRB_STATUS_SUCCESS) 
+                != SRB_STATUS_SUCCESS) {
+                    pSrbExt->failedAbortCmdCnt++;
+            }
+            if (pSrbExt->abortedCmdCount) 
+                pSrbExt->abortedCmdCount--;
+            if (pSrbExt->issuedAbortCmdCnt) 
+                pSrbExt->issuedAbortCmdCnt--;
+
+            if (pSrbExt->issuedAbortCmdCnt == 0) {
+                if (pSrbExt->abortedCmdCount || 
+                    pSrbExt->failedAbortCmdCnt) {
+                        pSrb->SrbStatus = SRB_STATUS_ERROR;
+                }
+                returnValue = TRUE;
+            }
+            else
+                returnValue = FALSE;
+        }
+
     } else {
         returnValue = FALSE;
     }

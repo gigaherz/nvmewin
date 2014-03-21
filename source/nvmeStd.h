@@ -979,6 +979,9 @@ typedef struct _nvme_device_extension
     /* Flag to indicate multiple cores are sharing a single queue */
     BOOLEAN                     MultipleCoresToSingleQueueFlag;
 
+    /* Flag to indicate hardReset is in progress */
+    BOOLEAN                     hwResetInProg;
+
 #if DBG
     /* part of debug code to sanity check learning */
     BOOLEAN                     LearningComplete;
@@ -1047,6 +1050,10 @@ typedef struct _nvme_srb_extension
 	 * pSrb->DataBuffer
 	 */
 	UCHAR                        modeSenseBuf[MODE_SNS_MAX_BUF_SIZE];
+    ULONG                        abortedCmdCount;
+    ULONG                        issuedAbortCmdCnt;
+    ULONG                        failedAbortCmdCnt;
+    BOOLEAN                      cmdGotAbortedFlag;
 
 #if DBG
     /* used for debug learning the vector/core mappings */
@@ -1172,7 +1179,7 @@ BOOLEAN NVMeWaitOnReady(
     PNVME_DEVICE_EXTENSION pAE
 );
 
-VOID NVMeEnableAdapter(
+BOOLEAN NVMeEnableAdapter(
     __in PNVME_DEVICE_EXTENSION pAE
 );
 

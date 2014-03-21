@@ -108,12 +108,8 @@ BOOLEAN NVMeAdapterControlPowerDown(
             return status;
 
         /* Stop the controller, but do not free the resources */
-        status = NVMeResetAdapter(pAE);
-
-        if (NVMeWaitOnReady(pAE) == FALSE) {
-                StorPortDebugPrint(INFO,
-                                   "NVMeWaitOnReady: returned %d\n",
-                                   status);
+        if (NVMeResetAdapter(pAE) != TRUE) {
+            return (FALSE);
         }
     }
 

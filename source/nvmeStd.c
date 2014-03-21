@@ -801,7 +801,9 @@ BOOLEAN NVMeInitialize(
          * registers. Need to ensure the adapter is ready for processing
          * commands after entering Start State Machine.
          */
-        NVMeEnableAdapter(pAE);
+        if ((NVMeEnableAdapter(pAE)) == FALSE){
+            return (FALSE);
+        }
 
         /*
          * Allocate one SRB Extension for Start State Machine command
@@ -974,6 +976,12 @@ BOOLEAN NVMeBuildIo(
     }
 
     switch (Function) {
+        case SRB_FUNCTION_ABORT_COMMAND:
+            NVMeInitSrbExtension((PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(Srb),
+                                 pAdapterExtension,
+                                 Srb);
+            return TRUE;
+
         case SRB_FUNCTION_RESET_DEVICE:
         case SRB_FUNCTION_RESET_BUS:
         case SRB_FUNCTION_RESET_LOGICAL_UNIT:
@@ -1189,6 +1197,134 @@ BOOLEAN NVMeBuildIo(
 } /* NVMeBuildIo */
 
 /*******************************************************************************
+ * NVMeIssueAbortCmd
+ *
+ * @brief Abort a specfic command request by the host .
+ *
+ * @param pSrbExt - Pointer to SRB extension.
+ * @param QueueID - Submit Queue index.
+ * @param CID     - Context index.
+ *
+ * @return BOOLEAN
+ *     TRUE if command is aborted 
+ *     FALSE if command is not aborted 
+ ******************************************************************************/
+BOOLEAN NVMeIssueAbortCmd(
+    PNVME_SRB_EXTENSION pSrbExt,
+    USHORT QueueID,
+    USHORT CID)
+{
+    PNVME_DEVICE_EXTENSION pAE = pSrbExt->pNvmeDevExt;
+    PNVMe_COMMAND pNVMeCmd = (PNVMe_COMMAND)(&pSrbExt->nvmeSqeUnit);
+    PADMIN_ABORT_COMMAND_DW10 pAbortCmd = (PADMIN_ABORT_COMMAND_DW10)&pNVMeCmd->CDW10;
+
+    /* Zero out the NVME command */
+    memset((PVOID)pNVMeCmd, 0, sizeof(NVMe_COMMAND));
+
+    pSrbExt->abortedCmdCount++;
+
+    /* Populate submission entry fields */
+    pNVMeCmd->CDW0.OPC = COMMAND_ABORT_REQUESTED;
+    pAbortCmd->CID = CID;
+    pAbortCmd->SQID = QueueID;
+
+
+    /* Now issue the command via Admin Doorbell register */
+    return ProcessIo(pAE, pSrbExt, NVME_QUEUE_TYPE_ADMIN, FALSE);
+
+} /* NVMeIssueAbortCmd */
+
+/*******************************************************************************
+ * NVMeProcessAbortCmd
+ *
+ * @brief Abort a specfic command request by the host .
+ *
+ * @param pAE - Pointer to hardware device extension.
+ * @param pSrb - Pointer to Srb request
+ *
+ * @return BOOLEAN
+ *     TRUE if command is aborted 
+ *     FALSE if command is not aborted 
+ ******************************************************************************/
+BOOLEAN NVMeProcessAbortCmd(
+    PNVME_DEVICE_EXTENSION pAE,
+    PSCSI_REQUEST_BLOCK pSrb
+)
+{
+    PQUEUE_INFO pQI = &pAE->QueueInfo;
+    PSUB_QUEUE_INFO pSQI = NULL;
+    PCMD_ENTRY pCmdEntry = NULL;
+    USHORT CmdID;
+    USHORT QueueID = 0;
+    PNVME_SRB_EXTENSION pSrbExtension = NULL;
+    BOOLEAN issueAbortCmdFlag = FALSE;
+    PNVMe_COMMAND pNVMeCmd = NULL;
+    PNVME_SRB_EXTENSION pResetSrbExt = GET_SRB_EXTENSION(pSrb);
+
+
+    /* Simply return FALSE when buffer had been freed */
+    if (pQI->pSubQueueInfo == NULL)
+        return FALSE;
+    
+    pResetSrbExt->abortedCmdCount = 0;
+    pResetSrbExt->issuedAbortCmdCnt = 0;
+    pResetSrbExt->failedAbortCmdCnt = 0;
+
+    /* Search all submission queues */
+    for (QueueID = 0; QueueID <= pQI->NumSubIoQCreated; QueueID++) {
+        pSQI = pQI->pSubQueueInfo + QueueID;
+
+        for (CmdID = 0; CmdID < pSQI->SubQEntries; CmdID++) {
+            pCmdEntry = ((PCMD_ENTRY)pSQI->pCmdEntry) + CmdID;
+            
+            /* 
+             * Pending bit is not set continue 
+             */
+            if (pCmdEntry->Pending == FALSE){
+                continue;
+            }
+
+            pSrbExtension = (PNVME_SRB_EXTENSION)pCmdEntry->Context;
+            
+            /* 
+             * SrbExt or Srb is NULL continue 
+             */
+            if((pSrbExtension == NULL) ||
+                (pSrbExtension->pSrb == NULL)) {
+                    continue;
+            }
+
+            issueAbortCmdFlag = FALSE;
+            pNVMeCmd = &pSrbExtension->nvmeSqeUnit;
+
+            if (pSrb == pSrbExtension->pSrb) {
+                issueAbortCmdFlag = TRUE;
+            }
+
+            if (issueAbortCmdFlag) {
+                pSrbExtension->cmdGotAbortedFlag = TRUE;
+                pResetSrbExt->issuedAbortCmdCnt++;
+                if ((NVMeIssueAbortCmd(pResetSrbExt, pSQI->SubQueueID, 
+                                        pNVMeCmd->CDW0.CID)) == FALSE) {
+                    pResetSrbExt->issuedAbortCmdCnt--;
+                }
+
+				if (pResetSrbExt->issuedAbortCmdCnt == 0) {
+					return FALSE;
+				} else {
+					return TRUE;
+				}
+            }
+        } /* for cmds on the SQ */
+    } /* for the SQ */
+
+    if (pResetSrbExt->issuedAbortCmdCnt == 0) {
+        return FALSE;
+    }
+    return TRUE;
+} /* NVMeProcessAbortCmd */
+
+/*******************************************************************************
  * NVMeStartIo
  *
  * @brief NVMeStartIo is the Storport entry function for HwStorStartIo. This
@@ -1234,9 +1370,19 @@ BOOLEAN NVMeStartIo(
 
     switch (Function) {
         case SRB_FUNCTION_ABORT_COMMAND:
+            status = NVMeProcessAbortCmd(pAdapterExtension, Srb);
+            if (status == FALSE) {
+                Srb->SrbStatus = SRB_STATUS_ERROR;
+                IO_StorPortNotification(RequestComplete, AdapterExtension, Srb);
+            }
+            break;
+
         case SRB_FUNCTION_TERMINATE_IO:
+            Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
+            break;
+
         case SRB_FUNCTION_RESET_DEVICE:
-        case SRB_FUNCTION_RESET_LOGICAL_UNIT:
+		case SRB_FUNCTION_RESET_LOGICAL_UNIT:
         case SRB_FUNCTION_RESET_BUS:
          //   ASSERT(FALSE);
 #ifdef HISTORY
@@ -1765,6 +1911,8 @@ NVMeIsrMsix (
         return TRUE;
     }
 #endif
+    if (pAE->hwResetInProg)
+        return TRUE;
 
     if (pAE->ntldrDump == TRUE) {
     	/* status will return TRUE, if the request has been completed. */
@@ -1973,6 +2121,64 @@ BOOLEAN NVMeResetController(
     return storStatus;
 } /* NVMeResetController */
 
+
+/*******************************************************************************
+ * NVMeSynchronizeReset
+ *
+ * @This is the syncrhonized routine that resets NVMe controller.
+ *
+ * @param pHwDeviceExtension - Pointer to device extension
+ * @param dummy - NULL pointer (not used).
+ *
+ * @return BOOLEAN
+ ******************************************************************************/
+BOOLEAN
+NVMeSynchronizeReset(
+    __in PVOID Context,
+    __in PVOID dummy
+    )
+{
+    PNVME_DEVICE_EXTENSION pAE = Context;
+    
+    UNREFERENCED_PARAMETER( dummy );
+
+    /*
+     * perform the reset operations, Reset the controller; if any steps 
+     * fail we just quit which will leave the controller 
+     * un-usable(storport queues frozen)
+     * on purpose to prevent possible data corruption
+     */
+    if (NVMeResetAdapter(pAE) == TRUE) {
+        
+        /* Complete outstanding commands on submission queues */
+        StorPortNotification(ResetDetected, pAE, 0);
+        
+        /*
+         * detect and complete all commands
+         */
+        NVMeDetectPendingCmds(pAE, TRUE);
+        
+        /* Prepare for new commands */
+        if (NVMeInitAdminQueues(pAE) == STOR_STATUS_SUCCESS) {
+            /*
+             * Start the state mahcine, if all goes well we'll complete the
+             * reset Srb when the machine is done.
+             */
+            NVMeRunningStartAttempt(pAE, FALSE, NULL);
+            
+            /* resume I/Os */
+            StorPortResume(pAE);
+
+        } /* init the admin queues */
+    }
+
+
+    pAE->hwResetInProg = FALSE;
+
+    return TRUE;
+} /* NVMeSynchronizeReset */
+
+
 /*******************************************************************************
  * NVMeResetBus
  *
@@ -1988,9 +2194,21 @@ BOOLEAN NVMeResetBus(
     __in ULONG PathId
 )
 {
+    PNVME_DEVICE_EXTENSION pAE = AdapterExtension;
+
     UNREFERENCED_PARAMETER(PathId);
 
-    return NVMeResetController((PNVME_DEVICE_EXTENSION)AdapterExtension, NULL);
+    if (pAE->hwResetInProg)
+        return TRUE; 
+
+    /* pause the adapter to block any new I/Os */
+    if (!pAE->ntldrDump)
+        StorPortPause(pAE, STOR_ALL_REQUESTS);
+
+    pAE->hwResetInProg = TRUE;
+    StorPortSynchronizeAccess(pAE, NVMeSynchronizeReset, NULL);
+
+    return TRUE;
 } /* NVMeResetBus */
 
 /*******************************************************************************
@@ -3023,26 +3241,25 @@ BOOLEAN FormatNVMFailure(
 )
 {
     PFORMAT_NVM_INFO pFormatNvmInfo = &pDevExt->FormatNvmInfo;
-
     /*
-     * Depends on AddNamespaceNeeded:
-     * If TRUE, add back the namespace(s) via calling NVMeIoctlHotAddNamespace.
-     *          and return FALSE since the request will be completed later.
-     * If FALSE, Clear the FORMAT_NVM_INFO structure and return TRUE
-     *          to let caller complete the request.
+     * If AddNamespaceNeeded is TRUE, add back the namespace(s) via 
+     * NVMeIoctlHotAddNamespace. Then clear the FORMAT_NVM_INFO structure and
+     * return TRUE in order to complete the request. Since we hit an error
+     * we need to finish it.
      */
+
     if (pFormatNvmInfo->AddNamespaceNeeded == TRUE) {
         /* Need to add back namespace(s) first */
         NVMeIoctlHotAddNamespace(pSrbExt);
-        return FALSE;
-    } else {
-        /*
-         * Reset FORMAT_NVM_INFO structure to zero
-         * since the request is completed
-         */
-        memset((PVOID)pFormatNvmInfo, 0, sizeof(FORMAT_NVM_INFO));
-        return TRUE;
     }
+    /*
+     * Reset FORMAT_NVM_INFO structure to zero
+     * since the request is completed
+     */
+    memset((PVOID)pFormatNvmInfo, 0, sizeof(FORMAT_NVM_INFO));
+    return TRUE;
+ 
+
 }
 
 /******************************************************************************
@@ -4155,7 +4372,9 @@ ULONG NVMeInitAdminQueues(
      * registers. Need to determine if the adapter is ready for
      * processing commands after entering Start State Machine
      */
-    NVMeEnableAdapter(pAE);
+    if ((NVMeEnableAdapter(pAE)) == FALSE){
+        return (FALSE);
+    }
 
 #if defined(CHATHAM2)
     NVMeChathamSetup(pAE);
