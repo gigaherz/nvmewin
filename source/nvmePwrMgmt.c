@@ -136,43 +136,70 @@ BOOLEAN NVMeAdapterControlPowerDown(
  ******************************************************************************/
 BOOLEAN NVMePowerControl(
     IN PNVME_DEVICE_EXTENSION pAE,
-    IN PSCSI_POWER_REQUEST_BLOCK pPowerSrb
+    IN PSCSI_REQUEST_BLOCK Srb
 )
 {
     BOOLEAN status = FALSE;
     BOOLEAN powerActionValid = FALSE;
     NVME_PWR_ACTION nvmePwrAction = NVME_PWR_NONE;
+    PSCSI_POWER_REQUEST_BLOCK pPowerSrb = (PSCSI_POWER_REQUEST_BLOCK)Srb;
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSRBEX_DATA_POWER pSrbExPower = NULL;
+#endif
 
-    if ((pPowerSrb->SrbPowerFlags & SRB_POWER_FLAGS_ADAPTER_REQUEST) == FALSE) {
+    ULONG PowerAction = 0;
+    UCHAR SrbPowerFlags = 0;
+    ULONG DevicePowerState = 0;
+
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    pSrbExPower = (PSRBEX_DATA_POWER)SrbGetSrbExDataByType((PSTORAGE_REQUEST_BLOCK)Srb,
+                                                            SrbExDataTypePower);
+    if (pSrbExPower != NULL) {
+        PowerAction = pSrbExPower->PowerAction;
+        SrbPowerFlags = pSrbExPower->SrbPowerFlags;
+        DevicePowerState = pSrbExPower->DevicePowerState;
+    }
+    else {
+        PowerAction = pPowerSrb->PowerAction;
+        SrbPowerFlags = pPowerSrb->SrbPowerFlags;
+        DevicePowerState = pPowerSrb->DevicePowerState;
+    }
+#else
+    PowerAction = pPowerSrb->PowerAction;
+    SrbPowerFlags = pPowerSrb->SrbPowerFlags;
+    DevicePowerState = pPowerSrb->DevicePowerState;
+#endif
+
+    if ((SrbPowerFlags & SRB_POWER_FLAGS_ADAPTER_REQUEST) == FALSE) {
         /* 
          * Storport should not send the device level request (i.e PathId,
          * TargetId, LUNID) but in case if it does then ignore it and return
          * success.
          */
-        pPowerSrb->SrbStatus = SRB_STATUS_SUCCESS;
+        Srb->SrbStatus = SRB_STATUS_SUCCESS;
         return FALSE;
     }
 
-    switch (pPowerSrb->DevicePowerState) {
+    switch (DevicePowerState) {
         case StorPowerDeviceD0:
         case StorPowerDeviceD3:
             StorPortDebugPrint(INFO,
                                "Device Power State request %d\n",
-                               pPowerSrb->DevicePowerState);
+                               DevicePowerState);
             powerActionValid = TRUE;
         break;
         case StorPowerDeviceD1:
         case StorPowerDeviceD2:
             StorPortDebugPrint(INFO,
                                "Device Power State request %d\n",
-                               pPowerSrb->DevicePowerState);
+                               DevicePowerState);
             powerActionValid = FALSE;
             status = TRUE;
         break;
         case StorPowerDeviceUnspecified:
             StorPortDebugPrint(WARNING,
                                "Unsupported Device Power State received %d\n",
-                               pPowerSrb->DevicePowerState);
+                               DevicePowerState);
             powerActionValid = FALSE;
         break;
         default:
@@ -185,12 +212,12 @@ BOOLEAN NVMePowerControl(
      * transition into appropriate state.
      */
     if (powerActionValid == TRUE) {
-        switch (pPowerSrb->PowerAction) {
+        switch (PowerAction) {
             case StorPowerActionNone:
             break;
             case StorPowerActionHibernate:
             case StorPowerActionSleep:
-                switch (pPowerSrb->DevicePowerState) {
+                switch (DevicePowerState) {
                     case StorPowerDeviceD0:
                         nvmePwrAction = NVME_PWR_ADAPTER_RESUME_FROM_S3_S4;
                     break;
@@ -203,7 +230,7 @@ BOOLEAN NVMePowerControl(
                          * waking from the Hibernate and before our controller 
                          * is ready.
                          */
-                        pAE->PowerAction = pPowerSrb->PowerAction;
+                        pAE->PowerAction = PowerAction;
                     break;
                     default:
                         /* nvmePwrAction already initialized to NVME_PWR_NONE */
@@ -220,7 +247,7 @@ BOOLEAN NVMePowerControl(
             default:
                 StorPortDebugPrint(ERROR,
                                    "Unsupported Power Action requested %d\n",
-                                   pPowerSrb->PowerAction);
+                                   PowerAction);
             break;
         } /* end PowerAction switch */
     } /* end if (powerActionValid == TRUE) */
@@ -239,7 +266,7 @@ BOOLEAN NVMePowerControl(
         case NVME_PWR_NONE:
         default:
             /* Do nothing, just complete */
-            pPowerSrb->SrbStatus= SRB_STATUS_SUCCESS;
+            Srb->SrbStatus= SRB_STATUS_SUCCESS;
             return FALSE;
         break;
     } /* end switch */

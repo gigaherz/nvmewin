@@ -49,6 +49,9 @@
 #include "ntddscsi.h"
 #include "ntdddisk.h"
 #include <storport.h>
+#if (NTDDI_VERSION > NTDDI_WIN7)
+#include <srbhelper.h>
+#endif
 #include <ata.h>
 #include "nvme.h"
 #include "nvmeReg.h"

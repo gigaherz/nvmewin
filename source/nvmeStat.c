@@ -105,10 +105,10 @@ VOID NVMeCrashDelay(
     if (ntldrDump == FALSE) { 
         StorPortQuerySystemTime(&startTime);
 
-    delayInUsec *= MICRO_TO_NANO;
+        delayInUsec *= MICRO_TO_NANO;
         stopTime.QuadPart = startTime.QuadPart + delayInUsec;
 
-    do {
+        do {
             StorPortQuerySystemTime(&currTime);
         } while (currTime.QuadPart < stopTime.QuadPart);
     } else {
@@ -134,7 +134,11 @@ VOID NVMeCrashDelay(
 BOOLEAN NVMeRunningStartAttempt(
     PNVME_DEVICE_EXTENSION pAE,
     BOOLEAN resetDriven,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSTORAGE_REQUEST_BLOCK pResetSrb
+#else
     PSCSI_REQUEST_BLOCK pResetSrb
+#endif
 )
 {
     /* Set up the timer interval (time per DPC callback) */
@@ -145,6 +149,7 @@ BOOLEAN NVMeRunningStartAttempt(
     pAE->DriverState.NextDriverState = NVMeWaitOnRDY;
     pAE->DriverState.StateChkCount = 0;
     pAE->DriverState.IdentifyNamespaceFetched = 0;
+    pAE->DriverState.CurrentNsid = 0;
     pAE->DriverState.InterruptCoalescingSet = FALSE;
     pAE->DriverState.ConfigLbaRangeNeeded = FALSE;
     pAE->DriverState.TtlLbaRangeExamined = 0;
@@ -386,7 +391,7 @@ VOID NVMeRunningWaitOnIdentifyNS(
     PNVME_DEVICE_EXTENSION pAE
 )
 {
-    ULONG nsid = pAE->DriverState.IdentifyNamespaceFetched + 1;
+    ULONG nsid = pAE->DriverState.CurrentNsid + 1;
 
     /*
      * Issue an identify command.  The completion handler will keep us at this

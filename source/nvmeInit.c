@@ -163,6 +163,33 @@ PVOID NVMeAllocateMem(
         Align.QuadPart = 0;
         Status = StorPortAllocateContiguousMemorySpecifyCacheNode(
                      pAE, Size, Low, High, Align, MmCached, Node, (PVOID)&pBuf);
+
+        /* It fails, log the error first */
+        if ((Status != 0) || (pBuf == NULL)) {
+            StorPortDebugPrint(ERROR,
+                               "NVMeAllocateMem: Failure from node=%d, sts=0x%x\n",
+                               Node, Status);
+            /* If the memory allocation was from nodes other than Node 0,
+		     * we will try to allocate from Node 0, which not
+		     * expected to fail, If Node 0 memory also fails
+		     * we don't have choice we will bail out and driver
+		     * will not load
+		     */
+            if (Node == 0)
+                return NULL;
+
+            /* Give it another try from any nodes that can grant the request */
+            Status = 0;
+            pBuf = NULL;
+            Status = StorPortAllocateContiguousMemorySpecifyCacheNode(
+                     pAE, Size, Low, High, Align, MmCached, MM_ANY_NODE_OK, (PVOID)&pBuf);
+            if ((Status != 0) || (pBuf == NULL)) {
+                StorPortDebugPrint(ERROR,
+                               "NVMeAllocateMem: Failure from Node 0, sts=0x%x\n",
+                               Status);
+                return NULL;
+            }
+        }
     } else {     
         NewBytesAllocated = pAE->DumpBufferBytesAllocated + Size;
         if (NewBytesAllocated <= DUMP_BUFFER_SIZE) {
@@ -177,29 +204,9 @@ PVOID NVMeAllocateMem(
         }
     }
 
-    /* It fails, log the error and return 0 */
-    if ((Status != 0) || (pBuf == NULL)) {
-        /* If the memory allocation for other than Node 0
-		 * we will try to allocate from Node 0, which not
-		 * expected to fail, If Node 0 memory also fails
-		 * we don't have choice we will bail out and driver
-		 * will not load
-		 */
 
-        Node = 0;
-        Status = StorPortAllocateContiguousMemorySpecifyCacheNode(
-                  pAE, Size, Low, High, Align, MmCached, Node, (PVOID)&pBuf);
-        if ((Status != 0) || (pBuf == NULL)) {
-            StorPortDebugPrint(ERROR, 
-				"NVMeAllocateMem:<Error> Failure, sts=0x%x, pBuf=%x, Node=%x\n",
-                 Status, pBuf, 0);
-            return NULL;
-        }
-    }
 
-    StorPortDebugPrint(INFO,
-                       "NVMeAllocateMem:<Success> Node=%x, pBuf=%x, size=%x\n", Node, pBuf, Size);
-
+    StorPortDebugPrint(INFO, "NVMeAllocateMem: Succeeded!\n");
     /* Zero out the buffer before return */
     memset(pBuf, 0, Size);
 
@@ -310,9 +317,9 @@ BOOLEAN NVMeEnumNumaCores(
 )
 {
     GROUP_AFFINITY GroupAffinity;
-    USHORT Bit = 0;
-    USHORT Core = 0;
-    USHORT BaseCoreNum;
+    USHORT Bit = 0, Grp;
+    ULONG Core = 0, CoreCounter = 0;
+    ULONG BaseCoreNum = 0;
     ULONG Node = 0;
     ULONG Status = 0;
     ULONG TotalCores = 0;
@@ -320,7 +327,10 @@ BOOLEAN NVMeEnumNumaCores(
     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
     PCORE_TBL pCoreTblTemp = NULL;
     PNUMA_NODE_TBL pNNT = NULL;
-    BOOLEAN FirstCoreFound;
+    BOOLEAN FirstCoreFound = FALSE;
+    KAFFINITY GrpAffinityMask = 0;
+    PPROC_GROUP_TBL pProcGrpTbl = NULL;
+    ULONG SysProcessorNumber = 0;
 
     /*
      * Decide how many NUMA nodes in current system if only one (0 returned),
@@ -342,6 +352,44 @@ BOOLEAN NVMeEnumNumaCores(
     if (pRMT->pNumaNodeTbl == NULL)
         return (FALSE);
 
+    /* Find out the current group topology in the system */
+    Status = StorPortGetActiveGroupCount(pAE, &pRMT->NumGroup);
+    if (pRMT->NumGroup == 0 || Status != STOR_STATUS_SUCCESS) {
+        StorPortDebugPrint(INFO, "NVMeEnumNumaCores: Failed to retrieve number of group.\n");
+        return (FALSE);
+    }
+    /*
+     * Allocate buffer for PROC_GROUP_TBL structure array.
+     * If fails, return FALSE
+     */
+    pRMT->pProcGroupTbl = (PPROC_GROUP_TBL)
+        NVMeAllocatePool(pAE, pRMT->NumGroup * sizeof(PROC_GROUP_TBL));
+
+    if (pRMT->pProcGroupTbl == NULL)
+        return (FALSE);
+
+    memset((PVOID)pRMT->pProcGroupTbl, 0, pRMT->NumGroup * sizeof(PROC_GROUP_TBL));
+    StorPortDebugPrint(INFO, "NVMeEnumNumaCores: Number of groups = %d.\n", pRMT->NumGroup);
+    for (Grp = 0; Grp < pRMT->NumGroup; Grp++) {
+        Status = StorPortGetGroupAffinity(pAE, Grp, &GrpAffinityMask);
+        if (Status != STOR_STATUS_SUCCESS) {
+            StorPortDebugPrint(INFO, "NVMeEnumNumaCores: Failed to retrieve group affinity(%d).\n", Grp);
+            return (FALSE);
+        }
+        StorPortDebugPrint(INFO, "NVMeEnumNumaCores: Group(%d) affinity mask(0x%x).\n", Grp, GrpAffinityMask);
+        pProcGrpTbl = pRMT->pProcGroupTbl + Grp;
+        pProcGrpTbl->GroupAffinity.Group = Grp;
+        pProcGrpTbl->GroupAffinity.Mask = GrpAffinityMask;
+
+        /* Mark down the associated first system-wise logical processor number*/
+        pProcGrpTbl->BaseProcessor = SysProcessorNumber;
+
+        /* Find out the number of logical processors of the group */
+        pProcGrpTbl->NumProcessor = NVMeActiveProcessorCount(GrpAffinityMask);
+        SysProcessorNumber += pProcGrpTbl->NumProcessor;
+    }
+    StorPortDebugPrint(INFO, "NVMeEnumNumaCores: Total %d logical processors\n", SysProcessorNumber);
+
     /* Based on NUMA node number, retrieve their affinity masks and counts */
     for (Node = 0; Node < pRMT->NumNumaNodes; Node++) {
         pNNT = pRMT->pNumaNodeTbl + Node;
@@ -359,9 +407,11 @@ BOOLEAN NVMeEnumNumaCores(
             return (FALSE);
         }
 
-        StorPortDebugPrint(INFO, "Core mask is 0x%x\n", GroupAffinity.Mask);
+        StorPortDebugPrint(INFO, "Core mask is 0x%x in Group(%d)\n", 
+            GroupAffinity.Mask, GroupAffinity.Group);
 
         /* Find out the number of active cores of the NUMA node */
+        pNNT->NodeNum = Node;
         pNNT->NumCores = NVMeActiveProcessorCount(GroupAffinity.Mask);
         pRMT->NumActiveCores += pNNT->NumCores;
         StorPortCopyMemory((PVOID)&pNNT->GroupAffinity,
@@ -379,7 +429,11 @@ BOOLEAN NVMeEnumNumaCores(
     /* Based on NUMA node number, populate the NUMA/Core tables */
     for (Node = 0; Node < pRMT->NumNumaNodes; Node++) {
         pNNT = pRMT->pNumaNodeTbl + Node;
-        BaseCoreNum = pNNT->GroupAffinity.Group * MaxNumCoresInGroup;
+        if (pNNT->NumCores == 0)
+            continue;
+        /* figure out the system-wise starting logical processor number for the node */
+        pProcGrpTbl = pRMT->pProcGroupTbl + pNNT->GroupAffinity.Group;
+        BaseCoreNum = pProcGrpTbl->BaseProcessor;
 
         /*
          * For each existing NUMA node, need to find out its first and last
@@ -395,20 +449,19 @@ BOOLEAN NVMeEnumNumaCores(
         for (Bit = 0; Bit < MaxNumCoresInGroup; Bit++) {
             /* Save previsou bit check result first */
             if (((pNNT->GroupAffinity.Mask >> Bit) & 1) == 1) {
-                Core = BaseCoreNum + Bit;
-                pCoreTblTemp = pRMT->pCoreTbl + Core;
-                pCoreTblTemp->CoreNum = (USHORT) Core;
-                pCoreTblTemp->NumaNode = (USHORT) Node;
-                pCoreTblTemp->Group = pNNT->GroupAffinity.Group;
-
-                /* Mark the first core if haven't found yet */
+                /* Mark the first core if haven't found yet, reset the counter */
                 if (FirstCoreFound == FALSE) {
-                    pNNT->FirstCoreNum = Core;
+                    CoreCounter = 0;
                     FirstCoreFound = TRUE;
                 }
-
+                Core = BaseCoreNum + CoreCounter;
+                pCoreTblTemp = pRMT->pCoreTbl + Core;
+                pCoreTblTemp->NumaNode = (USHORT) Node;
+                pCoreTblTemp->Group = pNNT->GroupAffinity.Group;
+                
                 /* Always mark the last core */
                 pNNT->LastCoreNum = Core;
+                CoreCounter++;
                 TotalCores++;
             }
         }
@@ -685,6 +738,8 @@ ULONG NVMeMapCore2Queue(
 {
     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
     PCORE_TBL pCT = NULL;
+    PPROC_GROUP_TBL pPGT = pRMT->pProcGroupTbl + pPN->Group;
+    ULONG coreNum = (ULONG)(pPN->Number + pPGT->BaseProcessor);
 
     if (pAE->ntldrDump == TRUE) {
         *pSubQueue = *pCplQueue = 1;
@@ -692,11 +747,9 @@ ULONG NVMeMapCore2Queue(
     }
     
     /* Ensure the core number is valid first */
-    if (pPN->Number >= pRMT->NumActiveCores) {
+    if (coreNum >= pRMT->NumActiveCores) {
         StorPortDebugPrint(ERROR,
-            "NVMeGetCurCoreNumber: <Error> Invalid core number = %d.\n",
-            pPN->Number);
-
+            "NVMeMapCore2Queue: <Error> Invalid core number = %d.\n", coreNum);
         return (STOR_STATUS_UNSUCCESSFUL);
     }
 
@@ -704,7 +757,7 @@ ULONG NVMeMapCore2Queue(
      * indexed depending on whether we're still learning the table or not
      */
     if (pAE->LearningCores == pRMT->NumActiveCores) {
-        pCT = pRMT->pCoreTbl + pPN->Number;
+        pCT = pRMT->pCoreTbl + coreNum;
         /* Return the queue IDs */
         *pSubQueue = pCT->SubQueue;
         *pCplQueue = pCT->CplQueue;
@@ -904,7 +957,7 @@ ULONG NVMeAllocQueues (
                                                  pSQI->pQueueAlloc,
                                                  pSQI->QueueAllocSize,
                                                  MmCached);
-
+        pSQI->pQueueAlloc = NULL;
         return ( STOR_STATUS_INSUFFICIENT_RESOURCES );
     }
 
@@ -1760,7 +1813,7 @@ BOOLEAN NVMeInitCallback(
     PQUEUE_INFO pQI = &pAE->QueueInfo;
 
     NVMe_CONTROLLER_CAPABILITIES CAP = {0};
-
+    StorPortDebugPrint(INFO,"NVMeInitCallback: Driver state: %d\n", pAE->DriverState.NextDriverState);
     switch (pAE->DriverState.NextDriverState) {
         case NVMeWaitOnIdentifyCtrl:
             /*
@@ -1846,12 +1899,29 @@ BOOLEAN NVMeInitCallback(
                 pLunExt->namespaceId =
                     pAE->DriverState.IdentifyNamespaceFetched;
 
-               /* for use in the LBA range type commands we need this info */
-               pAE->DriverState.CurrentNsid = pLunExt->namespaceId;
+                /* Note next Namespace ID to fetch Namespace structure */
+                pAE->DriverState.CurrentNsid++;
 
-             } else {
-                NVMeDriverFatalError(pAE,
+            } else {
+                /*
+                 * In case of supporting non-contiguous NSID and the inactive NSIDs, 
+                 * move onto next NSID until it hits the value of NN of 
+                 * Identify Controller structure.
+                 */
+                if ((pCplEntry->DW3.SF.SC == INVALID_NAMESPACE_OR_FORMAT) &&
+                    (pCplEntry->DW3.SF.SCT == 0) &&
+                    (pAE->DriverState.CurrentNsid < pAE->controllerIdentifyData.NN)) {
+                    pAE->DriverState.CurrentNsid++;
+
+                    /* Reset the counter */
+                    pAE->DriverState.StateChkCount = 0;
+
+                    /* Stay in this state to fetch next namespace structure */
+                    pAE->DriverState.NextDriverState = NVMeWaitOnIdentifyNS;
+                } else {
+                    NVMeDriverFatalError(pAE,
                                     (1 << START_STATE_IDENTIFY_NS_FAILURE));
+                }
             }
         break;
         case NVMeWaitOnSetFeatures:
@@ -1928,15 +1998,15 @@ BOOLEAN NVMeInitCallback(
 #if DBG
                     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
                     PCORE_TBL pCT = NULL;
-                    ULONG i;
+                    ULONG CoreIndex;
 
                     /* print out the learned table */
                     StorPortDebugPrint(INFO, "Learning Complete.  Core Table:\n");
-                    for (i=0; i < pRMT->NumActiveCores; i++) {
-                        pCT = pRMT->pCoreTbl + i;
+                    for (CoreIndex = 0; CoreIndex < pRMT->NumActiveCores; CoreIndex++) {
+                        pCT = pRMT->pCoreTbl + CoreIndex;
                         StorPortDebugPrint(INFO,
                                            "\tCore(0x%x) MSID(0x%x) QueuePair(0x%x)\n",
-                                           pCT->CoreNum,
+                                           CoreIndex,
                                            pCT->MsiMsgID,
                                            pCT->SubQueue);
 
@@ -1984,27 +2054,34 @@ BOOLEAN NVMeInitCallback(
 /*******************************************************************************
  * NVMePreparePRPs
  *
- * @brief NVMePreparePRPs is a helper routine to prepare at most 2 PRP entries
- *        for initialization routines.
+ * @brief NVMePreparePRPs is a helper routine to prepare PRP entries
+ *        for initialization routines and ioctl requests.
  *
  * @param pAE - Pointer to hardware device extension.
- * @param pSubEntry - Pointer to Submission entry
+ * @param pSrbExt - Pointer to Srb Extension
  * @param pBuffer - Pointer to the transferring buffer.
+ * @param TxLength - Data transfer size in bytes.
  *
  * @return BOOLEAN
- *     TRUE - If the issued command completed without any errors
+ *     TRUE - If the PRP conversion completed without any errors
  *     FALSE - If anything goes wrong
  ******************************************************************************/
 BOOLEAN NVMePreparePRPs(
     PNVME_DEVICE_EXTENSION pAE,
-    PNVMe_COMMAND pSubEntry,
+    PNVME_SRB_EXTENSION pSrbExt,
     PVOID pBuffer,
     ULONG TxLength
 )
 {
+    PNVMe_COMMAND pSubEntry = &pSrbExt->nvmeSqeUnit;
     STOR_PHYSICAL_ADDRESS PhyAddr;
     ULONG_PTR PtrTemp = 0;
     ULONG RoomInFirstPage = 0;
+    ULONG RemainLength = TxLength;
+    PUINT64 pPrpList = NULL;
+
+    if (pBuffer == NULL || TxLength == 0)
+        return (FALSE);
 
     /* Go ahead and prepare 1st PRP entries, need at least one PRP entry */
     PhyAddr = NVMeGetPhysAddr(pAE, pBuffer);
@@ -2012,25 +2089,51 @@ BOOLEAN NVMePreparePRPs(
         return (FALSE);
 
     pSubEntry->PRP1 = PhyAddr.QuadPart;
-
+    pSrbExt->numberOfPrpEntries = 1;
     /*
      * Find out how much room still available in current page.
-     * If it's enough, only PRP1 is needed. Otherwise, use PRP2 as well.
+     * If it's enough, only PRP1 is needed.
      */
     RoomInFirstPage = PAGE_SIZE - (PhyAddr.QuadPart & (PAGE_SIZE - 1));
     if ( RoomInFirstPage >= TxLength )
         return (TRUE);
+    else
+        RemainLength -= RoomInFirstPage;
 
     PtrTemp = (ULONG_PTR)((PUCHAR)pBuffer);
-    if (IS_SYS_PAGE_ALIGNED(PtrTemp) != TRUE) {
-        /* Need 2 decide if 2nd PRP entry is required */
-        PtrTemp = PAGE_ALIGN_BUF_ADDR(PtrTemp);
+    PtrTemp = PAGE_ALIGN_BUF_ADDR(PtrTemp);
+    /*
+     * With the remaining transfer size, either use PRP2 as another PRP entry or
+     * a pointer to the pre-allocated PRP list
+     */
+    if (RemainLength > PAGE_SIZE) {
+        pPrpList = &pSrbExt->prpList[0];
+        pSubEntry->PRP2 = 0;
+    } else {
+        /* Use PRP2 as 2nd PRP entry and return */
         PhyAddr = NVMeGetPhysAddr(pAE, (PVOID)PtrTemp);
-
         if (PhyAddr.QuadPart == 0)
             return (FALSE);
-
         pSubEntry->PRP2 = PhyAddr.QuadPart;
+        pSrbExt->numberOfPrpEntries++;
+        return (TRUE);
+    }
+    /* 
+     * Convert data buffer pages into PRP entries while
+     * decreasing remaining transfer size and noting the # of PRP entries used
+     */
+    while (RemainLength) {
+        PhyAddr = NVMeGetPhysAddr(pAE, (PVOID)PtrTemp);
+        if (PhyAddr.QuadPart == 0)
+            return (FALSE);
+        *pPrpList = (UINT64) PhyAddr.QuadPart;
+        pSrbExt->numberOfPrpEntries++;
+        /* When remaining size is no larger than a page, it's the last entry */
+        if (RemainLength <= PAGE_SIZE)
+            break;
+        pPrpList++;
+        RemainLength -= PAGE_SIZE;
+        PtrTemp += PAGE_SIZE;
     }
 
     return (TRUE);
@@ -2208,7 +2311,7 @@ BOOLEAN NVMeAccessLbaRangeEntry(
 
     /* Prepare PRP entries, need at least one PRP entry */
     if (NVMePreparePRPs(pAE,
-                        pSetFeatures,
+                        pNVMeSrbExt,
                         pAE->DriverState.pDataBuffer,
                         sizeof(ADMIN_SET_FEATURES_LBA_COMMAND_RANGE_TYPE_ENTRY))
                         == FALSE) {
@@ -2267,7 +2370,7 @@ BOOLEAN NVMeGetIdentifyStructures(
 
         /* Prepare PRP entries, need at least one PRP entry */
         if (NVMePreparePRPs(pAE,
-                            pIdentify,
+                            pNVMeSrbExt,
                             (PVOID)pAE->DriverState.pDataBuffer,
                             sizeof(ADMIN_IDENTIFY_CONTROLLER)) == FALSE) {
             return (FALSE);
@@ -2296,7 +2399,7 @@ BOOLEAN NVMeGetIdentifyStructures(
 
             /* Prepare PRP entries, need at least one PRP entry */
             if (NVMePreparePRPs(pAE,
-                                pIdentify,
+                                pNVMeSrbExt,
                                 (PVOID)pAE->DriverState.pDataBuffer,
                                 sizeof(ADMIN_IDENTIFY_NAMESPACE)) == FALSE) {
                 return (FALSE);
@@ -2732,6 +2835,11 @@ VOID NVMeFreeNonContiguousBuffers (
         pRMT->pNumaNodeTbl = NULL;
     }
 
+    if (pRMT->pProcGroupTbl != NULL) {
+        StorPortFreePool((PVOID)pAE, pRMT->pProcGroupTbl);
+        pRMT->pProcGroupTbl = NULL;
+    }
+
     /* Free the allocated SUB/CPL_QUEUE_INFO structures memory */
     if ( pQI->pSubQueueInfo != NULL ) {
         StorPortFreePool((PVOID)pAE, pQI->pSubQueueInfo);
@@ -2814,7 +2922,7 @@ BOOLEAN NVMeAllocIoQueues(
     ULONG Core, Node, QEntries;
     ULONG CoreTableIndex = 0;
     USHORT QueueID = 0;
-    USHORT Queue = 0;
+    ULONG Queue = 0;
 
     pQI->NumSubIoQAllocated = pQI->NumCplIoQAllocated = 0;
 
@@ -2834,106 +2942,109 @@ BOOLEAN NVMeAllocIoQueues(
     } else {
         for (Node = 0; Node < pRMT->NumNumaNodes; Node++) {
             pNNT = pRMT->pNumaNodeTbl + Node;
+            /* When no logical processors assigned to the node, just move on */
+            if (pNNT->NumCores == 0)
+                continue;
+
             for (Core = pNNT->FirstCoreNum; Core <= pNNT->LastCoreNum; Core++) {
-                if (((pNNT->GroupAffinity.Mask >> Core) & 1) == 0)
-                    continue;
 
-            pCT = pRMT->pCoreTbl + CoreTableIndex;
 
-            /*
-             * If there are more cores than Qs alloc'd from the adapter, just
-             * cycle through the available Qs in the core table.  Ex, if there
-             * are 2 Q's and 4 cores, the table will look like:
-             * Core  QID
-             *  0     1
-             *  1     2
-             *  3     1
-             *  4     2
-             */
-            QueueID = (QueueID + 1 > (USHORT)pQI->NumSubIoQAllocFromAdapter) ?
-                1 : QueueID + 1;
+                pCT = pRMT->pCoreTbl + CoreTableIndex;
 
-            if (pQI->NumSubIoQAllocated < QueueID)  {
+                /*
+                 * If there are more cores than Qs alloc'd from the adapter, just
+                 * cycle through the available Qs in the core table.  Ex, if there
+                 * are 2 Q's and 4 cores, the table will look like:
+                 * Core  QID
+                 *  0     1
+                 *  1     2
+                 *  3     1
+                 *  4     2
+                 */
+                 QueueID = (QueueID + 1 > (USHORT)pQI->NumSubIoQAllocFromAdapter) ?
+                            1 : QueueID + 1;
 
-                QEntries = pAE->InitInfo.IoQEntries;
-                Status = NVMeAllocQueues(pAE,
-                                         QueueID,
-                                         QEntries,
-                                         (USHORT)Node);
+                if (pQI->NumSubIoQAllocated < QueueID)  {
+ 
+                    QEntries = pAE->InitInfo.IoQEntries;
+                    Status = NVMeAllocQueues(pAE,
+                                             QueueID,
+                                             QEntries,
+                                             (USHORT)Node);
 
-                if (Status == STOR_STATUS_SUCCESS) {
-
-                    pQI->NumSubIoQAllocated = ++pQI->NumCplIoQAllocated;
-
-                } else {
-                    /*
-                     * If faling on the very first queue allocation, failure
-                     * case.
-                     */
-                    if (CoreTableIndex == pNNT->FirstCoreNum && Node == 0) {
-                        return (FALSE);
+                    if (Status == STOR_STATUS_SUCCESS) {
+   
+                        pQI->NumSubIoQAllocated = ++pQI->NumCplIoQAllocated;
                     } else {
                         /*
-                         * Fall back to share the very first queue allocated.
-                         * Free the other allocated queues before returning
-                         * and return TRUE.
+                         * If faling on the very first queue allocation, failure
+                         * case.
                          */
-                        Queue = 0;
-                        for (Core = 1; Core < pRMT->NumActiveCores; Core++) {
-                            Queue = (Queue + 1 > (USHORT)pQI->NumSubIoQAllocFromAdapter) ? 1 : Queue + 1;
+                        if (CoreTableIndex == pNNT->FirstCoreNum && Node == 0) {
+                            return (FALSE);
+                        } else {
+                            /*
+                             * Fall back to share the very first queue allocated.
+                             * Free the other allocated queues before returning
+                             * and return TRUE.
+                             */
+                            Queue = 0;
+                            for (Core = 1; Core < pRMT->NumActiveCores; Core++) {
+                                /* Need to keep first allocated IO queue for sharing */
+                                Queue = Core + 1; 
+                                pSQI = pQI->pSubQueueInfo + Queue;
 
-                            pSQI = pQI->pSubQueueInfo + Queue;
+                                if (pSQI->pQueueAlloc != NULL)
+                                    StorPortFreeContiguousMemorySpecifyCache(
+                                        (PVOID)pAE,
+                                        pSQI->pQueueAlloc,
+                                        pSQI->QueueAllocSize,
+                                        MmCached);
+                                pSQI->pQueueAlloc = NULL;
 
-                            if (pSQI->pQueueAlloc != NULL)
-                                StorPortFreeContiguousMemorySpecifyCache(
-                                    (PVOID)pAE,
-                                    pSQI->pQueueAlloc,
-                                    pSQI->QueueAllocSize,
-                                    MmCached);
-
-                            if (pSQI->pPRPListAlloc != NULL)
-                                StorPortFreeContiguousMemorySpecifyCache(
-                                    (PVOID)pAE,
-                                    pSQI->pPRPListAlloc,
-                                    pSQI->PRPListAllocSize,
-                                    MmCached);
-
+                                if (pSQI->pPRPListAlloc != NULL)
+                                    StorPortFreeContiguousMemorySpecifyCache(
+                                        (PVOID)pAE,
+                                        pSQI->pPRPListAlloc,
+                                        pSQI->PRPListAllocSize,
+                                        MmCached);
+                                pSQI->pPRPListAlloc = NULL;
 #ifdef DUMB_DRIVER
-                            if (pSQI->pDblBuffAlloc != NULL)
-                                StorPortFreeContiguousMemorySpecifyCache(
-                                                        (PVOID)pAE,
-                                                        pSQI->pDblBuffAlloc,
-                                                        pSQI->dblBuffSz,
-                                                        MmCached);
+                                if (pSQI->pDblBuffAlloc != NULL)
+                                    StorPortFreeContiguousMemorySpecifyCache(
+                                                            (PVOID)pAE,
+                                                            pSQI->pDblBuffAlloc,
+                                                            pSQI->dblBuffSz,
+                                                            MmCached);
 
-                            if (pSQI->pDblBuffListAlloc != NULL)
-                                StorPortFreeContiguousMemorySpecifyCache(
-                                                        (PVOID)pAE,
-                                                        pSQI->pDblBuffListAlloc,
-                                                        pSQI->dblBuffListSz,
-                                                        MmCached);
+                                if (pSQI->pDblBuffListAlloc != NULL)
+                                    StorPortFreeContiguousMemorySpecifyCache(
+                                                            (PVOID)pAE,
+                                                            pSQI->pDblBuffListAlloc,
+                                                            pSQI->dblBuffListSz,
+                                                            MmCached);
 
 #endif
-                            pCT = pRMT->pCoreTbl + Core;
-                            pCT->SubQueue = pCT->CplQueue = 1;
-                        }
+                                pCT = pRMT->pCoreTbl + Core;
+                                pCT->SubQueue = pCT->CplQueue = 1;
+                            }
 
-                        pQI->NumSubIoQAllocated = pQI->NumCplIoQAllocated = 1;
+                            pQI->NumSubIoQAllocated = pQI->NumCplIoQAllocated = 1;
         
-                        pAE->MultipleCoresToSingleQueueFlag = TRUE;
-                        return (TRUE);
-                    } /* fall back to use only one queue */
-                } /* failure case */
-            } else {
-                pAE->MultipleCoresToSingleQueueFlag = TRUE;
-            }
+                            pAE->MultipleCoresToSingleQueueFlag = TRUE;
+                            return (TRUE);
+                        } /* fall back to use only one queue */
+                    } /* failure case */
+                } else {
+                    pAE->MultipleCoresToSingleQueueFlag = TRUE;
+                }
 
                 /* Succeeded! Mark down the number of queues allocated */
-            pCT->SubQueue = pCT->CplQueue = QueueID;
-            StorPortDebugPrint(INFO,
-                "NVMeAllocIoQueues: Core 0x%x ---> QueueID 0x%x\n",
-                 CoreTableIndex, QueueID);
-            CoreTableIndex++;
+                pCT->SubQueue = pCT->CplQueue = QueueID;
+                StorPortDebugPrint(INFO,
+                    "NVMeAllocIoQueues: Core 0x%x ---> QueueID 0x%x\n",
+                    CoreTableIndex, QueueID);
+                CoreTableIndex++;
             } /* current core */
         } /* current NUMA node */
 

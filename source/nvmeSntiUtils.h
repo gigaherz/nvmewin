@@ -49,13 +49,41 @@
 #define __SNTI_UTILS_H__
 
 /* MACROs to extrace infor from SRBs and CDBs */
-#define GET_SRB_EXTENSION(pSrb) (pSrb)->SrbExtension
-#define GET_OPCODE(pSrb)        (pSrb)->Cdb[0]
-#define GET_DATA_BUFFER(pSrb)   (pSrb)->DataBuffer
-#define GET_PATH_ID(pSrb)       (pSrb)->PathId
-#define GET_TARGET_ID(pSrb)     (pSrb)->TargetId
-#define GET_LUN_ID(pSrb)        (pSrb)->Lun
-#define GET_CDB_LENGTH(pSrb)    (pSrb)->CdbLength
+#if (NTDDI_VERSION > NTDDI_WIN7)
+#define GET_SRB_EXTENSION(pSrb)     (SrbGetMiniportContext((PVOID)pSrb))
+#define GET_OPCODE(pSrb)            (((PCDB)SrbGetCdb((PVOID)pSrb))->AsByte[0])
+#define GET_DATA_BUFFER(pSrb)       (SrbGetDataBuffer((PVOID)pSrb))
+#define GET_DATA_LENGTH(pSrb)       (SrbGetDataTransferLength((PVOID)pSrb))
+#define SET_DATA_LENGTH(pSrb, len)  (SrbSetDataTransferLength((PVOID)pSrb, len))
+#define GET_PATH_ID(pSrb)           (SrbGetPathId((PVOID)pSrb))
+#define GET_TARGET_ID(pSrb)         (SrbGetTargetId((PVOID)pSrb))
+#define GET_LUN_ID(pSrb)            (SrbGetLun((PVOID)pSrb))
+#define GET_CDB_LENGTH(pSrb)        (SrbGetCdbLength((PVOID)pSrb))
+
+/* Extract fields from CDBs at offsets */
+#define GET_U8_FROM_CDB(pSrb, index)   (((PCDB)SrbGetCdb((PVOID)pSrb))->AsByte[index])
+
+#define GET_U16_FROM_CDB(pSrb, index) ((((PCDB)SrbGetCdb((PVOID)pSrb))->AsByte[index]   << 8) | \
+                                       (((PCDB)SrbGetCdb((PVOID)pSrb))->AsByte[index+1] << 0))
+
+#define GET_U24_FROM_CDB(pSrb, index) ((((PCDB)SrbGetCdb((PVOID)pSrb))->AsByte[index]   << 16)| \
+                                       (((PCDB)SrbGetCdb((PVOID)pSrb))->AsByte[index+1] << 8) | \
+                                       (((PCDB)SrbGetCdb((PVOID)pSrb))->AsByte[index+2] << 0))
+
+#define GET_U32_FROM_CDB(pSrb, index) ((((PCDB)SrbGetCdb((PVOID)pSrb))->AsByte[index]   << 24)| \
+                                       (((PCDB)SrbGetCdb((PVOID)pSrb))->AsByte[index+1] << 16)| \
+                                       (((PCDB)SrbGetCdb((PVOID)pSrb))->AsByte[index+2] << 8) | \
+                                       (((PCDB)SrbGetCdb((PVOID)pSrb))->AsByte[index+3] << 0))
+#else
+#define GET_SRB_EXTENSION(pSrb)      (pSrb)->SrbExtension
+#define GET_OPCODE(pSrb)             (pSrb)->Cdb[0]
+#define GET_DATA_BUFFER(pSrb)        (pSrb)->DataBuffer
+#define GET_DATA_LENGTH(pSrb)        (pSrb)->DataTransferLength
+#define SET_DATA_LENGTH(pSrb, len)   ((pSrb)->DataTransferLength = len)
+#define GET_PATH_ID(pSrb)            (pSrb)->PathId
+#define GET_TARGET_ID(pSrb)          (pSrb)->TargetId
+#define GET_LUN_ID(pSrb)             (pSrb)->Lun
+#define GET_CDB_LENGTH(pSrb)         (pSrb)->CdbLength
 
 /* Extract fields from CDBs at offsets */
 #define GET_U8_FROM_CDB(pSrb, index)   ((pSrb)->Cdb[index] << 0)
@@ -71,7 +99,7 @@
                                        ((pSrb)->Cdb[index + 1] << 16) | \
                                        ((pSrb)->Cdb[index + 2] <<  8) | \
                                        ((pSrb)->Cdb[index + 3] <<  0))
-
+#endif
 /* Inquiry Helper Macros */
 #define GET_INQ_EVPD_BIT(pSrb)                                          \
             ((GET_U8_FROM_CDB(pSrb, INQUIRY_EVPD_BYTE_OFFSET) &         \
@@ -93,7 +121,7 @@
 
 /* Request Sense Helper Macros */
 #define GET_REQUEST_SENSE_ALLOC_LENGTH(pSrb)                            \
-            (GET_U8_FROM_CDB(pSrb, REPORT_LUNS_CDB_ALLOC_LENGTH_OFFSET))
+            (GET_U8_FROM_CDB(pSrb, REQUEST_SENSE_CDB_ALLOC_LENGTH_OFFSET))
 
 /* Generic SCSI Helper Macros */
 #define GET_VALUE(cdb, index, len)   (cdb->cmnd[index] & len)

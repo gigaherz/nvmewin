@@ -48,6 +48,7 @@
 #ifndef __NVME_STD_H__
 #define __NVME_STD_H__
 
+
 #ifdef DUMB_DRIVER
 #define DUMB_DRIVER_SZ (1024 * 64)
 #endif
@@ -425,7 +426,11 @@ typedef struct _START_STATE
     BOOLEAN resetDriven;
 
     /* If its a host driven reset we need the SRB */
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSTORAGE_REQUEST_BLOCK pResetSrb;
+#else
     PSCSI_REQUEST_BLOCK pResetSrb;
+#endif
 
     /*
      * After adapter had completed the Identify commands,
@@ -738,24 +743,41 @@ typedef struct _QUEUE_INFO
 } QUEUE_INFO, *PQUEUE_INFO;
 
 /*******************************************************************************
+ * Processor Group Table Data Structure
+ ******************************************************************************/
+typedef struct _PROC_GROUP_TBL
+{
+    /* Its associated first system-wise logical processor number*/
+    ULONG BaseProcessor;
+
+    /* Number of associated cores */
+    ULONG NumProcessor;
+
+    /* Its associated group number */
+    GROUP_AFFINITY GroupAffinity;
+
+} PROC_GROUP_TBL, *PPROC_GROUP_TBL;
+
+/*******************************************************************************
  * NUMA Node Table Data Structure
  ******************************************************************************/
 typedef struct _NUMA_NODE_TBL
 {
     /* The NUMA node number */
-    USHORT NodeNum;
+    ULONG NodeNum;
+
+    /* Its associated first core number (system-wise) */
+    ULONG FirstCoreNum;
+
+    /* Its associated last core number (system-wise) */
+    ULONG LastCoreNum;
+
+    /* Number of associated cores */
+    ULONG NumCores;
 
     /* Its associated group number */
     GROUP_AFFINITY GroupAffinity;
 
-    /* Its associated first core number (system-wise) */
-    USHORT FirstCoreNum;
-
-    /* Its associated last core number (system-wise) */
-    USHORT LastCoreNum;
-
-    /* Number of associated cores */
-    USHORT NumCores;
 } NUMA_NODE_TBL, *PNUMA_NODE_TBL;
 
 /*******************************************************************************
@@ -763,9 +785,6 @@ typedef struct _NUMA_NODE_TBL
  ******************************************************************************/
 typedef struct _CORE_TBL
 {
-    /* The system-wise core number */
-    USHORT CoreNum;
-
     /* Its associated NUMA node */
     USHORT NumaNode;
 
@@ -835,6 +854,11 @@ typedef struct _RES_MAPPING_TBL
 
     /* Array of NUMA affinity table, retrieved via StorPortGetNodeAffinity */
     PNUMA_NODE_TBL pNumaNodeTbl; /* Topology of NUMA nodes/associated cores */
+
+    /* Number of logical processor groups in current system */
+    USHORT NumGroup;
+    /* Topology of logical processor group */
+    PPROC_GROUP_TBL pProcGroupTbl;
 } RES_MAPPING_TBL, *PRES_MAPPING_TBL;
 
 /* LUN Extension */
@@ -1003,7 +1027,11 @@ typedef struct _nvme_srb_extension
     PNVME_DEVICE_EXTENSION       pNvmeDevExt;
 
     /* Pointer back to SRB - NULL if internal I/O */
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSTORAGE_REQUEST_BLOCK       pSrb;
+#else
     PSCSI_REQUEST_BLOCK          pSrb;
+#endif
 
     /* Is this an ADMIN command or an NVM command */
     BOOLEAN                      forAdminQueue;
@@ -1115,7 +1143,11 @@ BOOLEAN NVMeStrCompare(
 
 BOOLEAN NVMeResetController(
     __in PNVME_DEVICE_EXTENSION pAdapterExtension,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    __in PSTORAGE_REQUEST_BLOCK pSrb
+#else
     __in PSCSI_REQUEST_BLOCK pSrb
+#endif
 );
 
 BOOLEAN NVMeEnumMsiMessages(
@@ -1292,7 +1324,7 @@ BOOLEAN NVMeFetchRegistry(
 
 BOOLEAN NVMePreparePRPs(
     PNVME_DEVICE_EXTENSION pAE,
-    PNVMe_COMMAND pSubEntry,
+    PNVME_SRB_EXTENSION pSrbExt,
     PVOID pBuffer,
     ULONG TxLength
 );
@@ -1306,7 +1338,11 @@ BOOLEAN NvmeAdapterReset(
 BOOLEAN NVMeRunningStartAttempt(
     PNVME_DEVICE_EXTENSION pAE,
     BOOLEAN resetDriven,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSTORAGE_REQUEST_BLOCK pResetSrb
+#else
     PSCSI_REQUEST_BLOCK pResetSrb
+#endif
 );
 
 VOID NVMeRunning(
@@ -1397,7 +1433,11 @@ BOOLEAN NVMeBuildIo(
 
 void NVMeStartIoProcessIoctl(
     __in PNVME_DEVICE_EXTENSION pAdapterExtension,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    __in PSTORAGE_REQUEST_BLOCK pSrb
+#else
     __in PSCSI_REQUEST_BLOCK pSrb
+#endif
 );
 
 BOOLEAN NVMeIsrIntx(
@@ -1435,7 +1475,11 @@ VOID RecoveryDpcRoutine(
 VOID NVMeInitSrbExtension(
     PNVME_SRB_EXTENSION pSrbExt,
     PNVME_DEVICE_EXTENSION pDevExt,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSTORAGE_REQUEST_BLOCK pSrb
+#else
     PSCSI_REQUEST_BLOCK pSrb
+#endif
 );
 
 VOID NVMeIoctlHotRemoveNamespace(
@@ -1454,23 +1498,39 @@ BOOLEAN NVMeIoctlFormatNVMCallback(
 
 BOOLEAN NVMeIoctlFormatNVM(
     PNVME_DEVICE_EXTENSION pDevExt,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSTORAGE_REQUEST_BLOCK pSrb,
+#else
     PSCSI_REQUEST_BLOCK pSrb,
+#endif
     PNVME_PASS_THROUGH_IOCTL pNvmePtIoctl
 );
 
 BOOLEAN NVMeProcessIoctl(
     PNVME_DEVICE_EXTENSION pDevExt,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSTORAGE_REQUEST_BLOCK pSrb
+#else
     PSCSI_REQUEST_BLOCK pSrb
+#endif
 );
 
 BOOLEAN NVMeProcessPublicIoctl(
     PNVME_DEVICE_EXTENSION pDevExt,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSTORAGE_REQUEST_BLOCK pSrb
+#else
     PSCSI_REQUEST_BLOCK pSrb
+#endif
 );
 
 BOOLEAN NVMeProcessPrivateIoctl(
     PNVME_DEVICE_EXTENSION pDevExt,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSTORAGE_REQUEST_BLOCK pSrb
+#else
     PSCSI_REQUEST_BLOCK pSrb
+#endif
 );
 
 BOOLEAN NVMeIoctlCallback(
@@ -1516,7 +1576,11 @@ VOID NVMeLogError(
 VOID IO_StorPortNotification(
     __in SCSI_NOTIFICATION_TYPE NotificationType,
     __in PVOID pHwDeviceExtension,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    __in PSTORAGE_REQUEST_BLOCK pSrb
+#else
     __in PSCSI_REQUEST_BLOCK pSrb
+#endif
 );
 #else
 #define IO_StorPortNotification StorPortNotification

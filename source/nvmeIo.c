@@ -296,7 +296,7 @@ ProcessIo(
      */
     if ((QueueType == NVME_QUEUE_TYPE_IO) &&
         (pNvmeCmd->CDW0.OPC != NVM_FLUSH)) {
-        LONG len = pSrbExtension->pSrb->DataTransferLength;
+        ULONG len = GET_DATA_LENGTH(pSrbExtension->pSrb);
         ULONG i = 1;
         PUINT64 pPrpList = (PUINT64)pCmdInfo->pDblPrpListVir;
 
@@ -338,7 +338,7 @@ ProcessIo(
 
             ASSERT(StorStatus == STOR_STATUS_SUCCESS);
 
-            pSrbExtension->dataLen = pSrbExtension->pSrb->DataTransferLength;
+            pSrbExtension->dataLen = GET_DATA_LENGTH(pSrbExtension->pSrb);
             pSrbExtension->pDblVir = pCmdInfo->pDblVir;
 
             /*
@@ -383,7 +383,7 @@ ProcessIo(
                                (ULONGLONG)pVa >> 32, (ULONG)pVa,
                                pNvmeCmd->CDW11,
                                pNvmeCmd->CDW10,
-                               pSrbExtension->pSrb->DataTransferLength);
+                               GET_DATA_LENGTH(pSrbExtension->pSrb));
         }
 
         if (pSrbExtension->numberOfPrpEntries > 2) {

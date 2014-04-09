@@ -67,7 +67,7 @@ BOOLEAN NVMeAdapterControlPowerDown(
 
 BOOLEAN NVMePowerControl(
     IN PNVME_DEVICE_EXTENSION pAdapterExtension,
-    IN PSCSI_POWER_REQUEST_BLOCK pPowerSrb
+    IN PSCSI_REQUEST_BLOCK Srb
 );
 
 #endif /* __NVME_PWRMGMT_H__ */
