@@ -46,10 +46,6 @@
  */
 
 #include "precomp.h"
-#if defined(CHATHAM2)
-#include <string.h>
-#include <stdlib.h>
-#endif
 
 /*******************************************************************************
  * NVMeCallArbiter
@@ -238,6 +234,9 @@ VOID NVMeRunning(
 )
 {
 
+    ULONG coreCount = 0;
+    USHORT queueIndex = 1; 
+
     /*
      * Go to the next state in the Start State Machine
      * transitions are managed either in the state handler or
@@ -277,6 +276,32 @@ VOID NVMeRunning(
         break;
         case NVMeStartComplete:
             pAE->RecoveryAttemptPossible = TRUE;
+
+            for (coreCount = 0;
+                 coreCount < pAE->ResMapTbl.NumActiveCores;
+                 coreCount++) {
+
+                PCORE_TBL pCT = NULL;
+                /*
+                 * Assign queues to cores by Round Robin. Only the
+                 * submission side needs to be set because the
+                 * completion for IO submitted on these cores will
+                 * go to the core associated with that queue during
+                 * learning mode. For gaps in MSI vectors mapped to
+                 * cores, do this for all unlearned cores.
+                 */
+                pCT = pAE->ResMapTbl.pCoreTbl + coreCount;
+
+                if (!pCT->Learned) {
+                    pCT->SubQueue = queueIndex;
+
+                    queueIndex = (queueIndex < (USHORT)pAE->LearningCores) ?
+                                    ++queueIndex : 1;
+                }
+            }
+
+            /* Indicate learning is done with no unassigned cores */
+            pAE->LearningCores = coreCount;
 
             if (pAE->DriverState.resetDriven) {
                 /* If this was at the request of the host, complete that Srb */
@@ -671,11 +696,9 @@ VOID NVMeRunningWaitOnLearnMapping(
 #ifdef DUMB_DRIVER
         {
 #else
-        if ((pRMT->NumMsiMsgGranted < pRMT->NumActiveCores) ||
-            (pRMT->pMsiMsgTbl->Shared == TRUE) ||
+        if ((pRMT->pMsiMsgTbl->Shared == TRUE) ||
             (pRMT->InterruptType == INT_TYPE_INTX) ||
             (pRMT->InterruptType == INT_TYPE_MSI) ||
-            (pQI->NumCplIoQAllocated < pRMT->NumActiveCores) ||
             (pAE->DriverState.IdentifyNamespaceFetched == 0) ||
             (pAE->visibleLuns == 0) ||
             (pLunExt == NULL)) {
@@ -685,7 +708,8 @@ VOID NVMeRunningWaitOnLearnMapping(
              * but effectively disable learning as one of the above
              * conditions makes it impossible or unneccessary to learn
             */
-            pAE->LearningCores = pRMT->NumActiveCores;
+            pAE->LearningCores = min(pAE->QueueInfo.NumCplIoQAllocFromAdapter,
+                                     pAE->QueueInfo.NumSubIoQAllocFromAdapter);
             pAE->DriverState.NextDriverState = NVMeStartComplete;
             __leave;
         }
@@ -708,7 +732,8 @@ VOID NVMeRunningWaitOnLearnMapping(
              * strange that we can't get a small amount of memory
              * so go ahead and complete the init state machine now
             */
-            pAE->LearningCores = pRMT->NumActiveCores;
+            pAE->LearningCores = min(pAE->QueueInfo.NumCplIoQAllocFromAdapter,
+                                     pAE->QueueInfo.NumSubIoQAllocFromAdapter);
             pAE->DriverState.NextDriverState = NVMeStartComplete;
             __leave;
         }
@@ -720,7 +745,8 @@ VOID NVMeRunningWaitOnLearnMapping(
         /* Now issue the command via IO queue */
         if (FALSE == ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_IO, FALSE)) {
             error = TRUE;
-            pAE->LearningCores = pRMT->NumActiveCores;
+            pAE->LearningCores = min(pAE->QueueInfo.NumCplIoQAllocFromAdapter,
+                                     pAE->QueueInfo.NumSubIoQAllocFromAdapter);
             pAE->DriverState.NextDriverState = NVMeStartComplete;
             __leave;
         }
@@ -756,22 +782,6 @@ VOID NVMeRunningWaitOnReSetupQueues(
     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
     PQUEUE_INFO pQI = &pAE->QueueInfo;
 
-#if defined(CHATHAM2)
-    if (NVMeResetAdapter(pAE) == TRUE) {
-        /* 10 msec "settle" delay post reset */
-        NVMeStallExecution(pAE, 10000);
-
-        if (NVMeInitAdminQueues(pAE) == STOR_STATUS_SUCCESS) {
-            /*
-             * Start the state mahcine, if all goes well we'll complete the
-             * reset Srb when the machine is done.
-             */
-            NVMeRunningStartAttempt(pAE, TRUE, NULL);
-            return;
-        } /* init the admin queues */
-        ASSERT(FALSE);
-    }
-#endif
     /* Delete all submission queues */
     if (NVMeDeleteSubQueues(pAE) == FALSE) {
         NVMeDriverFatalError(pAE,

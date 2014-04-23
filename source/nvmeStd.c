@@ -140,11 +140,7 @@ ULONG DriverEntry(
     /* Specifiy adapter specific information. */
     hwInitData.AutoRequestSense = TRUE;
     hwInitData.NeedPhysicalAddresses = TRUE;
-#if defined(CHATHAM2)
-    hwInitData.NumberOfAccessRanges = 2;
-#else
     hwInitData.NumberOfAccessRanges = NVME_ACCESS_RANGES;
-#endif
     hwInitData.AdapterInterfaceType = PCIBus;
     hwInitData.MapBuffers = STOR_MAP_NON_READ_WRITE_BUFFERS;
     hwInitData.TaggedQueuing = TRUE;
@@ -240,16 +236,6 @@ NVMeFindAdapter(
                            pAE->pCtrlRegister);
     }
 
-#if defined(CHATHAM2)
-    pAE->pChathamRegs = (PVOID)pAE->pCtrlRegister;
-    pMM_Range = &(*(pPCI->AccessRanges))[1];
-    pAE->pCtrlRegister = StorPortGetDeviceBase(pAE,
-                                               pPCI->AdapterInterfaceType,
-                                               pPCI->SystemIoBusNumber,
-                                               pMM_Range->RangeStart,
-                                               pMM_Range->RangeLength,
-                                               FALSE);
-#endif
 
     /*
      * Parse the ArgumentString to find out if it's a normal driver loading
@@ -712,6 +698,8 @@ BOOLEAN NVMeInitialize(
         /* Initialize members of resource mapping table first */
         pRMT->InterruptType = INT_TYPE_INTX;
         pRMT->NumActiveCores = 1;
+        pAE->QueueInfo.NumCplIoQAllocFromAdapter = 1;
+        pAE->QueueInfo.NumSubIoQAllocFromAdapter = 1;
 
         /*
          * Allocate sub/cpl queue info structure array first. The total number
@@ -1676,11 +1664,6 @@ BOOLEAN NVMeIsrIntx(
     PNVME_DEVICE_EXTENSION pAE = (PNVME_DEVICE_EXTENSION)AdapterExtension;
     BOOLEAN InterruptClaimed = FALSE;
 
-#if defined(CHATHAM2)
-    if (pAE->ResMapTbl.NumMsiMsgGranted == 0) {
-        return TRUE;
-    }
-#endif
     /*
      * Loop thru all queues to find out if we own the interrupt
      */
@@ -1772,7 +1755,6 @@ IoCompletionDpcRoutine(
         do {
             entryStatus = NVMeGetCplEntry(pAE, pCQI, &pCplEntry);
             if (entryStatus == STOR_STATUS_SUCCESS) {
-#if !defined(CHATHAM2)
                 /*
                  * Mask the interrupt only when first pending completed entry
                  * found.
@@ -1785,7 +1767,6 @@ IoCompletionDpcRoutine(
 
                     pAE->IntxMasked = TRUE;
                 }
-#endif /* CHATHAM2 */
 
                 InterruptClaimed = TRUE;
 
@@ -1812,8 +1793,6 @@ IoCompletionDpcRoutine(
 
                     if ((pAE->LearningComplete == TRUE) && (firstCheckQueue > 0)) {
                         StorPortGetCurrentProcessorNumber((PVOID)pAE, &procNum);
-                        ASSERT(pSrbExtension->procNum.Group == procNum.Group);
-                        ASSERT(pSrbExtension->procNum.Number == procNum.Number);
                         if ((pSrbExtension->procNum.Group != procNum.Group) ||
                             (pSrbExtension->procNum.Number != procNum.Number))           
                             StorPortDebugPrint(INFO, 
@@ -1849,6 +1828,7 @@ IoCompletionDpcRoutine(
 
                         /* update based on current completion info */
                         pCT->MsiMsgID = (USHORT)MsgID;
+                        pCT->Learned = TRUE;
                         pCQI->MsiMsgID = pCT->MsiMsgID;
                         pMMT->CplQueueNum = pCT->CplQueue;
 
@@ -1920,12 +1900,10 @@ IoCompletionDpcRoutine(
     } while (indexCheckQueue <= lastCheckQueue); /* end queue checking loop */
 
     /* Un-mask interrupt if it had been masked */
-#if !defined(CHATHAM2)
     if (pAE->IntxMasked == TRUE) {
         StorPortWriteRegisterUlong(pAE, &pAE->pCtrlRegister->INTMC, 1);
         pAE->IntxMasked = FALSE;
     }
-#endif
     if (pDpc != NULL) {
 		if (pAE->MultipleCoresToSingleQueueFlag) {
 			StorPortReleaseSpinLock(pAE, &StartLockHandle);
@@ -1959,11 +1937,6 @@ NVMeIsrMsix (
     ULONG                         qNum = 0;
     BOOLEAN                       status = FALSE;
 
-#if defined(CHATHAM2)
-    if (pAE->ResMapTbl.NumMsiMsgGranted == 0) {
-        return TRUE;
-    }
-#endif
     if (pAE->hwResetInProg)
         return TRUE;
 
@@ -4517,10 +4490,6 @@ ULONG NVMeInitAdminQueues(
         return (STOR_STATUS_UNSUCCESSFUL);
     }
 
-#if defined(CHATHAM2)
-    NVMeChathamSetup(pAE);
-#endif
-
     return (STOR_STATUS_SUCCESS);
 } /* NVMeInitAdminQueues */
 
@@ -4615,95 +4584,3 @@ VOID IO_StorPortNotification(
 }
 #endif
 
-#if defined(CHATHAM2)
-/*******************************************************************************
- * RegisterWriteAddrU64
- *
- * @brief Helper routine for writing a 64 bit register value (Chatham)
- *
- * @param pContext - Context
- * @param pRegAddr - Register address
- * @param Value - value to be written
- *
- * @return VOID
- ******************************************************************************/
-VOID RegisterWriteAddrU64(
-    PVOID pContext,
-    PVOID pRegAddr,
-    UINT64 Value
-)
-{
-    UINT32 TmpVal = (UINT32)Value;
-    PULONG pAddress = (PULONG)pRegAddr;
-
-    UNREFERENCED_PARAMETER(pContext);
-    ASSERT(pContext);
-
-    StorPortWriteRegisterUlong(pContext,
-                               (PULONG)pRegAddr,
-                               TmpVal);
-    StorPortWriteRegisterUlong(pContext,
-                               (PULONG)(pAddress + 1),
-                               (UINT32)(Value >> 32));
-}
-
-/*******************************************************************************
- * NVMeChathamSetup
- *
- * @brief Setup routine for Chatham
- *
- * @param pAE - Pointer to device extension
- *
- * @return VOID
- ******************************************************************************/
-VOID NVMeChathamSetup(
-    PNVME_DEVICE_EXTENSION pAE
-)
-{
-    PUCHAR pBar = (PUCHAR)pAE->pChathamRegs;
-    ULONGLONG reg1 = 0;
-    ULONGLONG reg2 = 0;
-    ULONGLONG reg3 = 0;
-    ULONGLONG temp1 = 0;
-    ULONGLONG temp2 = 0;
-    ULONG temp3 = 0;
-
-    NVMeStallExecution(pAE,10000);
-    pAE->FwVer = StorPortReadRegisterUlong(pAE, (PULONG)(pBar + 0x8080));
-
-    DbgPrint("Chatham Version: 0x%x\n", pAE->FwVer);
-
-    ChathamNlb = StorPortReadRegisterUlong(pAE, (PULONG)(pBar + 0x8068));
-    ChathamNlb = ChathamNlb - 0x110;
-    ChathamSize = ChathamNlb * 512;
-
-    DbgPrint("ChathamSize: 0x%x\n", ChathamSize);
-
-    reg1 = ChathamSize - 1;
-    reg2 = reg3 = reg1;
-
- //   temp1 = ((ULONGLONG)0x1b58 << 32) | 0x7d0;
- //   temp2 = ((ULONGLONG)0xcb << 32) | 0x131;
-    temp1 = ((ULONGLONG)pAE->InitInfo.Parm1 << 32) |
-     pAE->InitInfo.Parm2;
-    temp2 = ((ULONGLONG)pAE->InitInfo.Parm3 << 32) |
-     pAE->InitInfo.Parm4;
-
-    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8000), reg1);
-    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8008), reg2);
-    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8010), reg3);
-
-    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8020), temp1);
-    temp3 = StorPortReadRegisterUlong(pAE, (PULONG)(pBar + 0x8020));
-    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8028), temp2);
-    temp3 = StorPortReadRegisterUlong(pAE, (PULONG)(pBar + 0x8028));
-    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8030), temp1);
-    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8038), temp2);
-    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8040), temp1);
-    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8048), temp2);
-    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8050), temp1);
-    RegisterWriteAddrU64(pAE, (PULONG)(pBar + 0x8058), temp2);
-
-    NVMeStallExecution(pAE,10000);
-}
-#endif /* CHATHAM2 */

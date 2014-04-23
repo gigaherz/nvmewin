@@ -1043,14 +1043,6 @@ typedef struct _ADMIN_IDENTIFY_POWER_STATE_DESCRIPTOR
 } ADMIN_IDENTIFY_POWER_STATE_DESCRIPTOR,
   *PADMIN_IDENTIFY_POWER_STATE_DESCRIPTOR;
 
-#if defined(CHATHAM2)
-typedef struct _IEEE_MAC
-{
-    ULONG IEEE:24;
-    ULONG MAC:8;
-} IEEE_MAC;
-#endif
-
 /* Identify Controller Data Structure, Section 5.11, Figure 65 */
 typedef struct _ADMIN_IDENTIFY_CONTROLLER
 {
@@ -1105,12 +1097,8 @@ typedef struct _ADMIN_IDENTIFY_CONTROLLER
      * http://standards.ieee.org/develop/regauth/oui/public.html.
      * and Multi-Interface Capabilities
     */
-#if defined(CHATHAM2)
-    IEEE_MAC IEEMAC;
-#else
     UCHAR IEEE[3];
     UCHAR MIC;
-#endif
     /*
      *  Maximum Data Transfer Size(MDTS)
     */

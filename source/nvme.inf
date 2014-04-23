@@ -7,7 +7,7 @@ Signature="$Windows NT$"
 Provider=%COMM%
 ClassGUID={4D36E97B-E325-11CE-BFC1-08002BE10318}
 Class=SCSIAdapter
-DriverVer=04/09/2014, 1.2.1014.24
+DriverVer=04/23/2014, 1.2.1014.25
 ;CatalogFile.NTAMD64 = nvme64.cat
 ;CatalogFile.NTx86   = nvme86.cat
 
@@ -58,8 +58,6 @@ HKR, Parameters\Device, AdQEntries,         %REG_DWORD%, 0x00000080 ; admin queu
 HKR, Parameters\Device, IoQEntries,         %REG_DWORD%, 0x00000400 ; IO queue size (num of entries)
 HKR, Parameters\Device, IntCoalescingTime,      %REG_DWORD%, 0x00000000 ; time threshold for INT coalescing
 HKR, Parameters\Device, IntCoalescingEntries,       %REG_DWORD%, 0x00000000 ; # of entries threadhold for INT coalescing
-;HKR, Parameters\Device, HardCodeIdData,       %REG_DWORD%, 0x00000001 ; for chatham2, whether idetnify data is hardcoded
-;HKR, Parameters\Device, NsSize,       %REG_DWORD%, 0x3FFFDF0 ; for chatham2, ability to specufy a lower namespace size
 
 ;******************************************************************************
 ;*
@@ -118,7 +116,6 @@ AddService = nvme, 0x00000002 , nvme_Service_Inst, nvme_EventLog_Inst
 ;
 diskId1 = "NVMe Installation Disk"
 CommNvme.DeviceDesc = "Community NVMe 1.0e Storport Miniport"
-;COMMNvmeChat.DeviceDesc = "Intel Chatham Prototype Hardware"
 COMM = "Community"
 
 ;

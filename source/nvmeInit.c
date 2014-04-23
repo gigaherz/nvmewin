@@ -169,14 +169,10 @@ PVOID NVMeAllocateMem(
             StorPortDebugPrint(ERROR,
                                "NVMeAllocateMem: Failure from node=%d, sts=0x%x\n",
                                Node, Status);
-            /* If the memory allocation was from nodes other than Node 0,
-		     * we will try to allocate from Node 0, which not
-		     * expected to fail, If Node 0 memory also fails
-		     * we don't have choice we will bail out and driver
-		     * will not load
+            /* If the memory allocation fails for the requested node,
+		     * we will try to allocate from any available node, which is not
+		     * expected to fail.
 		     */
-            if (Node == 0)
-                return NULL;
 
             /* Give it another try from any nodes that can grant the request */
             Status = 0;
@@ -601,23 +597,10 @@ BOOLEAN NVMeEnumMsiMessages (
 
     /* Is the request message number satisfied? */
     if (pRMT->NumMsiMsgGranted > 1) {
-        if (pRMT->NumMsiMsgGranted == pRMT->NumActiveCores) {
-            /*
-             * Seems they are all granted, need to determine it's MSI or MSI-X.
-             * If the addresses for the first 2 messaes are == then its MSI
-             */
-            pMMT = pRMT->pMsiMsgTbl + 1;
-            if (pMMT->Addr.QuadPart == pRMT->pMsiMsgTbl->Addr.QuadPart) {
-                pRMT->InterruptType = INT_TYPE_MSI;
-            }
-        } else {
-            /*
-             * Should not happen, Windows either grants all requested messages
-             * or just one. In this case, only the first message is used and
-             * shared as well
-             */
+        /* If the addresses for the first 2 messages are == then its MSI */
+        pMMT = pRMT->pMsiMsgTbl + 1;
+        if (pMMT->Addr.QuadPart == pRMT->pMsiMsgTbl->Addr.QuadPart) {
             pRMT->InterruptType = INT_TYPE_MSI;
-            pRMT->pMsiMsgTbl->Shared = TRUE;
         }
     } else if (pRMT->NumMsiMsgGranted == 1) {
         /* Only one message granted and it is shared */
@@ -647,21 +630,14 @@ VOID NVMeMsiMapCores(
 )
 {
     UCHAR Core;
+    UCHAR MaxCore;
     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
     PMSI_MESSAGE_TBL pMMT = NULL;
     PCORE_TBL pCT = NULL;
 
-    /*
-     * If not enough messages granted, the interrupt type is set as
-     * INT_TYPE_MSI and all cores share it.
-     */
-    if (pRMT->NumMsiMsgGranted < pRMT->NumActiveCores) {
-        /*
-         * Resource Mapping table is already completed in NVMeEnumMsiMessages,
-         * simply return here.
-         */
-        return;
-    }
+    MaxCore = (UCHAR)min(pAE->QueueInfo.NumSubIoQAllocFromAdapter,
+                         pAE->QueueInfo.NumCplIoQAllocFromAdapter);
+
 
     /*
      * Loop thru the cores and assign granted messages in sequential manner.
@@ -669,22 +645,24 @@ VOID NVMeMsiMapCores(
      * associated completion queue for just-completed entries
      */
     for (Core = 0; Core < pRMT->NumActiveCores; Core++) {
-        /* Handle one Core Table at a time */
-        pCT = pRMT->pCoreTbl + Core;
+        if (Core < MaxCore) {
+            /* Handle one Core Table at a time */
+            pCT = pRMT->pCoreTbl + Core;
 
-        /* Mark down the initial associated message + SQ/CQ for this core */
-        pCT->MsiMsgID = pCT->CplQueue - 1;
+            /* Mark down the initial associated message + SQ/CQ for this core */
+            pCT->MsiMsgID = pCT->CplQueue - 1;
 
-        /*
-         * On the other side, mark down the associated core number
-         * for the message as well
-         */
-        pMMT = pRMT->pMsiMsgTbl + pCT->MsiMsgID;
-        pMMT->CplQueueNum = pCT->CplQueue;
+            /*
+             * On the other side, mark down the associated core number
+             * for the message as well
+             */
+            pMMT = pRMT->pMsiMsgTbl + pCT->MsiMsgID;
+            pMMT->CplQueueNum = pCT->CplQueue;
 
-        StorPortDebugPrint(INFO,
-                           "NVMeMsiMapCores: Core(0x%x)Msg#(0x%x)\n",
-                           Core, pCT->MsiMsgID);
+            StorPortDebugPrint(INFO,
+                               "NVMeMsiMapCores: Core(0x%x)Msg#(0x%x)\n",
+                               Core, pCT->MsiMsgID);        
+        }
     }
 } /* NVMeMsiMapCores */
 
@@ -998,11 +976,15 @@ ULONG NVMeInitSubQueue(
     ULONG_PTR PtrTemp = 0;
     USHORT Entries;
     ULONG dbIndex = 0;
+    UCHAR maxCore;
 
     NVMe_CONTROLLER_CAPABILITIES CAP = {0};
 
+    maxCore = (UCHAR)min(pAE->QueueInfo.NumCplIoQAllocFromAdapter,
+                        pAE->QueueInfo.NumSubIoQAllocFromAdapter);
+
     /* Ensure the QueueID is valid via the number of active cores in system */
-    if (QueueID > pRMT->NumActiveCores)
+    if (QueueID > maxCore)
         return ( STOR_STATUS_INVALID_PARAMETER );
 
 #if (NTDDI_VERSION > NTDDI_WIN7) && defined(_WIN64)
@@ -1115,11 +1097,15 @@ ULONG NVMeInitCplQueue(
     USHORT Entries;
     ULONG queueSize = 0;
     ULONG dbIndex = 0;
+    UCHAR maxCore;
 
     NVMe_CONTROLLER_CAPABILITIES CAP = {0};
 
+    maxCore = (UCHAR)min(pAE->QueueInfo.NumCplIoQAllocFromAdapter,
+                        pAE->QueueInfo.NumSubIoQAllocFromAdapter);
+
     /* Ensure the QueueID is valid via the number of active cores in system */
-    if (QueueID > pRMT->NumActiveCores)
+    if (QueueID > maxCore)
         return ( STOR_STATUS_INVALID_PARAMETER );
 
 #if (NTDDI_VERSION > NTDDI_WIN7) && defined(_WIN64)
@@ -1160,14 +1146,14 @@ ULONG NVMeInitCplQueue(
      *   we are in crashdump.
      */
     if ((QueueID == 0)                                   ||
-        (pQI->NumCplIoQAllocated < pRMT->NumActiveCores) ||
+        (pQI->NumCplIoQAllocated < maxCore) ||
         (pAE->ntldrDump == TRUE)) {
         pCQI->Shared = TRUE;
     }
 
     if (pRMT->InterruptType == INT_TYPE_MSI ||
         pRMT->InterruptType == INT_TYPE_MSIX) {
-        if (pRMT->NumMsiMsgGranted < pRMT->NumActiveCores) {
+        if (pRMT->NumMsiMsgGranted < maxCore) {
             /* All completion queueus share the single message */
             pCQI->MsiMsgID = 0;
         } else {
@@ -1497,6 +1483,27 @@ VOID NVMeSetFeaturesCompletion(
             pQI->NumSubIoQAllocFromAdapter = GET_WORD_0(pCplEntry->DW0) + 1;
             pQI->NumCplIoQAllocFromAdapter = GET_WORD_1(pCplEntry->DW0) + 1;
 
+            /*
+             * Ensure there is the minimum number of queues between the MSI
+             * granted, number of cores, and number allocated from the adapter.
+             */
+            if (pAE->ntldrDump == FALSE) {
+                pQI->NumSubIoQAllocFromAdapter = min(pQI->NumSubIoQAllocFromAdapter,
+                                                     pAE->ResMapTbl.NumActiveCores);
+
+                pQI->NumCplIoQAllocFromAdapter = min(pQI->NumCplIoQAllocFromAdapter,
+                                                     pAE->ResMapTbl.NumActiveCores);
+
+                /* Only take the min if the number of MSI is greater than 0 */
+                if (pAE->ResMapTbl.NumMsiMsgGranted > 0) {
+                    pQI->NumSubIoQAllocFromAdapter = min(pQI->NumSubIoQAllocFromAdapter,
+                                                         pAE->ResMapTbl.NumMsiMsgGranted);
+
+                    pQI->NumCplIoQAllocFromAdapter = min(pQI->NumCplIoQAllocFromAdapter,
+                                                         pAE->ResMapTbl.NumMsiMsgGranted);
+                }
+            } 
+
             /* Reset the counter and keep tihs state to set more features */
             pAE->DriverState.StateChkCount = 0;
             pAE->DriverState.NextDriverState = NVMeWaitOnSetFeatures;
@@ -1717,73 +1724,6 @@ BOOLEAN NVMeDeleteQueueCallback(
     return TRUE;
 }
 
-#if defined(CHATHAM2)
-void HardCodeChatham2Data(
-    PNVME_DEVICE_EXTENSION pAE,
-    ULONG structId
-)
-{
-
-    if (pAE->InitInfo.HardCodeIdData == 0) {
-        return;
-    }
-
-    if (structId == 0) {
-        memset(&pAE->controllerIdentifyData,
-            0,
-            sizeof(ADMIN_IDENTIFY_CONTROLLER));
-        pAE->controllerIdentifyData.VID = 0x8086;
-        pAE->controllerIdentifyData.SSVID = 0x2011;
-#define CHATHAM2_SERIAL "2012"
-        StorPortCopyMemory((UINT8*)&pAE->controllerIdentifyData.SN[0],
-                      CHATHAM2_SERIAL,
-                      strlen(CHATHAM2_SERIAL));
-#define CHATHAM2_MN "CHATHAM2"
-        StorPortCopyMemory((UINT8*)&pAE->controllerIdentifyData.MN[0],
-                      CHATHAM2_MN,
-                      strlen(CHATHAM2_MN));
-#define CHATHAM2_FR "0"
-        StorPortCopyMemory((UINT8*)&pAE->controllerIdentifyData.FR[0],
-                      CHATHAM2_FR,
-                      strlen(CHATHAM2_FR));
-        pAE->controllerIdentifyData.SSVID = 0x2011;
-        pAE->controllerIdentifyData.NN = 1;
-        pAE->controllerIdentifyData.MDTS = 5;
-        pAE->controllerIdentifyData.RAB = 8;
-        pAE->controllerIdentifyData.UAERL = 3;
-        pAE->controllerIdentifyData.IEEMAC.IEEE = 0x423;
-        pAE->controllerIdentifyData.LPA.SupportsSMART_HealthInformationLogPage = 1;
-        pAE->controllerIdentifyData.SQES.RequiredSubmissionQueueEntrySize = 6;
-        pAE->controllerIdentifyData.SQES.MaximumSubmissionQueueEntrySize = 6;
-        pAE->controllerIdentifyData.CQES.RequiredCompletionQueueEntrySize = 4;
-        pAE->controllerIdentifyData.CQES.MaximumCompletionQueueEntrySize = 4;
-
-    } else {
-        PADMIN_IDENTIFY_NAMESPACE pIdenNS = NULL;
-        ADMIN_IDENTIFY_FORMAT_DATA fData = {0};
-
-        pIdenNS = &pAE->pLunExtensionTable[0]->identifyData;
-        memset(pIdenNS,
-            0,
-            sizeof(ADMIN_IDENTIFY_NAMESPACE));
-
-        if ((pAE->InitInfo.NsSize > 0) &&
-            (pAE->InitInfo.NsSize <= ChathamNlb)) {
-            pIdenNS->NSZE = pAE->InitInfo.NsSize;
-            pIdenNS->NCAP = pAE->InitInfo.NsSize;
-            pIdenNS->NUSE = pAE->InitInfo.NsSize;
-        } else {
-            pIdenNS->NSZE = ChathamNlb;
-            pIdenNS->NCAP = ChathamNlb;
-            pIdenNS->NUSE = ChathamNlb;
-        }
-
-        fData.LBADS = 9;
-        pIdenNS->LBAFx[0] = fData;
-    }
-}
-#endif
-
 /*******************************************************************************
  * NVMeInitCallback
  *
@@ -1828,9 +1768,7 @@ BOOLEAN NVMeInitCallback(
                 /* Reset the counter and set next state */
                 pAE->DriverState.NextDriverState = NVMeWaitOnIdentifyNS;
                 pAE->DriverState.StateChkCount = 0;
-#if defined(CHATHAM2)
-                HardCodeChatham2Data(pAE,0);
-#else
+
                 /* copy over the data from the init state machine temp buffer */
                 StorPortCopyMemory(&pAE->controllerIdentifyData,
                                 pAE->DriverState.pDataBuffer,
@@ -1862,7 +1800,6 @@ BOOLEAN NVMeInitCallback(
                                             (1 << START_MAX_XFER_MISMATCH_FAILURE));
                     }
                 }
-#endif
             } else {
                 NVMeDriverFatalError(pAE,
                                     (1 << START_STATE_IDENTIFY_CTRL_FAILURE));
@@ -1887,14 +1824,10 @@ BOOLEAN NVMeInitCallback(
                 /* Move to the next state to set features for this namespace */
                 pAE->DriverState.NextDriverState = NVMeWaitOnSetFeatures;
 
-#if defined(CHATHAM2)
-                HardCodeChatham2Data(pAE,1);
-#else
                 /* copy over the data from the init state machine temp buffer */
                 StorPortCopyMemory(&pLunExt->identifyData,
                                 pAE->DriverState.pDataBuffer,
                                 sizeof(ADMIN_IDENTIFY_NAMESPACE));
-#endif
                 /* Mark down the Namespace ID */
                 pLunExt->namespaceId =
                     pAE->DriverState.IdentifyNamespaceFetched;
@@ -1934,10 +1867,6 @@ BOOLEAN NVMeInitCallback(
              * fail the state machine
              */
 
-#if defined(CHATHAM2)
-                pCplEntry->DW3.SF.SC = 0;
-                pCplEntry->DW3.SF.SCT = 0;
-#endif
             if ((pCplEntry->DW3.SF.SC == 0) &&
                 (pCplEntry->DW3.SF.SCT == 0)) {
                 pQI->NumCplIoQCreated++;
@@ -1986,13 +1915,16 @@ BOOLEAN NVMeInitCallback(
             if ((pCplEntry->DW3.SF.SC == 0) &&
                 (pCplEntry->DW3.SF.SCT == 0)) {
                 PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
+                ULONG totalQueuePairs;
 
                 /*
                  * see if we still have more core/vector mapping to learn
                  * or if we're ready to redo the queues based on the new map
                  */
                 pAE->DriverState.StateChkCount = 0;
-                if (pAE->LearningCores < pRMT->NumActiveCores) {
+                totalQueuePairs = min(pAE->QueueInfo.NumCplIoQAllocFromAdapter,
+                                      pAE->QueueInfo.NumSubIoQAllocFromAdapter);
+                if (pAE->LearningCores < totalQueuePairs) {
                     pAE->DriverState.NextDriverState = NVMeWaitOnLearnMapping;
                 } else {
 #if DBG
@@ -2014,6 +1946,11 @@ BOOLEAN NVMeInitCallback(
 
                     pAE->LearningComplete = TRUE;
 #endif
+                    /*
+                     * Learning is done. Any additional cores not assigned to
+                     * queues will be assigned in the start complete state.
+                     */
+
                     pAE->DriverState.NextDriverState = NVMeWaitOnReSetupQueues;
                 }
             } else {
@@ -2232,10 +2169,15 @@ BOOLEAN NVMeAllocQueueFromAdapter(
         pSetFeaturesCDW11->NCQR = 0;
         pSetFeaturesCDW11->NSQR = 0;
     } else {
-        /* Try to allocate same number of queue pairs as active cores */
-        pSetFeaturesCDW11->NCQR = pAE->ResMapTbl.NumActiveCores - 1;
-        pSetFeaturesCDW11->NSQR = pAE->ResMapTbl.NumActiveCores - 1;
-    }
+        /*
+         * Number of cores, number of MSI granted, and number of queues
+         * supported by the controller are the variables to determine how
+         * many queues to create.
+         */
+        pSetFeaturesCDW11->NCQR = min(pAE->ResMapTbl.NumActiveCores,
+                                      pAE->ResMapTbl.NumMsiMsgGranted) - 1;
+        pSetFeaturesCDW11->NSQR = min(pAE->ResMapTbl.NumActiveCores,
+                                      pAE->ResMapTbl.NumMsiMsgGranted) - 1;    }
 
     /* Now issue the command via Admin Doorbell register */
     return ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN, FALSE);
@@ -2474,12 +2416,6 @@ BOOLEAN NVMeCreateCplQueue(
         pCreateCplCDW11->IEN = 1;
         pCreateCplCDW11->IV = pCQI->MsiMsgID;
 
-#ifdef CHATHAM2
-        if (pAE->ResMapTbl.NumMsiMsgGranted == 0) {
-            pCreateCplCDW11->IEN = 0;
-            pCreateCplCDW11->IV = 0;
-        }
-#endif
         /* Now issue the command via Admin Doorbell register */
         return ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_ADMIN, FALSE);
     }
@@ -3432,86 +3368,6 @@ BOOLEAN NVMeFetchRegistry(
                    sizeof(ULONG));
         }
     }
-
-#if defined(CHATHAM2)
-    {
-        UCHAR PARM1[] = "Parm1";
-        UCHAR PARM2[] = "Parm2";
-        UCHAR PARM3[] = "Parm3";
-        UCHAR PARM4[] = "Parm4";
-        UCHAR NS[] = "NsSize";
-        UCHAR ID[] = "HardCodeIdData";
-
-        memset(pBuf, 0, sizeof(ULONG));
-        if (NVMeReadRegistry(pAE,
-                             NS,
-                             Type,
-                             pBuf,
-                             (ULONG*)&Len ) == TRUE ) {
-                StorPortCopyMemory((PVOID)(&pAE->InitInfo.NsSize),
-                       (PVOID)pBuf,
-                       sizeof(ULONGLONG));
-        }
-
-        memset(pBuf, 0, sizeof(ULONG));
-        if (NVMeReadRegistry(pAE,
-                             ID,
-                             Type,
-                             pBuf,
-                             (ULONG*)&Len ) == TRUE ) {
-                StorPortCopyMemory((PVOID)(&pAE->InitInfo.HardCodeIdData),
-                       (PVOID)pBuf,
-                       sizeof(ULONGLONG));
-        }
-
-        memset(pBuf, 0, sizeof(ULONG));
-        if (NVMeReadRegistry(pAE,
-                             PARM1,
-                             Type,
-                             pBuf,
-                             (ULONG*)&Len ) == TRUE ) {
-                StorPortCopyMemory((PVOID)(&pAE->InitInfo.Parm1),
-                       (PVOID)pBuf,
-                       sizeof(ULONGLONG));
-        }
-
-        memset(pBuf, 0, sizeof(ULONG));
-        if (NVMeReadRegistry(pAE,
-                             PARM2,
-                             Type,
-                             pBuf,
-                             (ULONG*)&Len ) == TRUE ) {
-                StorPortCopyMemory((PVOID)(&pAE->InitInfo.Parm2),
-                       (PVOID)pBuf,
-                       sizeof(ULONGLONG));
-        }
-
-        memset(pBuf, 0, sizeof(ULONG));
-        if (NVMeReadRegistry(pAE,
-                             PARM3,
-                             Type,
-                             pBuf,
-                             (ULONG*)&Len ) == TRUE ) {
-                StorPortCopyMemory((PVOID)(&pAE->InitInfo.Parm3),
-                       (PVOID)pBuf,
-                       sizeof(ULONGLONG));
-        }
-
-        memset(pBuf, 0, sizeof(ULONG));
-        if (NVMeReadRegistry(pAE,
-                             PARM4,
-                             Type,
-                             pBuf,
-                             (ULONG*)&Len ) == TRUE ) {
-                StorPortCopyMemory((PVOID)(&pAE->InitInfo.Parm4),
-                       (PVOID)pBuf,
-                       sizeof(ULONGLONG));
-        }
-
-    }
-
-#endif
-
 
     /* Release the buffer before returning */
     StorPortFreeRegistryBuffer( pAE, pBuf );

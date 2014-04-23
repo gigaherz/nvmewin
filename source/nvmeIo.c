@@ -134,14 +134,12 @@ ULONG NVMeIssueCmd(
 #endif /* DBG */
 
     /*
-     * This is for polling mode, Chatham2 doesn't supoort legacy INT
-     * and windows doesn't support MSI/X during install so we poll
-     * leveraging much of the INTX path in the driver.  This code can
-     * potentially be updated to implement polling for othre situations
-     * as well keeping in mind that its implmented to account for the
-     * fact that Chatham doesn't have line INTs
+     * This is for polling mode.  This code can
+     * potentially be updated to implement polling for other situations
+     * as well keeping in mind that it was originally implmented to account 
+     * for prototype Chatham device that didn't have line INTs
      */
-#if defined(CHATHAM2) || defined(ALL_POLLING)
+#if defined(ALL_POLLING)
     if (pAE->ResMapTbl.NumMsiMsgGranted == 0) {
         ULONG entryStatus = STOR_STATUS_UNSUCCESSFUL;
         PNVMe_COMPLETION_QUEUE_ENTRY pCplEntry = NULL;
@@ -189,7 +187,7 @@ ULONG NVMeIssueCmd(
              }
         }
     }
-#endif /* CHATHAM2 */
+#endif /* POLLING */
 
     return STOR_STATUS_SUCCESS;
 } /* NVMeIssueCmd */

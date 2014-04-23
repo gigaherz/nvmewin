@@ -53,12 +53,6 @@
 #define DUMB_DRIVER_SZ (1024 * 64)
 #endif
 
-#if defined(CHATHAM2)
-ULONGLONG ChathamSize; /* Size of device in bytes */
-ULONG ChathamNlb; /* Number of logical blocks */
-#define CHATHAM_NR_QUEUES (8)
-#endif
-
 #define STOR_ALL_REQUESTS (0xFFFFFFFF)
 
 #define MAX_PCI_BAR                 8
@@ -496,15 +490,6 @@ typedef struct _INIT_INFO
     /* Aggregation entries per interrupt vector */
     ULONG IntCoalescingEntry;
 
-#if defined(CHATHAM2)
-    ULONGLONG Parm1;
-    ULONGLONG Parm2;
-    ULONGLONG Parm3;
-    ULONGLONG Parm4;
-    ULONG NsSize;
-    ULONG HardCodeIdData;
-#endif
-
 } INIT_INFO, *PINIT_INFO;
 
 /*******************************************************************************
@@ -797,6 +782,7 @@ typedef struct _CORE_TBL
     /* The associated queue pair info for this core */
     USHORT SubQueue;
     USHORT CplQueue;
+    ULONG  Learned;
 } CORE_TBL, *PCORE_TBL;
 
 /*******************************************************************************
@@ -1011,10 +997,6 @@ typedef struct _nvme_device_extension
     BOOLEAN                     LearningComplete;
 #endif
 
-#if defined(CHATHAM2)
-    PVOID                       pChathamRegs;
-    ULONG                       FwVer;
-#endif
 
 } NVME_DEVICE_EXTENSION, *PNVME_DEVICE_EXTENSION;
 
@@ -1586,10 +1568,5 @@ VOID IO_StorPortNotification(
 #define IO_StorPortNotification StorPortNotification
 #endif
 
-#if defined(CHATHAM2)
-VOID NVMeChathamSetup(
-    PNVME_DEVICE_EXTENSION pAE
-);
-#endif
 
 #endif /* __NVME_STD_H__ */
