@@ -1816,32 +1816,47 @@ IoCompletionDpcRoutine(
                         ULONG coreNum = 0;
                         PPROC_GROUP_TBL pPGT = NULL;
 
-                        StorPortGetCurrentProcessorNumber((PVOID)pAE,
-                                 &procNum);
-                        /* Figure out the final core number with group number */
-                        pPGT = pRMT->pProcGroupTbl + procNum.Group;
-                        coreNum = (ULONG)(procNum.Number + pPGT->BaseProcessor);
-                        /* reference appropriate tables */
-                        pCT = pRMT->pCoreTbl + coreNum;
                         pMMT = pRMT->pMsiMsgTbl + MsgID;
-                        pCQI = pQI->pCplQueueInfo + pCT->CplQueue;
 
-                        /* update based on current completion info */
-                        pCT->MsiMsgID = (USHORT)MsgID;
-                        pCT->Learned = TRUE;
-                        pCQI->MsiMsgID = pCT->MsiMsgID;
-                        pMMT->CplQueueNum = pCT->CplQueue;
+                        /* 
+                        *  Make sure we don't overwrite this MSI vector 
+                        *  if it's already been learned 
+                        */
+                        
+                        if (pMMT->Learned == FALSE) {
+                            pMMT->Learned = TRUE;
 
-                        /* increment our learning counter */
-                        pAE->LearningCores++;
-                        StorPortDebugPrint(INFO, 
-                            "Mapped#%d: core(%d) to MSI ID(%d)\n",
-                                pAE->LearningCores, coreNum, MsgID);
-                        /* free the read buffer for learning IO */
-                        ASSERT(pSrbExtension->pDataBuffer);
-                        if (NULL != pSrbExtension->pDataBuffer) {
-                            StorPortFreePool((PVOID)pAE, pSrbExtension->pDataBuffer);
-                            pSrbExtension->pDataBuffer = NULL;
+                            StorPortGetCurrentProcessorNumber((PVOID)pAE,
+                                     &procNum);
+
+                            /* Figure out the final core number with group number */
+                            pPGT = pRMT->pProcGroupTbl + procNum.Group;
+                            coreNum = (ULONG)(procNum.Number + pPGT->BaseProcessor);
+                            
+                            /* reference appropriate tables */
+                            pCT = pRMT->pCoreTbl + coreNum;
+
+                            /* assign new queue pair */
+                            pCT->CplQueue = pCT->SubQueue = (USHORT)pQI->NumIoQMapped++;
+                            pCQI = pQI->pCplQueueInfo + pCT->CplQueue;
+
+                            /* update based on current completion info */
+                            pCT->MsiMsgID = (USHORT)MsgID;
+                            pCT->Learned = TRUE;
+                            pCQI->MsiMsgID = pCT->MsiMsgID;
+                            pMMT->CplQueueNum = pCT->CplQueue;
+
+                            /* increment our learning counter */
+                            pAE->LearningCores++;
+                            StorPortDebugPrint(INFO, 
+                                "Mapped#%d: core(%d) to MSI ID(%d)\n",
+                                    pAE->LearningCores, coreNum, MsgID);
+                            /* free the read buffer for learning IO */
+                            ASSERT(pSrbExtension->pDataBuffer);
+                            if (NULL != pSrbExtension->pDataBuffer) {
+                                StorPortFreePool((PVOID)pAE, pSrbExtension->pDataBuffer);
+                                pSrbExtension->pDataBuffer = NULL;
+                            }
                         }
                     }
 

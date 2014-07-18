@@ -164,6 +164,7 @@ BOOLEAN NVMeRunningStartAttempt(
     pAE->QueueInfo.NumCplIoQCreated = 0;
     pAE->QueueInfo.NumSubIoQAllocFromAdapter = 0;
     pAE->QueueInfo.NumCplIoQAllocFromAdapter = 0;
+    pAE->QueueInfo.NumIoQMapped = 1;  /* mapping starts at 1, since 0 is admin queue */
 
     /* Zero out the LUN extensions and reset the counter as well */
     memset((PVOID)pAE->pLunExtensionTable[0],
@@ -234,9 +235,6 @@ VOID NVMeRunning(
 )
 {
 
-    ULONG coreCount = 0;
-    USHORT queueIndex = 1; 
-
     /*
      * Go to the next state in the Start State Machine
      * transitions are managed either in the state handler or
@@ -277,31 +275,8 @@ VOID NVMeRunning(
         case NVMeStartComplete:
             pAE->RecoveryAttemptPossible = TRUE;
 
-            for (coreCount = 0;
-                 coreCount < pAE->ResMapTbl.NumActiveCores;
-                 coreCount++) {
-
-                PCORE_TBL pCT = NULL;
-                /*
-                 * Assign queues to cores by Round Robin. Only the
-                 * submission side needs to be set because the
-                 * completion for IO submitted on these cores will
-                 * go to the core associated with that queue during
-                 * learning mode. For gaps in MSI vectors mapped to
-                 * cores, do this for all unlearned cores.
-                 */
-                pCT = pAE->ResMapTbl.pCoreTbl + coreCount;
-
-                if (!pCT->Learned) {
-                    pCT->SubQueue = queueIndex;
-
-                    queueIndex = (queueIndex < (USHORT)pAE->LearningCores) ?
-                                    ++queueIndex : 1;
-                }
-            }
-
             /* Indicate learning is done with no unassigned cores */
-            pAE->LearningCores = coreCount;
+            pAE->LearningCores = pAE->ResMapTbl.NumActiveCores;
 
             if (pAE->DriverState.resetDriven) {
                 /* If this was at the request of the host, complete that Srb */
@@ -708,8 +683,7 @@ VOID NVMeRunningWaitOnLearnMapping(
              * but effectively disable learning as one of the above
              * conditions makes it impossible or unneccessary to learn
             */
-            pAE->LearningCores = min(pAE->QueueInfo.NumCplIoQAllocFromAdapter,
-                                     pAE->QueueInfo.NumSubIoQAllocFromAdapter);
+            pAE->LearningCores = pRMT->NumActiveCores;
             pAE->DriverState.NextDriverState = NVMeStartComplete;
             __leave;
         }
@@ -732,8 +706,7 @@ VOID NVMeRunningWaitOnLearnMapping(
              * strange that we can't get a small amount of memory
              * so go ahead and complete the init state machine now
             */
-            pAE->LearningCores = min(pAE->QueueInfo.NumCplIoQAllocFromAdapter,
-                                     pAE->QueueInfo.NumSubIoQAllocFromAdapter);
+            pAE->LearningCores = pRMT->NumActiveCores;
             pAE->DriverState.NextDriverState = NVMeStartComplete;
             __leave;
         }
@@ -745,8 +718,7 @@ VOID NVMeRunningWaitOnLearnMapping(
         /* Now issue the command via IO queue */
         if (FALSE == ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_IO, FALSE)) {
             error = TRUE;
-            pAE->LearningCores = min(pAE->QueueInfo.NumCplIoQAllocFromAdapter,
-                                     pAE->QueueInfo.NumSubIoQAllocFromAdapter);
+            pAE->LearningCores = pRMT->NumActiveCores;
             pAE->DriverState.NextDriverState = NVMeStartComplete;
             __leave;
         }

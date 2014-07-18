@@ -719,6 +719,7 @@ typedef struct _QUEUE_INFO
      */
     ULONG NumSubIoQCreated; /* Number of submission queues created */
     ULONG NumCplIoQCreated; /* Number of completion queues created */
+    ULONG NumIoQMapped; /* Number of queues mapped to MSI vectors */
 
     /* Array of Submission Queue Info structures */
     PSUB_QUEUE_INFO pSubQueueInfo; /* Pointing to the first allocated element */
@@ -808,6 +809,8 @@ typedef struct _MSI_MESSAGE_TBL
     /* Indicates MSI message is shared by multiple completion queues */
     BOOLEAN Shared;
 
+    /* Indicates if this MSI vector has been mapped already */
+    ULONG Learned;
 } MSI_MESSAGE_TBL, *PMSI_MESSAGE_TBL;
 
 /*******************************************************************************

@@ -1024,7 +1024,7 @@ ULONG NVMeInitSubQueue(
      *   we are in crashdump.
      */
     if ((QueueID == 0)                                   ||
-        (pQI->NumSubIoQAllocated < pRMT->NumActiveCores) ||
+        (pQI->NumSubIoQAllocated < maxCore) ||
         (pAE->ntldrDump == TRUE)) {
         pSQI->Shared = TRUE;
     }
@@ -1161,8 +1161,13 @@ ULONG NVMeInitCplQueue(
              * When enough queues allocated, the mappings between cores and
              * queues are set up as core#(n) <=> queue#(n+1)
              * Only need to deal with IO queues since Admin queue uses message#0
+             *
+             * When we come through here the first time during boot/init, the msg
+             * ID needs to be initialized.  After learning is complete, the msg ID
+             * will point to the proper MSI vector.  Learning is complete when
+             * LearningCores == NumActiveCores.
              */
-            if (QueueID != 0) {
+            if ((QueueID != 0) && (pAE->LearningCores < pRMT->NumActiveCores)) {
                 pCT = pRMT->pCoreTbl + QueueID - 1;
                 pCQI->MsiMsgID = pCT->MsiMsgID;
             }
@@ -1927,31 +1932,52 @@ BOOLEAN NVMeInitCallback(
                 if (pAE->LearningCores < totalQueuePairs) {
                     pAE->DriverState.NextDriverState = NVMeWaitOnLearnMapping;
                 } else {
-#if DBG
                     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
                     PCORE_TBL pCT = NULL;
                     ULONG CoreIndex;
 
-                    /* print out the learned table */
-                    StorPortDebugPrint(INFO, "Learning Complete.  Core Table:\n");
-                    for (CoreIndex = 0; CoreIndex < pRMT->NumActiveCores; CoreIndex++) {
-                        pCT = pRMT->pCoreTbl + CoreIndex;
-                        StorPortDebugPrint(INFO,
-                                           "\tCore(0x%x) MSID(0x%x) QueuePair(0x%x)\n",
-                                           CoreIndex,
-                                           pCT->MsiMsgID,
-                                           pCT->SubQueue);
+                    pAE->LearningCores = pAE->ResMapTbl.NumActiveCores;
 
-                    }
-
-                    pAE->LearningComplete = TRUE;
-#endif
                     /*
-                     * Learning is done. Any additional cores not assigned to
-                     * queues will be assigned in the start complete state.
+                     * At this point, learning mode should have mapped all 
+                     * queues and MSI vectors.  The counter will be equal to 
+                     * number of MSI and also equal to the number of total
+                     * queue pairs.  If not, it means there was a problem during
+                     * learning mode, so we should go to shared mode.
                      */
+                    if ((pAE->QueueInfo.NumIoQMapped < pRMT->NumMsiMsgGranted) ||
+                        (pAE->QueueInfo.NumIoQMapped < (totalQueuePairs+1))) {
+                            ASSERT(FALSE);
+                            StorPortDebugPrint(INFO, 
+                                "Number of IO Queues mapped not equal to MSI, going to Shared mode\n");
 
-                    pAE->DriverState.NextDriverState = NVMeWaitOnReSetupQueues;
+                            pRMT->pMsiMsgTbl->Shared = TRUE;
+                            pAE->DriverState.NextDriverState = NVMeStartComplete;
+
+                    } else {
+
+#if DBG
+                        /* print out the learned table */
+                        StorPortDebugPrint(INFO, "Learning Complete.  Core Table:\n");
+                        for (CoreIndex = 0; CoreIndex < pRMT->NumActiveCores; CoreIndex++) {
+                            pCT = pRMT->pCoreTbl + CoreIndex;
+                            StorPortDebugPrint(INFO,
+                                               "\tCore(0x%x) MSID(0x%x) QueuePair(0x%x)\n",
+                                               CoreIndex,
+                                               pCT->MsiMsgID,
+                                               pCT->SubQueue);
+
+                        }
+
+                        pAE->LearningComplete = TRUE;
+#endif
+                        /*
+                         * Learning is done. Any additional cores not assigned to
+                         * queues will be assigned in the start complete state.
+                         */
+
+                        pAE->DriverState.NextDriverState = NVMeWaitOnReSetupQueues;
+                    }
                 }
             } else {
                 PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
