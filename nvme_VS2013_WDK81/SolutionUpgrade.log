@@ -1,0 +1,15 @@
+UpgradeFiles:	Verbose  : 05/09/2014 12:58:18
+        UpgradeProjects:	Information  : Upgrading project file: C:\Users\tfree7157270\Documents\Visual Studio 2013\Projects\OpenSource100\releases\revision_1.3\nvme\nvme\nvme.vcxproj
+        BackupFile     :	Information  : Backup created at: C:\Users\tfree7157270\Documents\Visual Studio 2013\Projects\OpenSource100\releases\revision_1.3\nvme\nvme\nvme.vcxproj.backup
+        UpgradeProjects:	Information  : Upgrading project C:\Users\tfree7157270\Documents\Visual Studio 2013\Projects\OpenSource100\releases\revision_1.3\nvme\nvme\nvme.vcxproj.
+        UpgradeProjects:	Information  : Upgrade complete for project C:\Users\tfree7157270\Documents\Visual Studio 2013\Projects\OpenSource100\releases\revision_1.3\nvme\nvme\nvme.vcxproj.
+        UpgradeProjects:	Information  : Upgrading project file: C:\Users\tfree7157270\Documents\Visual Studio 2013\Projects\OpenSource100\releases\revision_1.3\nvme\nvme Package\nvme Package.vcxproj
+        BackupFile     :	Information  : Backup created at: C:\Users\tfree7157270\Documents\Visual Studio 2013\Projects\OpenSource100\releases\revision_1.3\nvme\nvme Package\nvme Package.vcxproj.backup
+        UpgradeProjects:	Information  : Upgrading project C:\Users\tfree7157270\Documents\Visual Studio 2013\Projects\OpenSource100\releases\revision_1.3\nvme\nvme Package\nvme Package.vcxproj.
+        RemovePackageDirProperties:	Verbose  : Removed the PackageDir property: $(OutDir)nvme Package.
+        UpgradeProjects           :	Information  : Upgrade complete for project C:\Users\tfree7157270\Documents\Visual Studio 2013\Projects\OpenSource100\releases\revision_1.3\nvme\nvme Package\nvme Package.vcxproj.
+UpgradeProjects                   :	Information  : All projects upgraded
+        UpgradeSolutions          :	Information  : Upgrading solution file: C:\Users\tfree7157270\Documents\Visual Studio 2013\Projects\OpenSource100\releases\revision_1.3\nvme\nvme.sln
+        BackupFile                :	Information  : Backup created at: C:\Users\tfree7157270\Documents\Visual Studio 2013\Projects\OpenSource100\releases\revision_1.3\nvme\nvme.sln.backup
+        UpgradeSolutions          :	Information  : Solution C:\Users\tfree7157270\Documents\Visual Studio 2013\Projects\OpenSource100\releases\revision_1.3\nvme\nvme.sln upgraded.
+UpgradeSolutions                  :	Information  : Solutions upgraded
