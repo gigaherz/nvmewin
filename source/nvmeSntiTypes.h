@@ -82,6 +82,7 @@
 #define REPORT_LUNS_SELECT_REPORT_OFFSET              2
 #define READ_CAP_16_CDB_ALLOC_LENGTH_OFFSET          10
 #define READ_CAP_16_SERVICE_ACTION_OFFSET             1
+#define READ_CAP_16_SERVICE_ACTION_IN              0x10
 #define REQUEST_SENSE_CDB_ALLOC_LENGTH_OFFSET         4
 #define REQUEST_SENSE_DESCRIPTOR_FORMAT_OFFSET        1
 #define REQUEST_SENSE_DESCRIPTOR_FORMAT_MASK       0x01
@@ -226,7 +227,7 @@
 #define BYTE_4                                        4
 #define BYTE_5                                        5
 #define BYTE_6                                        6
-
+#define BYTE_7                                        7
 /* 
   Set the following to 1 if your NVMe controller returns zeros when LBAs 
   that have been previously UNMAPED (via DSM dealloc) are read
@@ -260,6 +261,7 @@
 #define INQ_DEVICE_IDENTIFICATION_PAGE             0x83
 #define INQ_EXTENDED_INQUIRY_DATA_PAGE             0x86
 #define INQ_SERIAL_NUMBER_LENGTH                   0x14
+#define INQ_SN_SUB_LENGTH                             4
 /* For Win 8 UNMAP support, there are additional VPD pages
    we provide such as logical block provisioning
 */ 
@@ -280,6 +282,7 @@
 #define WR_SAME_16_TO_UNMAP_NOT_SUPPORTED             0
 #define WR_SAME_10_TO_UNMAP_NOT_SUPPORTED             0
 #define ANC_NOT_SUPPORTED                             0
+#define UNMAP_ANCHAR_BIT                              1
 #define NO_PROVISIONING_GROUP_DESCRIPTOR              0
 #define UNREMOVABLE_MEDIA                             0
 #define VERSION_SPC_4                              0x06

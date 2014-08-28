@@ -147,7 +147,11 @@ ULONG DriverEntry(
     hwInitData.MultipleRequestPerLu = TRUE;
     hwInitData.HwDmaStarted = NULL;
     hwInitData.HwAdapterState = NULL;
-
+	
+#if (NTDDI_VERSION > NTDDI_WIN7)
+	/* Specify support/use SRB Extension for Windows 8 and up */
+    hwInitData.SrbTypeFlags = SRB_TYPE_FLAG_STORAGE_REQUEST_BLOCK;
+#endif
     /* Set required extension sizes. */
     hwInitData.DeviceExtensionSize = sizeof(NVME_DEVICE_EXTENSION);
     hwInitData.SrbExtensionSize = sizeof(NVME_SRB_EXTENSION);
@@ -948,10 +952,11 @@ BOOLEAN NVMeBuildIo(
     ULONG PnPAction = 0;
     UCHAR Function = Srb->Function;
     SNTI_TRANSLATION_STATUS sntiStatus;
+    BOOLEAN ioctlStatus = FALSE;
 
 #if (NTDDI_VERSION > NTDDI_WIN7)
     if (Function == SRB_FUNCTION_STORAGE_REQUEST_BLOCK) {
-        Function = ((PSTORAGE_REQUEST_BLOCK)Srb)->SrbFunction;
+        Function = (UCHAR)((PSTORAGE_REQUEST_BLOCK)Srb)->SrbFunction;
     }
 #endif
     /*
@@ -965,7 +970,13 @@ BOOLEAN NVMeBuildIo(
          (pAdapterExtension->pLunExtensionTable[Lun]->slotStatus != ONLINE) && 
          (SRB_FUNCTION_IO_CONTROL != Function))) {
         Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
-        IO_StorPortNotification(RequestComplete, AdapterExtension, Srb);
+        IO_StorPortNotification(RequestComplete, 
+                                AdapterExtension, 
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                (PSCSI_REQUEST_BLOCK)Srb);
+#endif
         return FALSE;
     }
 
@@ -973,7 +984,13 @@ BOOLEAN NVMeBuildIo(
     if ((Function != SRB_FUNCTION_POWER) && (pAdapterExtension != NULL) &&
          (pAdapterExtension->DriverState.NextDriverState != NVMeStartComplete)) {
         Srb->SrbStatus = SRB_STATUS_BUSY;
-        IO_StorPortNotification(RequestComplete, AdapterExtension, Srb);
+        IO_StorPortNotification(RequestComplete, 
+                                AdapterExtension, 
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                (PSCSI_REQUEST_BLOCK)Srb);
+#endif
         return FALSE;
     }
 
@@ -981,7 +998,11 @@ BOOLEAN NVMeBuildIo(
         case SRB_FUNCTION_ABORT_COMMAND:
             NVMeInitSrbExtension((PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(Srb),
                                  pAdapterExtension,
-                                 Srb);
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                 (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                 (PSCSI_REQUEST_BLOCK)Srb);
+#endif
             return TRUE;
 
         case SRB_FUNCTION_RESET_DEVICE:
@@ -999,7 +1020,13 @@ BOOLEAN NVMeBuildIo(
             StorPortDebugPrint(INFO, "BuildIo: SRB_FUNCTION_FLUSH\n");
 
             Srb->SrbStatus = SRB_STATUS_SUCCESS;
-            IO_StorPortNotification(RequestComplete, AdapterExtension, Srb);
+            IO_StorPortNotification(RequestComplete, 
+                                    AdapterExtension, 
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                    (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                    (PSCSI_REQUEST_BLOCK)Srb);
+#endif
             return FALSE;
         break;
         case SRB_FUNCTION_SHUTDOWN:
@@ -1014,12 +1041,19 @@ BOOLEAN NVMeBuildIo(
              */
             pAdapterExtension->ShutdownInProgress = TRUE;
             Srb->SrbStatus = SRB_STATUS_SUCCESS;
-            IO_StorPortNotification(RequestComplete, AdapterExtension, Srb);
+            IO_StorPortNotification(RequestComplete, 
+                                    AdapterExtension, 
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                    (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                    (PSCSI_REQUEST_BLOCK)Srb);
+#endif
             return FALSE;
         break;
         case SRB_FUNCTION_PNP:
 #if (NTDDI_VERSION > NTDDI_WIN7)
-            pSrbExPnp = (PSRBEX_DATA_PNP)SrbGetSrbExDataByType(Srb, SrbExDataTypePnP);
+            pSrbExPnp = (PSRBEX_DATA_PNP)SrbGetSrbExDataByType(
+                (PSTORAGE_REQUEST_BLOCK)Srb, SrbExDataTypePnP);
             if (pSrbExPnp != NULL) {
                 SrbPnPFlags = pSrbExPnp->SrbPnPFlags;
                 PnPAction = pSrbExPnp->PnPAction;
@@ -1083,10 +1117,22 @@ BOOLEAN NVMeBuildIo(
                 }
 
                 Srb->SrbStatus = SRB_STATUS_SUCCESS;
-                IO_StorPortNotification(RequestComplete, AdapterExtension, Srb);
+                IO_StorPortNotification(RequestComplete, 
+                                        AdapterExtension, 
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                        (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                        (PSCSI_REQUEST_BLOCK)Srb);
+#endif
             } else {
                 Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
-                IO_StorPortNotification(RequestComplete, AdapterExtension, Srb);
+                IO_StorPortNotification(RequestComplete, 
+                                        AdapterExtension, 
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                        (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                        (PSCSI_REQUEST_BLOCK)Srb);
+#endif
             }
 
             /* Return FALSE so that StartIo is not called */
@@ -1096,20 +1142,42 @@ BOOLEAN NVMeBuildIo(
             /* Confirm SRB data buffer is valid first */
             if (GET_DATA_BUFFER(Srb) == NULL) {
                 Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
-                IO_StorPortNotification(RequestComplete, AdapterExtension, Srb);
+                IO_StorPortNotification(RequestComplete, 
+                                        AdapterExtension, 
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                        (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                        (PSCSI_REQUEST_BLOCK)Srb);
+#endif
                 return FALSE;
             }
             NVMeInitSrbExtension((PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(Srb),
                                  pAdapterExtension,
-                                 Srb);
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                 (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                 (PSCSI_REQUEST_BLOCK)Srb);
+#endif
 
             /*
              * Call NVMeProcessIoctl to process the request. When it returns
              * IOCTL_COMPLETED, indicates complete the request back to Storport
              * right away.
              */
-            if (NVMeProcessIoctl(pAdapterExtension, Srb) == IOCTL_COMPLETED) {
-                IO_StorPortNotification(RequestComplete, AdapterExtension, Srb);
+            ioctlStatus = NVMeProcessIoctl(pAdapterExtension,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                          (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                          (PSCSI_REQUEST_BLOCK)Srb);
+#endif
+            if (ioctlStatus == IOCTL_COMPLETED) {
+                IO_StorPortNotification(RequestComplete, 
+                                        AdapterExtension, 
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                        (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                        (PSCSI_REQUEST_BLOCK)Srb);
+#endif
                 return FALSE;
             }
 
@@ -1128,11 +1196,19 @@ BOOLEAN NVMeBuildIo(
              */
             NVMeInitSrbExtension((PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(Srb),
                                  pAdapterExtension,
-                                 Srb);
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                 (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                 (PSCSI_REQUEST_BLOCK)Srb);
+#endif
 
             /* Perform SCSI to NVMe translation */
             sntiStatus = SntiTranslateCommand(pAdapterExtension,
-                                              Srb);
+#if (NTDDI_VERSION > NTDDI_WIN7) 
+                                             (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                             (PSCSI_REQUEST_BLOCK)Srb);
+#endif
 
             switch (sntiStatus) {
                 case SNTI_COMMAND_COMPLETED:
@@ -1141,9 +1217,13 @@ BOOLEAN NVMeBuildIo(
                      * I/O is not called for this command. The appropriate SRB
                      * status is already set.
                      */
-                    IO_StorPortNotification(RequestComplete,
-                                            AdapterExtension,
-                                            Srb);
+                    IO_StorPortNotification(RequestComplete, 
+                                            AdapterExtension, 
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                            (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                            (PSCSI_REQUEST_BLOCK)Srb);
+#endif
 
                     return FALSE;
                 break;
@@ -1166,9 +1246,13 @@ BOOLEAN NVMeBuildIo(
                      * not call start I/O for this command. The appropriate SRB
                      * status and SCSI sense data will aleady be set.
                      */
-                    IO_StorPortNotification(RequestComplete,
-                                            AdapterExtension,
-                                            Srb);
+                    IO_StorPortNotification(RequestComplete, 
+                                            AdapterExtension, 
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                            (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                            (PSCSI_REQUEST_BLOCK)Srb);
+#endif
 
                     return FALSE;
                 break;
@@ -1176,14 +1260,19 @@ BOOLEAN NVMeBuildIo(
                     /* Invalid status returned */
 #if (NTDDI_VERSION > NTDDI_WIN7)
                     scsiStatus = SCSISTAT_CHECK_CONDITION;
-                    SrbSetScsiData(Srb, NULL, NULL, &scsiStatus, NULL, NULL);
+                    SrbSetScsiData((PSTORAGE_REQUEST_BLOCK)Srb, NULL, NULL,
+                                   &scsiStatus, NULL, NULL);
 #else
                     Srb->ScsiStatus = SCSISTAT_CHECK_CONDITION;
 #endif
                     Srb->SrbStatus = SRB_STATUS_ERROR;
-                    IO_StorPortNotification(RequestComplete,
-                                            AdapterExtension,
-                                            Srb);
+                    IO_StorPortNotification(RequestComplete, 
+                                            AdapterExtension, 
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                            (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                            (PSCSI_REQUEST_BLOCK)Srb);
+#endif
 
                     return FALSE;
                 break;
@@ -1194,7 +1283,13 @@ BOOLEAN NVMeBuildIo(
             StorPortDebugPrint(INFO, "BuildIo: SRB_FUNCTION_WMI\n");
 
             Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
-            IO_StorPortNotification(RequestComplete, AdapterExtension, Srb);
+            IO_StorPortNotification(RequestComplete, 
+                                    AdapterExtension, 
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                    (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                    (PSCSI_REQUEST_BLOCK)Srb);
+#endif
             return FALSE;
         break;
         default:
@@ -1207,7 +1302,13 @@ BOOLEAN NVMeBuildIo(
                                Function);
 
             Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
-            IO_StorPortNotification(RequestComplete, AdapterExtension, Srb);
+            IO_StorPortNotification(RequestComplete, 
+                                    AdapterExtension, 
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                    (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                    (PSCSI_REQUEST_BLOCK)Srb);
+#endif
             return FALSE;
         break;
     } /* end switch */
@@ -1267,7 +1368,12 @@ BOOLEAN NVMeIssueAbortCmd(
  ******************************************************************************/
 BOOLEAN NVMeProcessAbortCmd(
     PNVME_DEVICE_EXTENSION pAE,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSTORAGE_REQUEST_BLOCK pSrb
+#else
     PSCSI_REQUEST_BLOCK pSrb
+#endif
+
 )
 {
     PQUEUE_INFO pQI = &pAE->QueueInfo;
@@ -1378,7 +1484,7 @@ BOOLEAN NVMeStartIo(
     ULONG Wait = 5;
 #if (NTDDI_VERSION > NTDDI_WIN7)
     if (Function == SRB_FUNCTION_STORAGE_REQUEST_BLOCK)
-        Function = ((PSTORAGE_REQUEST_BLOCK)Srb)->SrbFunction;
+        Function = (UCHAR)((PSTORAGE_REQUEST_BLOCK)Srb)->SrbFunction;
 #endif
     /*
      * Initialize Variables. Determine if the request requires controller
@@ -1388,17 +1494,34 @@ BOOLEAN NVMeStartIo(
     if ((Function != SRB_FUNCTION_POWER) &&
         (pAdapterExtension->DriverState.NextDriverState != NVMeStartComplete)) {
         Srb->SrbStatus = SRB_STATUS_NO_DEVICE;
-        IO_StorPortNotification(RequestComplete, pAdapterExtension, Srb);
+        IO_StorPortNotification(RequestComplete, 
+                                pAdapterExtension, 
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                (PSCSI_REQUEST_BLOCK)Srb);
+#endif
         return TRUE;
     }
     pSrbExtension = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(Srb);
 
     switch (Function) {
         case SRB_FUNCTION_ABORT_COMMAND:
-            status = NVMeProcessAbortCmd(pAdapterExtension, Srb);
+            status = NVMeProcessAbortCmd(pAdapterExtension,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                        (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                        (PSCSI_REQUEST_BLOCK)Srb);
+#endif
             if (status == FALSE) {
                 Srb->SrbStatus = SRB_STATUS_ERROR;
-                IO_StorPortNotification(RequestComplete, AdapterExtension, Srb);
+                IO_StorPortNotification(RequestComplete, 
+                                        pAdapterExtension, 
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                        (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                        (PSCSI_REQUEST_BLOCK)Srb);
+#endif
             }
             break;
 
@@ -1419,14 +1542,30 @@ BOOLEAN NVMeStartIo(
                 TraceEvent(SRB_RESET_BUS, 0,0,0,Srb->Lun, 0,0);
             }
 #endif
-            status = NVMeResetController(pAdapterExtension, Srb);
+            status = NVMeResetController(pAdapterExtension,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                        (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                        (PSCSI_REQUEST_BLOCK)Srb);
+#endif
             if (status == FALSE) {
                 Srb->SrbStatus = SRB_STATUS_ERROR;
-                IO_StorPortNotification(RequestComplete, AdapterExtension, Srb);
+                IO_StorPortNotification(RequestComplete, 
+                                        pAdapterExtension, 
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                        (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                        (PSCSI_REQUEST_BLOCK)Srb);
+#endif
             }
         break;
         case SRB_FUNCTION_IO_CONTROL:
-            NVMeStartIoProcessIoctl(pAdapterExtension, Srb);
+            NVMeStartIoProcessIoctl(pAdapterExtension,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                    (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                    (PSCSI_REQUEST_BLOCK)Srb);
+#endif
         break;
         case SRB_FUNCTION_EXECUTE_SCSI:
             if (pSrbExtension->forAdminQueue == TRUE) {
@@ -1450,7 +1589,13 @@ BOOLEAN NVMeStartIo(
             StorPortDebugPrint(INFO, "NVMeStartIo: SRB_FUNCTION_POWER");
             Srb->SrbStatus = SRB_STATUS_SUCCESS;
             status = NVMePowerControl(pAdapterExtension, Srb);
-            IO_StorPortNotification(RequestComplete, pAdapterExtension, Srb);
+            IO_StorPortNotification(RequestComplete, 
+                                    pAdapterExtension, 
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                    (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                    (PSCSI_REQUEST_BLOCK)Srb);
+#endif
         break;
         default:
             /*
@@ -1458,7 +1603,13 @@ BOOLEAN NVMeStartIo(
              * SRB_STATUS_INVALID_REQUEST
              */
             Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
-            IO_StorPortNotification(RequestComplete, pAdapterExtension, Srb);
+            IO_StorPortNotification(RequestComplete, 
+                                    pAdapterExtension, 
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                    (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                    (PSCSI_REQUEST_BLOCK)Srb);
+#endif
         break;
     }
 
@@ -1819,9 +1970,9 @@ IoCompletionDpcRoutine(
                         pMMT = pRMT->pMsiMsgTbl + MsgID;
 
                         /* 
-                        *  Make sure we don't overwrite this MSI vector 
-                        *  if it's already been learned 
-                        */
+                         *  Make sure we don't overwrite this MSI vector 
+                         *  if it's already been learned 
+                         */
                         
                         if (pMMT->Learned == FALSE) {
                             pMMT->Learned = TRUE;
@@ -1861,11 +2012,11 @@ IoCompletionDpcRoutine(
                     }
 
                     if (pSrbExtension->pNvmeCompletionRoutine == NULL) {
-                    /*
+                        /*
                          * if no comp reoutine, call only if we had a valid
                          * status translation, otherwise let it timeout if
                          * if was host based
-                     */
+                         */
                         callStorportNotification =
                             SntiMapCompletionStatus(pSrbExtension);
                     } else {
@@ -1880,7 +2031,7 @@ IoCompletionDpcRoutine(
                             && (pSrbExtension->pSrb != NULL);
                     }
                     /*
-                     *This is to signal to NVMeIsrMsix()and ultimately ProcessIo() in dump mode
+                     * This is to signal to NVMeIsrMsix()and ultimately ProcessIo() in dump mode
                      *  that the Admin request has been completed.
                      */
                     if (pAE->ntldrDump && pSystemArgument1 != NULL) {
@@ -4569,8 +4720,17 @@ VOID IO_StorPortNotification(
     if ((pSrb->SrbStatus != SRB_STATUS_SUCCESS) ||
 #if (NTDDI_VERSION > NTDDI_WIN7)
         (scsiStatus != SCSISTAT_GOOD)) {
-        /* DbgBreakPoint(); */
-        StorPortDebugPrint(INFO,
+        if (pCdb == NULL) {
+            StorPortDebugPrint(INFO, "FYI: CDB pointer is NULL!\n");
+            StorPortDebugPrint(INFO,
+                           "FYI: SRB status 0x%x scsi 0x%x for BTL %d %d %d\n",
+                           pSrb->SrbStatus,
+                           scsiStatus,
+                           SrbGetPathId((void*)pSrb),
+                           SrbGetTargetId((void*)pSrb),
+                           SrbGetLun((void*)pSrb));
+        } else {
+            StorPortDebugPrint(INFO,
                            "FYI: SRB status 0x%x scsi 0x%x for CDB 0x%x BTL %d %d %d\n",
                            pSrb->SrbStatus,
                            scsiStatus,
@@ -4578,6 +4738,7 @@ VOID IO_StorPortNotification(
                            SrbGetPathId((void*)pSrb),
                            SrbGetTargetId((void*)pSrb),
                            SrbGetLun((void*)pSrb));
+        }
 #else
         (pSrb->ScsiStatus != SCSISTAT_GOOD)){
 

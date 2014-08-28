@@ -7,7 +7,7 @@ Signature="$Windows NT$"
 Provider=%COMM%
 ClassGUID={4D36E97B-E325-11CE-BFC1-08002BE10318}
 Class=SCSIAdapter
-DriverVer=07/18/2014, 1.3.1014.01
+DriverVer=08/28/2014, 1.3.1014.02
 ;CatalogFile.NTAMD64 = nvme64.cat
 ;CatalogFile.NTx86   = nvme86.cat
 
@@ -41,7 +41,7 @@ HKR,,TypesSupported,%REG_DWORD%,7
 
 [pnpsafe_pci_addreg]
 HKR, "Parameters\PnpInterface", "5", %REG_DWORD%, 0x00000001
-HKR, "Parameters", "BusType", %REG_DWORD%, 0x00000001
+HKR, "Parameters", "BusType", %REG_DWORD%, 0x00000011
 
 [msi_addreg]
 HKR, Interrupt Management, 0x00000010

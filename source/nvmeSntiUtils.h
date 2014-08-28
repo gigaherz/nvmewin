@@ -140,10 +140,20 @@
                  cdb_field_p.protect      = GET_PROTECT(cdb, index1);   \
                  cdb_field_p.group_number = GET_GROUP_NUMBER(cdb, index2);
 
+#define BYTE_SWAP_WORD(word) (((word & 0xFF)       << 8) |          \
+                              ((word & 0xFF00)     >> 8))
+
 #define BYTE_SWAP_DWORD(dword) (((dword & 0xFF)       << 24) |          \
                                 ((dword & 0xFF00)     << 8)  |          \
                                 ((dword & 0xFF0000)   >> 8)  |          \
                                 ((dword & 0xFF000000) >> 24))
 
-
+#define BYTE_SWAP_KEY(key) (((key & 0xFF)               << 56) |  \
+                            ((key & 0xFF00)             << 40) |  \
+                            ((key & 0xFF0000)           << 24) |  \
+                            ((key & 0xFF000000)          << 8) |  \
+                            ((key & 0xFF00000000)        >> 8) |  \
+                            ((key & 0xFF0000000000)     >> 24) |  \
+                            ((key & 0xFF000000000000)   >> 40) |  \
+                            ((key & 0xFF00000000000000) >> 56))
 #endif /* __SNTI_UTILS_H__ */

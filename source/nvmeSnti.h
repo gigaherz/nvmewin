@@ -684,7 +684,7 @@ VOID SntiTranslateSupportedLogPages(
 #endif
 );
 
-VOID SntiTranslateInformationalExceptions(
+VOID SntiTranslateTemperature(
 #if (NTDDI_VERSION > NTDDI_WIN7)
     PSTORAGE_REQUEST_BLOCK pSrb
 #else
@@ -692,7 +692,7 @@ VOID SntiTranslateInformationalExceptions(
 #endif
 );
 
-VOID SntiTranslateTemperature(
+VOID SntiTranslateInfoExceptions(
 #if (NTDDI_VERSION > NTDDI_WIN7)
     PSTORAGE_REQUEST_BLOCK pSrb
 #else

@@ -350,6 +350,21 @@ SNTI_TRANSLATION_STATUS SntiTranslateCommand(
     BOOLEAN supportsVwc = pAdapterExtension->controllerIdentifyData.VWC.Present;
 #if (NTDDI_VERSION > NTDDI_WIN7)
     UCHAR scsiStatus = SCSISTAT_GOOD;
+
+    /* Sanity Check if SrbGetCdb returns NULL pointer. */ 
+    PCDB pCdb = SrbGetCdb((void*)pSrb);
+    if (pCdb == NULL) {
+        StorPortDebugPrint(INFO, "SNTI: CDB pointer is NULL!\n");
+
+        SntiSetScsiSenseData(pSrb,
+                             SCSISTAT_CHECK_CONDITION,
+                             SCSI_SENSE_ILLEGAL_REQUEST,
+                             SCSI_ADSENSE_INVALID_CDB,
+                             SCSI_ADSENSE_NO_SENSE);
+
+        pSrb->SrbStatus |= SRB_STATUS_INVALID_REQUEST;
+        returnStatus = SNTI_UNSUPPORTED_SCSI_REQUEST;
+    }
 #endif
     /* DEBUG ONLY - Turn off for main I/O */
 #if DBG
@@ -419,14 +434,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateCommand(
             }
         break;
         case SCSIOP_LOG_SENSE:
-            SntiSetScsiSenseData(pSrb,
-                                 SCSISTAT_CHECK_CONDITION,
-                                 SCSI_SENSE_ILLEGAL_REQUEST,
-                                 SCSI_ADSENSE_ILLEGAL_COMMAND,
-                                 SCSI_ADSENSE_NO_SENSE);
-            pSrb->SrbStatus |= SRB_STATUS_INVALID_REQUEST;
-            SET_DATA_LENGTH(pSrb, 0);
-            returnStatus = SNTI_UNSUPPORTED_SCSI_REQUEST;
+            returnStatus = SntiTranslateLogSense(pSrb);
         break;
         case SCSIOP_MODE_SELECT:
         case SCSIOP_MODE_SELECT10:
@@ -742,6 +750,9 @@ VOID SntiTranslateUnitSerialPage(
     PNVME_DEVICE_EXTENSION pDevExt = NULL;
     PVPD_SERIAL_NUMBER_PAGE pSerialNumberPage = NULL;
     UINT16 allocLength;
+    UCHAR SN[INQ_SERIAL_NUMBER_LENGTH] = {0};
+    PUCHAR srcSN = NULL, dstSN = SN;
+    UCHAR i;
 
     pDevExt = ((PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb))->pNvmeDevExt;
     pSerialNumberPage = (PVPD_SERIAL_NUMBER_PAGE)GET_DATA_BUFFER(pSrb);
@@ -753,10 +764,26 @@ VOID SntiTranslateUnitSerialPage(
     pSerialNumberPage->PageCode            = VPD_SERIAL_NUMBER;
     pSerialNumberPage->Reserved            = INQ_RESERVED;
     pSerialNumberPage->PageLength          = INQ_SERIAL_NUMBER_LENGTH;
-
+    /*
+     * The serial number should be in the following format in order to pass
+     * SCSI Compliance test:
+     * "0123_4567_89AB_CDEF." for a number like "0123456789ABCDEF".
+     */
+    srcSN = pDevExt->controllerIdentifyData.SN;
+	for (i = 1; i < INQ_SERIAL_NUMBER_LENGTH / INQ_SN_SUB_LENGTH; i++) {
+		StorPortCopyMemory(dstSN, srcSN, INQ_SN_SUB_LENGTH);
+		srcSN += INQ_SN_SUB_LENGTH;
+		dstSN += INQ_SN_SUB_LENGTH;
+        *dstSN = '_';
+        dstSN++;
+    }
+    // Replace the last '_' with '.'
+    dstSN--;
+    *dstSN = '.';
+    
     StorPortCopyMemory(pSerialNumberPage->SerialNumber,
-           pDevExt->controllerIdentifyData.SN,
-           INQ_SERIAL_NUMBER_LENGTH);
+                       SN,
+                       INQ_SERIAL_NUMBER_LENGTH);
 
     SET_DATA_LENGTH(pSrb,
         min(allocLength, (FIELD_OFFSET(VPD_SERIAL_NUMBER_PAGE, SerialNumber) +
@@ -789,37 +816,37 @@ VOID SntiTranslateDeviceIdentificationPage(
 #endif
 )
 {
-    PVPD_IDENTIFICATION_PAGE pDeviceIdPage = NULL;
-    PVPD_IDENTIFICATION_DESCRIPTOR pIdDescriptor = NULL;
-    UINT16 allocLength = 0;
+	PVPD_IDENTIFICATION_PAGE pDeviceIdPage = NULL;
+	PVPD_IDENTIFICATION_DESCRIPTOR pIdDescriptor = NULL;
+	UINT16 allocLength = 0;
 
-    INT64 Eui64Id = EUI64_ID;
-    pDeviceIdPage = (PVPD_IDENTIFICATION_PAGE)GET_DATA_BUFFER(pSrb);
-    allocLength = GET_INQ_ALLOC_LENGTH(pSrb);
+	INT64 Eui64Id = EUI64_ID;
+	pDeviceIdPage = (PVPD_IDENTIFICATION_PAGE)GET_DATA_BUFFER(pSrb);
+	allocLength = GET_INQ_ALLOC_LENGTH(pSrb);
 
-    memset(pDeviceIdPage, 0, allocLength);
-    pDeviceIdPage->DeviceType          = DIRECT_ACCESS_DEVICE;
-    pDeviceIdPage->DeviceTypeQualifier = DEVICE_CONNECTED;
-    pDeviceIdPage->PageCode            = VPD_DEVICE_IDENTIFIERS;
-    pDeviceIdPage->PageLength          = VPD_ID_DESCRIPTOR_LENGTH +
-                                         EUI64_16_ID_SZ;
+	memset(pDeviceIdPage, 0, allocLength);
+	pDeviceIdPage->DeviceType = DIRECT_ACCESS_DEVICE;
+	pDeviceIdPage->DeviceTypeQualifier = DEVICE_CONNECTED;
+	pDeviceIdPage->PageCode = VPD_DEVICE_IDENTIFIERS;
+	pDeviceIdPage->PageLength = VPD_ID_DESCRIPTOR_LENGTH +
+		EUI64_16_ID_SZ;
 
-    pIdDescriptor = (PVPD_IDENTIFICATION_DESCRIPTOR)pDeviceIdPage->Descriptors;
+	pIdDescriptor = (PVPD_IDENTIFICATION_DESCRIPTOR)pDeviceIdPage->Descriptors;
 
-    memset(pIdDescriptor, 0, sizeof(VPD_IDENTIFICATION_DESCRIPTOR));
-    pIdDescriptor->CodeSet             = VpdCodeSetBinary;
+	memset(pIdDescriptor, 0, sizeof(VPD_IDENTIFICATION_DESCRIPTOR));
+	pIdDescriptor->CodeSet = VpdCodeSetBinary;
 
-    pIdDescriptor->Reserved            = INQ_DEV_ID_DESCRIPTOR_RESERVED;
-    pIdDescriptor->Association         = VpdAssocDevice;
-    pIdDescriptor->IdentifierType      = VpdIdentifierTypeEUI64;
-    pIdDescriptor->IdentifierLength    = EUI64_16_ID_SZ;
+	pIdDescriptor->Reserved = INQ_DEV_ID_DESCRIPTOR_RESERVED;
+	pIdDescriptor->Association = VpdAssocDevice;
+	pIdDescriptor->IdentifierType = VpdIdentifierTypeEUI64;
+	pIdDescriptor->IdentifierLength = EUI64_16_ID_SZ;
 
-    StorPortCopyMemory(pIdDescriptor->Identifier + INQ_DEV_ID_DESCRIPTOR_OFFSET,
-           &Eui64Id,
-           INQ_DEV_ID_DESCRIPTOR_OFFSET);
+	StorPortCopyMemory(pIdDescriptor->Identifier + INQ_DEV_ID_DESCRIPTOR_OFFSET,
+		&Eui64Id,
+		INQ_DEV_ID_DESCRIPTOR_OFFSET);
 
-    SET_DATA_LENGTH(pSrb,
-        min(DEVICE_IDENTIFICATION_PAGE_SIZE, allocLength));
+	SET_DATA_LENGTH(pSrb,
+		min(DEVICE_IDENTIFICATION_PAGE_SIZE, allocLength));
 } /* SntiTranslateDeviceIdentificationPage */
 
 #if (NTDDI_VERSION > NTDDI_WIN7)
@@ -1150,7 +1177,7 @@ VOID SntiTranslateStandardInquiryPage(
     PNVME_DEVICE_EXTENSION pDevExt = NULL;
     PINQUIRYDATA pStdInquiry = NULL;
     UINT16 allocLength;
-
+ 
     pStdInquiry = (PINQUIRYDATA)GET_DATA_BUFFER(pSrb);
     allocLength = GET_INQ_ALLOC_LENGTH(pSrb);
 
@@ -1184,8 +1211,15 @@ VOID SntiTranslateStandardInquiryPage(
      *    - SPT:     Type of protection LUN supports
      */
 
-    /* Vendor Id */
-    StorPortCopyMemory(pStdInquiry->VendorId, "NVMe    ", VENDOR_ID_SIZE);
+    /* T10 Vendor Id */
+    pStdInquiry->VendorId[BYTE_0] = 'N';
+	pStdInquiry->VendorId[BYTE_1] = 'V';
+	pStdInquiry->VendorId[BYTE_2] = 'M';
+	pStdInquiry->VendorId[BYTE_3] = 'e';
+	pStdInquiry->VendorId[BYTE_4] = ' ';
+	pStdInquiry->VendorId[BYTE_5] = ' ';
+	pStdInquiry->VendorId[BYTE_6] = ' ';
+	pStdInquiry->VendorId[BYTE_7] = ' ';
 
     /* Product Id - First 16 bytes of model # in Controller Identify structure*/
     StorPortCopyMemory(pStdInquiry->ProductId,
@@ -1286,20 +1320,23 @@ SNTI_TRANSLATION_STATUS SntiTranslateReportLuns(
         /* The first LUN Id will always be 0 per the SAM spec */
         for (lunExtIdx = 0; lunExtIdx < MAX_NAMESPACES; lunExtIdx++) {
              pLunExt = pDevExt->pLunExtensionTable[lunExtIdx];
+             // Don't report the LUN with zero size in capacity
+             if (pLunExt->identifyData.NSZE == 0)
+                continue;
              if ((pLunExt->slotStatus == ONLINE) &&
                  (++numberOfLunsFound <= numberOfLuns)) {
-            /*
-             * Set the LUN Id and then increment to the next LUN location in
-             * the paramter data (8 byte offset each time),
-             * lunNum position is at byte 1 in the resp buffer per SAM3
-             */
-            #define SINGLE_LVL_LUN_OFFSET (1)
-                    pResponseBuffer[lunIdDataOffset + SINGLE_LVL_LUN_OFFSET] = lunExtIdx;
-            lunIdDataOffset += LUN_ENTRY_SIZE;
-            if (lunIdDataOffset >= allocLength) {
-                break;
+                 /*
+                  * Set the LUN Id and then increment to the next LUN location in
+                  * the paramter data (8 byte offset each time),
+                  * lunNum position is at byte 1 in the resp buffer per SAM3
+                  */
+                 #define SINGLE_LVL_LUN_OFFSET (1)
+                     pResponseBuffer[lunIdDataOffset + SINGLE_LVL_LUN_OFFSET] = lunExtIdx;
+                 lunIdDataOffset += LUN_ENTRY_SIZE;
+                 if (lunIdDataOffset >= allocLength) {
+                     break;
+                 }
             }
-        }
         }
 
         /* Set the LUN LIST LENGTH field */
@@ -1554,12 +1591,36 @@ SNTI_TRANSLATION_STATUS SntiTranslateReadCapacity16(
     UINT8  dps;
     UINT8  protectionType;
     UINT8  protectionEnabled;
-
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PUCHAR pCdb = (PUCHAR)SrbGetCdb((void*)pSrb);
+#else
+	PUCHAR pCdb = (PUCHAR)pSrb->Cdb;
+#endif
     /* Default to a successful command completion */
     SNTI_TRANSLATION_STATUS returnStatus = SNTI_COMMAND_COMPLETED;
 
     pReadCapacityData = (PREAD_CAPACITY_16_DATA)pResponseBuffer;
     allocLength = GET_READ_CAP_16_ALLOC_LENGTH(pSrb);
+
+    /*
+     * Need to ensure the Service Action is programmed as SERVICE ACTION IN first.
+     * If not, return CHECK CONDITION, illegal request invalid field in CDB, etc.
+     */
+    pCdb++;
+    if (*pCdb != READ_CAP_16_SERVICE_ACTION_IN) {
+        StorPortDebugPrint(INFO, 
+                           "SNTI: ReadCapacity16, UNSUPPORTED Service Action - 0x%02x\n",
+                           *pCdb);
+
+        SntiSetScsiSenseData(pSrb,
+                             SCSISTAT_CHECK_CONDITION,
+                             SCSI_SENSE_ILLEGAL_REQUEST,
+                             SCSI_ADSENSE_INVALID_CDB,
+                             SCSI_ADSENSE_NO_SENSE);
+        pSrb->SrbStatus |= SRB_STATUS_INVALID_REQUEST;
+        SET_DATA_LENGTH(pSrb, 0);
+        return SNTI_UNSUPPORTED_SCSI_REQUEST;
+    }
 
     flbas = pLunExt->identifyData.FLBAS.SupportedCombination;
     lbaLengthPower = pLunExt->identifyData.LBAFx[flbas].LBADS;
@@ -1669,8 +1730,9 @@ SNTI_TRANSLATION_STATUS SntiTranslateWrite(
         SntiMapInternalErrorStatus(pSrb, status);
         return SNTI_FAILURE_CHECK_RESPONSE_DATA;
     }
-
-    pSgl = StorPortGetScatterGatherList(pSrbExt->pNvmeDevExt, pSrb);
+    
+    pSgl = StorPortGetScatterGatherList(pSrbExt->pNvmeDevExt, 
+                                       (PSCSI_REQUEST_BLOCK)pSrb);
     ASSERT(pSgl != NULL);
 
     /* Set the SRB status to pending - controller communication necessary */
@@ -1679,7 +1741,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateWrite(
     /* Set the completion routine - no translation necessary on completion */
     pSrbExt->pNvmeCompletionRoutine = NULL;
 
-    /* Set up common portions of the NVMe WRITE command */
+    /* Zero out the command entry */
     memset(&pSrbExt->nvmeSqeUnit, 0, sizeof(NVMe_COMMAND));
 
     pSrbExt->nvmeSqeUnit.CDW0.OPC = NVME_WRITE;
@@ -2011,14 +2073,15 @@ SNTI_TRANSLATION_STATUS SntiTranslateRead(
         return SNTI_FAILURE_CHECK_RESPONSE_DATA;
     }
 
-    pSgl = StorPortGetScatterGatherList(pSrbExt->pNvmeDevExt, pSrb);
+    pSgl = StorPortGetScatterGatherList(pSrbExt->pNvmeDevExt, 
+                                       (PSCSI_REQUEST_BLOCK)pSrb);
     ASSERT(pSgl != NULL);
 
     /* Set the SRB status to pending - controller communication necessary */
     pSrb->SrbStatus = SRB_STATUS_PENDING;
     pSrbExt->pNvmeCompletionRoutine = NULL;
 
-    /* Set up common portions of the NVMe WRITE command */
+    /* Zero out the command entry */
     memset(&pSrbExt->nvmeSqeUnit, 0, sizeof(NVMe_COMMAND));
 
     pSrbExt->nvmeSqeUnit.CDW0.OPC = NVME_READ;
@@ -2371,9 +2434,9 @@ SNTI_TRANSLATION_STATUS SntiTranslateRequestSense(
         /* Descriptor Format Sense Data */
         PDESCRIPTOR_FORMAT_SENSE_DATA pSenseData = NULL;
 #if (NTDDI_VERSION > NTDDI_WIN7)
-        pSenseData = (PDESCRIPTOR_FORMAT_SENSE_DATA)SrbGetSenseInfoBuffer((PVOID)pSrb);
+        pSenseData = (PDESCRIPTOR_FORMAT_SENSE_DATA)GET_DATA_BUFFER((PVOID)pSrb);
 #else
-        pSenseData = (PDESCRIPTOR_FORMAT_SENSE_DATA)pSrb->SenseInfoBuffer;
+        pSenseData = (PDESCRIPTOR_FORMAT_SENSE_DATA)pSrb->DataBuffer;
 #endif
         StorPortDebugPrint(INFO, "SntiTranslateRequestSense: Desc Fmt buffer@ 0x%llX, len=%d\n", 
             pSenseData, allocLength);
@@ -2390,9 +2453,9 @@ SNTI_TRANSLATION_STATUS SntiTranslateRequestSense(
         /* Fixed Format Sense Data */
         PSENSE_DATA pSenseData = NULL;
 #if (NTDDI_VERSION > NTDDI_WIN7)
-        pSenseData = (PSENSE_DATA)SrbGetSenseInfoBuffer((PVOID)pSrb);;
+        pSenseData = (PSENSE_DATA)GET_DATA_BUFFER((PVOID)pSrb);
 #else
-        pSenseData = (PSENSE_DATA)pSrb->SenseInfoBuffer;
+        pSenseData = (PSENSE_DATA)pSrb->DataBuffer;
 #endif
         StorPortDebugPrint(INFO, "SntiTranslateRequestSense: Fixed Fmt buffer@ 0x%llX, len=%d\n", 
             pSenseData, allocLength);
@@ -2759,6 +2822,25 @@ SNTI_TRANSLATION_STATUS SntiTranslateUnmap(
     PNVM_DATASET_MANAGEMENT_RANGE pCurrentDsmRange = NULL;
     PUNMAP_BLOCK_DESCRIPTOR pCurrentUnmapBlockDescriptor = NULL; 
     SNTI_TRANSLATION_STATUS returnStatus = SNTI_TRANSLATION_SUCCESS;
+
+    /*
+     * Since LBA anchoring is not supported, if Anchor bit is set, 
+     * need to terminate the command now.
+     */
+    PUCHAR pCdb = (PUCHAR)SrbGetCdb((void*)pSrb);
+    pCdb++;
+    if ((*pCdb & UNMAP_ANCHAR_BIT) == 1) {
+        StorPortDebugPrint(INFO, "SNTI: Unmap Anchor bit is set!\n");
+        SntiSetScsiSenseData(pSrb,
+                             SCSISTAT_CHECK_CONDITION,
+                             SCSI_SENSE_ILLEGAL_REQUEST,
+                             SCSI_ADSENSE_INVALID_CDB,
+                             SCSI_ADSENSE_NO_SENSE);
+
+        pSrb->SrbStatus |= SRB_STATUS_INVALID_REQUEST;
+        returnStatus = SNTI_UNSUPPORTED_SCSI_REQUEST;
+    }
+
     pSrbExt = (PNVME_SRB_EXTENSION)SrbGetMiniportContext(pSrb);
 
     status = GetLunExtension(pSrbExt, &pLunExt);
@@ -3110,7 +3192,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateSynchronizeCache(
     /* Set the completion routine - no translation necessary on completion */
     pSrbExt->pNvmeCompletionRoutine = NULL;
 
-    /* Set up common portions of the NVMe WRITE command */
+    /* Set up common portions of the NVMe Flush command */
     memset(&pSrbExt->nvmeSqeUnit, 0, sizeof(NVMe_COMMAND));
 
     pSrbExt->nvmeSqeUnit.CDW0.OPC = NVME_FLUSH;
@@ -3422,15 +3504,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateLogSense(
                 pSrbExt->pNvmeCompletionRoutine = NULL;
             break;
             case LOG_PAGE_TEMPERATURE_PAGE:
-                SntiTranslateTemperature(pSrb);
-
-                /*
-                 * Fall through to finish setting up the PRP entries and GET LOG
-                 * PAGE command
-                 */
-
-            case LOG_PAGE_INFORMATIONAL_EXCEPTIONS_PAGE:
-                /*
+                /* 
                  * These log pages requires a Get Log Page (SMART/Health Info
                  * Log) command and uses the field "Temperature" (after
                  * converting from celsius to Kelvin) to set the "Most Recent
@@ -3443,6 +3517,43 @@ SNTI_TRANSLATION_STATUS SntiTranslateLogSense(
                  * NOTE: The Temp log page requires a parameter from Get
                  *       Features command and a parameter from Get Log Page
                  *       (Tempterature) command.
+                 */
+                SntiTranslateTemperature(pSrb);
+
+                /*
+                 * Fall through to finish setting up the PRP entries and GET LOG
+                 * PAGE command
+                 */
+                bufferSize =
+                  sizeof(ADMIN_GET_LOG_PAGE_SMART_HEALTH_INFORMATION_LOG_ENTRY);
+
+                pSrbExt->pDataBuffer =
+                  SntiAllocatePhysicallyContinguousBuffer(pSrbExt, bufferSize);
+
+                if (pSrbExt->pDataBuffer != NULL) {
+                    SntiBuildGetLogPageCmd(pSrbExt, SMART_HEALTH_INFORMATION);
+                    returnStatus = SNTI_TRANSLATION_SUCCESS;
+                } else {
+                    SntiSetScsiSenseData(pSrb,
+                                         SCSISTAT_CHECK_CONDITION,
+                                         SCSI_SENSE_UNIQUE,
+                                         SCSI_ADSENSE_INTERNAL_TARGET_FAILURE,
+                                         SCSI_ADSENSE_NO_SENSE);
+
+                    pSrb->SrbStatus |= SRB_STATUS_ERROR;
+                    SET_DATA_LENGTH(pSrb, 0);
+                    returnStatus = SNTI_FAILURE_CHECK_RESPONSE_DATA;
+                }
+            break;
+            case LOG_PAGE_INFORMATIONAL_EXCEPTIONS_PAGE:
+                /*
+                 * These log pages requires a Get Log Page (SMART/Health Info
+                 * Log) command and uses the field "Temperature" (after
+                 * converting from celsius to Kelvin) to set the "Most Recent
+                 * Temperature Reading" field in the SCSI log page. A data
+                 * buffer must be allocated here since the SMART/Health Info log
+                 * page is 512 bytes long. Therefore, the translation must be
+                 * performed on the completion side of this command.
                  */
                 bufferSize =
                   sizeof(ADMIN_GET_LOG_PAGE_SMART_HEALTH_INFORMATION_LOG_ENTRY);
@@ -3562,15 +3673,9 @@ VOID SntiTranslateTemperature(
 #endif
 )
 {
-    PNVME_SRB_EXTENSION pSrbExt = NULL;
-    PNVME_DEVICE_EXTENSION pDevExt = NULL;
-    PTEMPERATURE_LOG_PAGE pLogPage = NULL;
-    PSTOR_SCATTER_GATHER_LIST pSgl = NULL;
-    ULONG memAllocStatus = 0;
-    UINT16 logPageIdentifier = SMART_HEALTH_INFORMATION;
-    pSrbExt = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb);
 
-    /* Set up the SCSI Log Page in the SRB Data Buffer */
+    /* Set up the Temperature Log Page in the SRB Data Buffer */
+    PTEMPERATURE_LOG_PAGE pLogPage = NULL;
     pLogPage = (PTEMPERATURE_LOG_PAGE)GET_DATA_BUFFER(pSrb);
 
     memset(pLogPage, 0, sizeof(TEMPERATURE_LOG_PAGE));
@@ -3673,7 +3778,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeSense(
                    MODE_SENSE_CDB_PAGE_CONTROL_SHIFT;
     pageCode &= MODE_SENSE_CDB_PAGE_CODE_MASK;
 
-	memset((PVOID)(pSrbExt->modeSenseBuf), 0, MODE_SNS_MAX_BUF_SIZE);
+    memset((PVOID)(pSrbExt->modeSenseBuf), 0, MODE_SNS_MAX_BUF_SIZE);
 
     /* Set the completion routine - no translation necessary on completion */
     pSrbExt->pNvmeCompletionRoutine = NULL;
@@ -4994,6 +5099,7 @@ BOOLEAN SntiSetScsiSenseData(
     BOOLEAN status = TRUE;
     UCHAR senseInfoBufferLength = 0;
     PVOID senseInfoBuffer = NULL;
+    UCHAR senseDataLength = sizeof(SENSE_DATA);
 #if (NTDDI_VERSION > NTDDI_WIN7)
     SrbSetScsiData(pSrb, NULL, NULL, &scsiStatus, NULL, NULL);
     SrbGetScsiData(pSrb, NULL, NULL, NULL, &senseInfoBuffer, &senseInfoBufferLength);
@@ -5003,7 +5109,7 @@ BOOLEAN SntiSetScsiSenseData(
     senseInfoBuffer = pSrb->SenseInfoBuffer;
 #endif
     if ((scsiStatus != SCSISTAT_GOOD) &&
-        (senseInfoBufferLength >= sizeof(SENSE_DATA))) {
+        (senseInfoBufferLength >= senseDataLength)) {
 
         pSenseData = (PSENSE_DATA)senseInfoBuffer;
 
@@ -5013,10 +5119,10 @@ BOOLEAN SntiSetScsiSenseData(
         pSenseData->AdditionalSenseCode          = asc;
         pSenseData->AdditionalSenseCodeQualifier = ascq;
 
-        pSenseData->AdditionalSenseLength = sizeof(SENSE_DATA) -
+        pSenseData->AdditionalSenseLength = senseDataLength - 
             FIELD_OFFSET(SENSE_DATA, CommandSpecificInformation);
 #if (NTDDI_VERSION > NTDDI_WIN7)
-        SrbSetScsiData(pSrb, NULL, NULL, NULL, NULL, sizeof(SENSE_DATA));
+        SrbSetScsiData(pSrb, NULL, NULL, NULL, NULL, &senseDataLength);
 #else
         pSrb->SenseInfoBufferLength = sizeof(SENSE_DATA);
 #endif
@@ -5133,7 +5239,8 @@ VOID SntiBuildGetFeaturesCmd(
         pSrbExt->nvmeSqeUnit.PRP2 = 0;
     } else {
         /* PRP Entry/List - Use the SGL from the original command */
-        pSgl = StorPortGetScatterGatherList(pDevExt, pSrbExt->pSrb);
+        pSgl = StorPortGetScatterGatherList(pDevExt, 
+                                           (PSCSI_REQUEST_BLOCK)pSrbExt->pSrb); 
         ASSERT(pSgl != NULL);
 
         SntiTranslateSglToPrp(pSrbExt, pSgl);
@@ -5193,7 +5300,8 @@ VOID SntiBuildSetFeaturesCmd(
         pSrbExt->nvmeSqeUnit.PRP2 = 0;
     } else {
         /* PRP Entry/List - Use the SGL from the original command */
-        pSgl = StorPortGetScatterGatherList(pDevExt, pSrbExt->pSrb);
+        pSgl = StorPortGetScatterGatherList(pDevExt, 
+                                           (PSCSI_REQUEST_BLOCK)pSrbExt->pSrb);
         ASSERT(pSgl != NULL);
 
         SntiTranslateSglToPrp(pSrbExt, pSgl);
@@ -5220,9 +5328,13 @@ VOID SntiBuildGetLogPageCmd(
     UINT8 logIdentifier
 )
 {
+    PNVME_LUN_EXTENSION pLunExt = NULL;
     PNVME_DEVICE_EXTENSION pDevExt = pSrbExt->pNvmeDevExt;
     PSTOR_SCATTER_GATHER_LIST pSgl = NULL;
     UINT32 numDwords = 0;
+
+    /* Retrieve LUN Extension here */
+    GetLunExtension(pSrbExt, &pLunExt);
 
     /* Make sure we indicate which I/Os are the child and parent */
     pSrbExt->pParentIo = NULL;
@@ -5238,16 +5350,28 @@ VOID SntiBuildGetLogPageCmd(
     pSrbExt->nvmeSqeUnit.CDW0.FUSE = FUSE_NORMAL_OPERATION;
 
     /* NOTE: This value must not exceed 4K */
+    /* The SMART/Health page is namespace based while the others are global */
     switch(logIdentifier) {
         case ERROR_INFORMATION:
+            pSrbExt->nvmeSqeUnit.NSID = 0xFFFFFFFF;
             numDwords =
                 sizeof(ADMIN_GET_LOG_PAGE_ERROR_INFORMATION_LOG_ENTRY);
         break;
         case SMART_HEALTH_INFORMATION:
+            /* 
+             * The SMART/Health page is namespace based when bit0 of Log Page
+             * Attributes of Identify Controller structure is 1.
+             * When cleared to 0, this log page is global to the device.
+             */
+            if (pDevExt->controllerIdentifyData.LPA.SupportsSMART_HealthInformationLogPage & 1)
+                pSrbExt->nvmeSqeUnit.NSID = pLunExt->namespaceId;
+            else
+                pSrbExt->nvmeSqeUnit.NSID = 0xFFFFFFFF;
             numDwords =
                 sizeof(ADMIN_GET_LOG_PAGE_SMART_HEALTH_INFORMATION_LOG_ENTRY);
         break;
         case FIRMWARE_SLOT_INFORMATION:
+            pSrbExt->nvmeSqeUnit.NSID = 0xFFFFFFFF;
             numDwords =
                 sizeof(ADMIN_GET_LOG_PAGE_FIRMWARE_SLOT_INFORMATION_LOG_ENTRY);
         break;
@@ -5256,7 +5380,12 @@ VOID SntiBuildGetLogPageCmd(
         break;
     }
 
-    /* DWORD 10 */
+    /*
+     * DWORD 10
+     * Number of DWORDs is 0's based
+     */
+    numDwords = numDwords / sizeof(UINT32);
+    numDwords -= 1;
     pSrbExt->nvmeSqeUnit.CDW10 |= (numDwords << BYTE_SHIFT_2);
     pSrbExt->nvmeSqeUnit.CDW10 |= (logIdentifier & DWORD_MASK_LOW_WORD);
 
@@ -5283,7 +5412,8 @@ VOID SntiBuildGetLogPageCmd(
         }
     } else {
         /* Use the SGL from the original command for PRP Entries/List */
-        pSgl = StorPortGetScatterGatherList(pDevExt, pSrbExt->pSrb);
+        pSgl = StorPortGetScatterGatherList(pDevExt, 
+                                           (PSCSI_REQUEST_BLOCK)pSrbExt->pSrb);
 
         if (pSgl != NULL) {
             #ifdef DEBUG_CHECK
@@ -5351,7 +5481,8 @@ VOID SntiBuildFirmwareImageDownloadCmd(
     pSrbExt->nvmeSqeUnit.CDW11 = dword11;
 
     /* PRP Entry/List - Use the SGL from the original command */
-    pSgl = StorPortGetScatterGatherList(pDevExt, pSrbExt->pSrb);
+    pSgl = StorPortGetScatterGatherList(pDevExt, 
+                                       (PSCSI_REQUEST_BLOCK)pSrbExt->pSrb);
     ASSERT(pSgl != NULL);
 
     #define DEBUG_CHECK
@@ -5390,7 +5521,7 @@ VOID SntiBuildFirmwareActivateCmd(
     /* Chose which queue to use */
     pSrbExt->forAdminQueue = TRUE;
 
-    /* Set up the GET LOG PAGE command */
+    /* Set up Firmware Activate command */
     memset(&pSrbExt->nvmeSqeUnit, 0, sizeof(NVMe_COMMAND));
     pSrbExt->nvmeSqeUnit.CDW0.OPC = ADMIN_FIRMWARE_ACTIVATE;
     pSrbExt->nvmeSqeUnit.CDW0.CID = 0;
@@ -5425,11 +5556,14 @@ VOID SntiBuildFlushCmd(
     PNVME_SRB_EXTENSION pSrbExt
 )
 {
-    /* Set up common portions of the NVMe WRITE command */
+    PNVME_LUN_EXTENSION pLunExt = NULL;
+    GetLunExtension(pSrbExt, &pLunExt);
+
+    /* Zero out the command entry */
     memset(&pSrbExt->nvmeSqeUnit, 0, sizeof(NVMe_COMMAND));
 
-    /* this Cmd is currently called not specific to one particular, but all namespaces */
-    pSrbExt->nvmeSqeUnit.NSID = 0xFFFFFFFF;
+    /* This cmd is called for a specific namespace */
+    pSrbExt->nvmeSqeUnit.NSID = pLunExt->namespaceId;
     pSrbExt->nvmeSqeUnit.CDW0.OPC = NVM_FLUSH;
     pSrbExt->nvmeSqeUnit.CDW0.CID = 0;
     pSrbExt->nvmeSqeUnit.CDW0.FUSE = FUSE_NORMAL_OPERATION;
@@ -5457,7 +5591,7 @@ VOID SntiBuildFormatNvmCmd(
     /* Chose which queue to use */
     pSrbExt->forAdminQueue = TRUE;
 
-    /* Set up common portions of the NVMe WRITE command */
+    /* Set up the command entry for Format NVM command */
     memset(&pSrbExt->nvmeSqeUnit, 0, sizeof(NVMe_COMMAND));
 
     pSrbExt->nvmeSqeUnit.CDW0.OPC = ADMIN_FORMAT_NVM;
@@ -5509,7 +5643,7 @@ VOID SntiBuildSecuritySendReceiveCmd(
     /* Chose which queue to use */
     pSrbExt->forAdminQueue = TRUE;
 
-    /* Set up common portions of the NVMe WRITE command */
+    /* Zero out the command entry */
     memset(&pSrbExt->nvmeSqeUnit, 0, sizeof(NVMe_COMMAND));
 
     pSrbExt->nvmeSqeUnit.CDW0.OPC = opcode;
@@ -5519,7 +5653,8 @@ VOID SntiBuildSecuritySendReceiveCmd(
     pSrbExt->nvmeSqeUnit.NSID = pLunExt->namespaceId;
 
     /* PRP Entry/List */
-    pSgl = StorPortGetScatterGatherList(pSrbExt->pNvmeDevExt, pSrbExt->pSrb);
+    pSgl = StorPortGetScatterGatherList(pSrbExt->pNvmeDevExt, 
+                                       (PSCSI_REQUEST_BLOCK)pSrbExt->pSrb);
     ASSERT(pSgl != NULL);
 
     SntiTranslateSglToPrp(pSrbExt, pSgl);
