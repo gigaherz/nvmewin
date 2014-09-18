@@ -151,6 +151,7 @@ ULONG DriverEntry(
 #if (NTDDI_VERSION > NTDDI_WIN7)
 	/* Specify support/use SRB Extension for Windows 8 and up */
     hwInitData.SrbTypeFlags = SRB_TYPE_FLAG_STORAGE_REQUEST_BLOCK;
+	hwInitData.FeatureSupport = STOR_FEATURE_FULL_PNP_DEVICE_CAPABILITIES;
 #endif
     /* Set required extension sizes. */
     hwInitData.DeviceExtensionSize = sizeof(NVME_DEVICE_EXTENSION);
@@ -196,7 +197,7 @@ NVMeFindAdapter(
     UCHAR* Reserved3
 )
 {
-    PNVME_DEVICE_EXTENSION pAE = Context;
+    PNVME_DEVICE_EXTENSION pAE = (PNVME_DEVICE_EXTENSION)Context;
     PACCESS_RANGE pMM_Range;
     PRES_MAPPING_TBL pRMT = NULL;
     ULONG pciStatus = 0;
@@ -426,7 +427,7 @@ BOOLEAN NVMePassiveInitialize(
     PVOID Context
 )
 {
-    PNVME_DEVICE_EXTENSION pAE = Context;
+    PNVME_DEVICE_EXTENSION pAE = (PNVME_DEVICE_EXTENSION)Context;
     ULONG Status = STOR_STATUS_SUCCESS;
     PQUEUE_INFO pQI = &pAE->QueueInfo;
     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
@@ -611,7 +612,7 @@ BOOLEAN NVMeInitialize(
     PVOID Context
 )
 {
-    PNVME_DEVICE_EXTENSION pAE = Context;
+    PNVME_DEVICE_EXTENSION pAE = (PNVME_DEVICE_EXTENSION)Context;
     PQUEUE_INFO pQI = &pAE->QueueInfo;
     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
     ULONG Status = STOR_STATUS_SUCCESS;
@@ -652,7 +653,9 @@ BOOLEAN NVMeInitialize(
          * not recommended.  The spec is not clear on whether we need
          * to wait for RDY to transition EN back to 0 or not.
          */
-        NVMeWaitForCtrlRDY(pAE, 1);
+        if(FALSE == NVMeWaitForCtrlRDY(pAE, 1)) {
+            return FALSE;
+        }
 
         StorPortDebugPrint(INFO, "NVMeInitialize:  Clearing EN...\n");
         /* Now reset */
@@ -662,7 +665,9 @@ BOOLEAN NVMeInitialize(
                                    CC.AsUlong);
 
         /* Need to ensure it's cleared in CSTS */
-        NVMeWaitForCtrlRDY(pAE, 0);
+        if(FALSE == NVMeWaitForCtrlRDY(pAE, 0)) {
+            return FALSE;
+        }
     }
 
     /*
@@ -893,8 +898,6 @@ SCSI_ADAPTER_CONTROL_STATUS NVMeAdapterControl(
         case ScsiStopAdapter:
             StorPortDebugPrint(INFO,"NVMeAdapterControl: ScsiStopAdapter\n");
             status = NVMeAdapterControlPowerDown(pAE);
-            scsiStatus = (status ? ScsiAdapterControlSuccess :
-                                   ScsiAdapterControlUnsuccessful);
             break;
         /*
          * Routine to reinitialize adapter while system in running. Since the
@@ -904,8 +907,6 @@ SCSI_ADAPTER_CONTROL_STATUS NVMeAdapterControl(
         case ScsiRestartAdapter:
             StorPortDebugPrint(INFO,"NVMeAdapterControl: ScsiRestartAdapter\n");
             status = NVMeAdapterControlPowerUp(pAE);
-            scsiStatus = (status ? ScsiAdapterControlSuccess :
-                                    ScsiAdapterControlUnsuccessful);
         break;
         default:
             scsiStatus = ScsiAdapterControlUnsuccessful;
@@ -1077,14 +1078,19 @@ BOOLEAN NVMeBuildIo(
                  * Process StorQueryCapabilities request for device, not
                  * adapter. Fill in fields of STOR_DEVICE_CAPABILITIES_EX.
                  */
+#if (NTDDI_VERSION > NTDDI_WIN7)
+				PSTOR_DEVICE_CAPABILITIES_EX pDevCapabilities =
+                    (PSTOR_DEVICE_CAPABILITIES_EX)GET_DATA_BUFFER(Srb);
+#else
                 PSTOR_DEVICE_CAPABILITIES pDevCapabilities =
                     (PSTOR_DEVICE_CAPABILITIES)GET_DATA_BUFFER(Srb);
+#endif
                 pDevCapabilities->Version           = 0;
                 pDevCapabilities->DeviceD1          = 0;
                 pDevCapabilities->DeviceD2          = 0;
                 pDevCapabilities->LockSupported     = 0;
                 pDevCapabilities->EjectSupported    = 0;
-                pDevCapabilities->Removable         = 0;
+                pDevCapabilities->Removable         = 1;
                 pDevCapabilities->DockDevice        = 0;
                 pDevCapabilities->UniqueID          = 0;
                 pDevCapabilities->SilentInstall     = 0;
@@ -1863,6 +1869,7 @@ IoCompletionDpcRoutine(
     BOOLEAN InterruptClaimed = FALSE;
     STOR_LOCK_HANDLE DpcLockhandle = { 0 };
     STOR_LOCK_HANDLE StartLockHandle = { 0 };
+	BOOLEAN completeStatus = FALSE;
 
     if (pDpc != NULL) {
         ASSERT(pAE->ntldrDump == FALSE);
@@ -1922,12 +1929,14 @@ IoCompletionDpcRoutine(
                 InterruptClaimed = TRUE;
 
 #pragma prefast(suppress:6011,"This pointer is not NULL")
-                NVMeCompleteCmd(pAE,
-                                pCplEntry->DW2.SQID,
-                                pCplEntry->DW2.SQHD,
-                                pCplEntry->DW3.CID,
-                                (PVOID)&pSrbExtension);
-
+                completeStatus = NVMeCompleteCmd(pAE,
+									pCplEntry->DW2.SQID,
+									pCplEntry->DW2.SQHD,
+									pCplEntry->DW3.CID,
+									(PVOID)&pSrbExtension);
+				if (completeStatus == FALSE) {
+					return;
+				}
 #ifdef HISTORY
                 TracePathComplete(COMPPLETE_CMD, pCplEntry->DW2.SQID,
                     pCplEntry->DW3.CID, pCplEntry->DW2.SQHD,
@@ -2139,9 +2148,11 @@ NVMeIsrMsix (
  *
  * @param pAE - Pointer to device extension
  *
- * @return VOID
+ * @return
+ *     TRUE - Indiciates successful completion
+ *     FALSE - Unsuccessful completion or error
  ******************************************************************************/
-VOID NVMeWaitForCtrlRDY(
+BOOLEAN NVMeWaitForCtrlRDY(
     __in PNVME_DEVICE_EXTENSION pAE,
     __in ULONG expectedValue
 )
@@ -2153,15 +2164,17 @@ VOID NVMeWaitForCtrlRDY(
          StorPortReadRegisterUlong(pAE,
                                    &pAE->pCtrlRegister->CSTS.AsUlong);
      while (CSTS.RDY != expectedValue) {
-        NVMeCrashDelay(STORPORT_TIMER_CB_us, pAE->ntldrDump);
+		NVMeStallExecution(pAE, MAX_STATE_STALL_us);
         time += STORPORT_TIMER_CB_us;
         if (time > pAE->uSecCrtlTimeout) {
-            return ;
+            return FALSE;
         }
         CSTS.AsUlong =
             StorPortReadRegisterUlong(pAE,
                                       &pAE->pCtrlRegister->CSTS.AsUlong);
-     };
+     }
+
+     return TRUE;
 }
 
 /*******************************************************************************
@@ -2191,7 +2204,6 @@ VOID RecoveryDpcRoutine(
 #endif
     
     STOR_LOCK_HANDLE startLockhandle = { 0 };
-    NVMe_CONTROLLER_CONFIGURATION CC = {0};
 
     StorPortDebugPrint(INFO, "RecoveryDpcRoutine: Entry\n");
 #ifdef HISTORY
@@ -2202,32 +2214,6 @@ VOID RecoveryDpcRoutine(
      * completion threads happening before or during reset
      */
     StorPortAcquireSpinLock(pAE, StartIoLock, NULL, &startLockhandle);
-    
-    CC.AsUlong =
-            StorPortReadRegisterUlong(pAE, (PULONG)(&pAE->pCtrlRegister->CC));
-    
-    if (CC.EN == 1) {
-        StorPortDebugPrint(INFO, "RecoveryDpcRoutine:  EN already set, wait for RDY...\n");        
-        /*
-         * Before we transition to 0, make sure the ctrl is actually RDY
-         * NOTE:  Some HW implementations may not require this wait and
-         * if not then it could be removed as waiting at this IRQL is
-         * not recommended.  The spec is not clear on whether we need
-         * to wait for RDY to transition EN back to 0 or not.
-         */
-        NVMeWaitForCtrlRDY(pAE, 1);
-        
-
-        StorPortDebugPrint(INFO, "RecoveryDpcRoutine:  Clearing EN...\n");
-        /* Now reset */
-        CC.EN = 0;
-        StorPortWriteRegisterUlong(pAE,
-                                   (PULONG)(&pAE->pCtrlRegister->CC),
-                                   CC.AsUlong);
-
-        /* Need to ensure it's cleared in CSTS */
-        NVMeWaitForCtrlRDY(pAE, 0);                                   
-    }
 
     /*
      * Reset the controller; if any steps fail we just quit which
@@ -2715,7 +2701,7 @@ BOOLEAN NVMeHandleSmartThresholds(
 
             /* Issue the Get Features Command */
             ProcessIo((PNVME_DEVICE_EXTENSION)pNVMeDevExt,
-                pSrbExtension, NVME_QUEUE_TYPE_ADMIN, TRUE);
+                pSrbExtension, NVME_QUEUE_TYPE_ADMIN, FALSE);
 
             /* Do not complete this SRB yet */
             srbDone = FALSE;
@@ -4025,6 +4011,8 @@ BOOLEAN NVMeProcessPublicIoctl(
     STOR_PHYSICAL_ADDRESS physAddr;
     ULONG paLength;
     BOOLEAN status = IOCTL_PENDING;
+	UINT32 numDwords = 0;
+
     pSrbExt = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb);
 
     switch (pSrbIoCtrl->ControlCode) {
@@ -4208,9 +4196,10 @@ BOOLEAN NVMeProcessPublicIoctl(
             pSrbExt->nvmeSqeUnit.CDW0.FUSE = FUSE_NORMAL_OPERATION;
 
             /* DWORD 10 */
-            pSrbExt->nvmeSqeUnit.CDW10 |=
-                (sizeof(ADMIN_GET_LOG_PAGE_SMART_HEALTH_INFORMATION_LOG_ENTRY)
-                << BYTE_SHIFT_2);
+			numDwords =
+				((sizeof(ADMIN_GET_LOG_PAGE_ERROR_INFORMATION_LOG_ENTRY) / NUM_BYTES_IN_DWORD) - 1);
+			pSrbExt->nvmeSqeUnit.CDW10 |= (numDwords << BYTE_SHIFT_2);
+
             pSrbExt->nvmeSqeUnit.CDW10 |=
                 (SMART_HEALTH_INFORMATION & DWORD_MASK_LOW_WORD);
 

@@ -1192,10 +1192,6 @@ BOOLEAN NVMeResetAdapter(
     __in PNVME_DEVICE_EXTENSION pAE
 );
 
-BOOLEAN NVMeWaitOnReady(
-    PNVME_DEVICE_EXTENSION pAE
-);
-
 BOOLEAN NVMeEnableAdapter(
     __in PNVME_DEVICE_EXTENSION pAE
 );
@@ -1445,7 +1441,7 @@ SCSI_ADAPTER_CONTROL_STATUS NVMeAdapterControl(
     __in PVOID Parameters
 );
 
-VOID NVMeWaitForCtrlRDY(
+BOOLEAN NVMeWaitForCtrlRDY(
     __in PNVME_DEVICE_EXTENSION pAE,
     __in ULONG expectedValue
 );

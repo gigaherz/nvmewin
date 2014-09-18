@@ -225,6 +225,7 @@ ProcessIo(
     USHORT CplQueue = 0;
     PQUEUE_INFO pQI = &pAdapterExtension->QueueInfo;
     STOR_LOCK_HANDLE hStartIoLock = {0};
+	BOOLEAN completeStatus = FALSE;
 #ifdef PRP_DBG
     PVOID pVa = NULL;
 #endif
@@ -424,13 +425,21 @@ ProcessIo(
     StorStatus = NVMeIssueCmd(pAdapterExtension, SubQueue, pNvmeCmd);
 
     if (StorStatus != STOR_STATUS_SUCCESS) {
-        NVMeCompleteCmd(pAdapterExtension,
-                        SubQueue,
-                        NO_SQ_HEAD_CHANGE,
-                        pNvmeCmd->CDW0.CID,
-                        (PVOID)pSrbExtension);
-            IoStatus = BUSY;
+        completeStatus = NVMeCompleteCmd(pAdapterExtension,
+							SubQueue,
+							NO_SQ_HEAD_CHANGE,
+							pNvmeCmd->CDW0.CID,
+							(PVOID)pSrbExtension);
+
+		if (completeStatus == FALSE) {
+			IoStatus = NOT_SUBMITTED;
             __leave;
+		}
+		else {
+			IoStatus = BUSY;
+            __leave;
+		}
+            
     }
 
     /*
@@ -504,9 +513,9 @@ ProcessIo(
  * @param CmdID - The acquired CmdID used to de-reference the CMD_ENTRY
  * @param pContext - Caller prepared buffer to save the original context
  *
- * @return VOID
+ * @return BOOLEAN
  ******************************************************************************/
-VOID NVMeCompleteCmd(
+BOOLEAN NVMeCompleteCmd(
     PNVME_DEVICE_EXTENSION pAE,
     USHORT QueueID,
     SHORT NewHead,
@@ -547,7 +556,7 @@ VOID NVMeCompleteCmd(
          * Something bad happened so reset the adapter and hope for the best
          */
         NVMeResetController(pAE, NULL);
-        return;
+        return FALSE;
     }
 
     *((ULONG_PTR *)pContext) = (ULONG_PTR)pCmdEntry->Context;
@@ -574,6 +583,8 @@ VOID NVMeCompleteCmd(
     pCmdEntry->Context = 0;
 
     InsertTailList(&pSQI->FreeQList, &pCmdEntry->ListEntry);
+
+	return TRUE;
 } /* NVMeCompleteCmd */
 
 /*******************************************************************************

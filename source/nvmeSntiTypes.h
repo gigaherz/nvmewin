@@ -146,6 +146,7 @@
 #define DWORD_MASK_BYTE_0                    0x000000FF
 #define DWORD_MASK_LOW_WORD                  0x0000FFFF
 #define DWORD_MASK_HIGH_WORD                 0xFFFF0000
+#define NUM_BYTES_IN_DWORD                           4
 #define BYTE_SHIFT_3                                 24
 #define BYTE_SHIFT_2                                 16
 #define BYTE_SHIFT_1                                  8

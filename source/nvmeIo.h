@@ -63,7 +63,7 @@ ProcessIo(
     __in BOOLEAN AcquireLock
 );
 
-VOID
+BOOLEAN
 NVMeCompleteCmd(
     __in PNVME_DEVICE_EXTENSION pAE,
     __in USHORT QueueID,

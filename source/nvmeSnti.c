@@ -1198,7 +1198,6 @@ VOID SntiTranslateStandardInquiryPage(
     pStdInquiry->Wide16Bit           = WIDE_16_BIT_XFERS_UNSUPPORTED;
     pStdInquiry->Addr16              = WIDE_16_BIT_ADDRESES_UNSUPPORTED;
     pStdInquiry->Synchronous         = SYNCHRONOUS_DATA_XFERS_UNSUPPORTED;
-    pStdInquiry->Reserved3[0]        = RESERVED_FIELD;
 
     /*
      *  Fields not defined in Standard Inquiry page from storport.h
@@ -1528,10 +1527,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateReadCapacity10(
         if ((namespaceSize & UPPER_DWORD_BIT_MASK) != 0)
             lastLba = LBA_MASK_LOWER_32_BITS;
         else
-            lastLba = (UINT32)namespaceSize;
-
-        /* NSZE is not zero based */
-        lastLba--;
+            lastLba = (UINT32)namespaceSize-1; /* NSZE is not zero based */
 
         /* Must byte swap these as they are returned in big endian */
         REVERSE_BYTES(&pReadCapacityData->LogicalBlockAddress, &lastLba);
@@ -1634,10 +1630,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateReadCapacity16(
 
         /* Get the Data Protection Settings (DPS) */
         dps = pLunExt->identifyData.DPS.ProtectionEnabled;
-        lastLba = pLunExt->identifyData.NSZE;
-
-        /* NSZE is not zero based */
-        lastLba--;
+        lastLba = pLunExt->identifyData.NSZE - 1; /* NSZE is not zero based */
 
         if (!dps) {
             /* If the DPS settings are 0, then protection is disabled */
@@ -1730,7 +1723,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateWrite(
         SntiMapInternalErrorStatus(pSrb, status);
         return SNTI_FAILURE_CHECK_RESPONSE_DATA;
     }
-    
+
     pSgl = StorPortGetScatterGatherList(pSrbExt->pNvmeDevExt, 
                                        (PSCSI_REQUEST_BLOCK)pSrb);
     ASSERT(pSgl != NULL);
@@ -2433,11 +2426,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateRequestSense(
     if (descFormat == DESCRIPTOR_FORMAT_SENSE_DATA_TYPE) {
         /* Descriptor Format Sense Data */
         PDESCRIPTOR_FORMAT_SENSE_DATA pSenseData = NULL;
-#if (NTDDI_VERSION > NTDDI_WIN7)
-        pSenseData = (PDESCRIPTOR_FORMAT_SENSE_DATA)GET_DATA_BUFFER((PVOID)pSrb);
-#else
-        pSenseData = (PDESCRIPTOR_FORMAT_SENSE_DATA)pSrb->DataBuffer;
-#endif
+		pSenseData = (PDESCRIPTOR_FORMAT_SENSE_DATA)GET_DATA_BUFFER(pSrb);
         StorPortDebugPrint(INFO, "SntiTranslateRequestSense: Desc Fmt buffer@ 0x%llX, len=%d\n", 
             pSenseData, allocLength);
         memset(pSenseData, 0, allocLength);
@@ -2452,11 +2441,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateRequestSense(
     } else {
         /* Fixed Format Sense Data */
         PSENSE_DATA pSenseData = NULL;
-#if (NTDDI_VERSION > NTDDI_WIN7)
-        pSenseData = (PSENSE_DATA)GET_DATA_BUFFER((PVOID)pSrb);
-#else
-        pSenseData = (PSENSE_DATA)pSrb->DataBuffer;
-#endif
+		pSenseData = (PSENSE_DATA)GET_DATA_BUFFER(pSrb);
         StorPortDebugPrint(INFO, "SntiTranslateRequestSense: Fixed Fmt buffer@ 0x%llX, len=%d\n", 
             pSenseData, allocLength);
         memset(pSenseData, 0, allocLength);
@@ -2893,7 +2878,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateUnmap(
             &(pSrbExt->nvmeSqeUnit.CDW11);
         pCdw11->AD = 1;
 
-           /* Point PRP1 to our dedicated DSM range definition buffer */
+		/* Point PRP1 to our dedicated DSM range definition buffer */
         physAddr = StorPortGetPhysicalAddress(pSrbExt->pNvmeDevExt, 
             NULL, 
             pSrbExt->dsmBuffer, 
@@ -3089,7 +3074,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateWriteBuffer(
     switch (mode & WRITE_BUFFER_CDB_MODE_MASK) {
         case DOWNLOAD_SAVE_ACTIVATE:
             /* Issue NVME FIRMWARE IMAGE DOWNLOAD command */
-            dword10 |= paramListLength/sizeof(UINT32);
+            dword10 |= ((paramListLength / NUM_BYTES_IN_DWORD)- 1);
             dword11 |= bufferOffset;
 
             SntiBuildFirmwareImageDownloadCmd(pSrbExt, dword10, dword11);
@@ -3098,7 +3083,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateWriteBuffer(
         break;
         case DOWNLOAD_SAVE_DEFER_ACTIVATE:
             /* Issue NVME FIRMWARE IMAGE DOWNLOAD command */
-            dword10 |= paramListLength/sizeof(UINT32);
+            dword10 |= ((paramListLength / NUM_BYTES_IN_DWORD)- 1);
             dword11 |= bufferOffset;
 
             SntiBuildFirmwareImageDownloadCmd(pSrbExt, dword10, dword11);
@@ -3995,7 +3980,7 @@ VOID SntiCreateControlModePage(
         pModeParamBlock++;
     }
 
-    /* Caching Mode Page */
+    /* Control Mode Page */
     pControlModePage = (PCONTROL_MODE_PAGE)pModeParamBlock;
     modeDataLength += sizeof(CONTROL_MODE_PAGE);
 
@@ -4063,7 +4048,7 @@ VOID SntiHardCodeCacheModePage(
     PMODE_PARAMETER_HEADER pModeHeader6 = NULL;
     PMODE_PARAMETER_HEADER10 pModeHeader10 = NULL;
     PMODE_PARAMETER_BLOCK pModeParamBlock = NULL;
-    PMODE_CACHING_PAGE pCachingModePage = NULL;
+	PSNTI_CACHING_MODE_PAGE pCachingModePage = NULL;
 #if (NTDDI_VERSION > NTDDI_WIN7)
     PSTORAGE_REQUEST_BLOCK pSrb = pSrbExt->pSrb;
 #else
@@ -4098,10 +4083,10 @@ VOID SntiHardCodeCacheModePage(
     }
 
     /* Cache Mode Page */
-    pCachingModePage  = (PMODE_CACHING_PAGE)pModeParamBlock;
-    modeDataLength += sizeof(MODE_CACHING_PAGE);
+	pCachingModePage = (PSNTI_CACHING_MODE_PAGE)pModeParamBlock;
+	modeDataLength += sizeof(SNTI_CACHING_MODE_PAGE);
 
-    memset(pCachingModePage, 0, sizeof(MODE_CACHING_PAGE));
+	memset(pCachingModePage, 0, sizeof(SNTI_CACHING_MODE_PAGE));
     pCachingModePage->PageCode         = MODE_PAGE_CACHING;
     pCachingModePage->PageSavable      = MODE_PAGE_PARAM_SAVEABLE_DISABLED;
     pCachingModePage->PageLength       = CACHING_MODE_PAGE_LENGTH;
@@ -5355,7 +5340,7 @@ VOID SntiBuildGetLogPageCmd(
         case ERROR_INFORMATION:
             pSrbExt->nvmeSqeUnit.NSID = 0xFFFFFFFF;
             numDwords =
-                sizeof(ADMIN_GET_LOG_PAGE_ERROR_INFORMATION_LOG_ENTRY);
+                ((sizeof(ADMIN_GET_LOG_PAGE_ERROR_INFORMATION_LOG_ENTRY) / NUM_BYTES_IN_DWORD) - 1);
         break;
         case SMART_HEALTH_INFORMATION:
             /* 
@@ -5368,12 +5353,12 @@ VOID SntiBuildGetLogPageCmd(
             else
                 pSrbExt->nvmeSqeUnit.NSID = 0xFFFFFFFF;
             numDwords =
-                sizeof(ADMIN_GET_LOG_PAGE_SMART_HEALTH_INFORMATION_LOG_ENTRY);
+				((sizeof(ADMIN_GET_LOG_PAGE_SMART_HEALTH_INFORMATION_LOG_ENTRY) / NUM_BYTES_IN_DWORD) - 1);
         break;
         case FIRMWARE_SLOT_INFORMATION:
             pSrbExt->nvmeSqeUnit.NSID = 0xFFFFFFFF;
             numDwords =
-                sizeof(ADMIN_GET_LOG_PAGE_FIRMWARE_SLOT_INFORMATION_LOG_ENTRY);
+                ((sizeof(ADMIN_GET_LOG_PAGE_FIRMWARE_SLOT_INFORMATION_LOG_ENTRY) / NUM_BYTES_IN_DWORD) - 1);
         break;
         default:
             ASSERT(FALSE);
@@ -5739,6 +5724,9 @@ BOOLEAN SntiCompletionCallbackRoutine(
                 break;
                 case SCSIOP_WRITE_DATA_BUFF:
                     translationStatus = SntiTranslateWriteBufferResponse(pSrb);
+
+                    if (translationStatus == SNTI_SEQUENCE_IN_PROGRESS)
+                        returnValue = FALSE;
                 break;
                 default:
                     /* Invalid Condition */
@@ -5752,6 +5740,7 @@ BOOLEAN SntiCompletionCallbackRoutine(
         }
     } else {
         /* NVME command status failure */
+        pSrb->SrbStatus = SRB_STATUS_ERROR;
         translationStatus = SNTI_SEQUENCE_ERROR;
     }
 
@@ -5998,7 +5987,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateTemperatureResponse(
             pSrb->SrbStatus = SRB_STATUS_PENDING;
 
             /* Issue the command internally */
-            ioStarted = ProcessIo(pDevExt, pSrbExt, NVME_QUEUE_TYPE_ADMIN, TRUE);
+            ioStarted = ProcessIo(pDevExt, pSrbExt, NVME_QUEUE_TYPE_ADMIN, FALSE);
             if (ioStarted == FALSE)
                 ASSERT(FALSE);
         }
@@ -6353,7 +6342,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateStartStopUnitResponse(
         ioStarted = ProcessIo(pSrbExt->pNvmeDevExt,
                               pSrbExt,
                               NVME_QUEUE_TYPE_ADMIN,
-                              TRUE);
+                              FALSE);
 
         if (ioStarted == FALSE)
             ASSERT(FALSE);
@@ -6405,6 +6394,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateWriteBufferResponse(
 )
 {
     PNVME_SRB_EXTENSION pSrbExt = NULL;
+   	PNVME_DEVICE_EXTENSION pDevExt = NULL;
     PSTOR_SCATTER_GATHER_LIST pSgl = NULL;
     UINT32 bufferOffset = 0; /* 3 byte field */
     UINT32 paramListLength = 0; /* 3 byte field */
@@ -6416,17 +6406,29 @@ SNTI_TRANSLATION_STATUS SntiTranslateWriteBufferResponse(
     /* Default to successful translation */
     SNTI_TRANSLATION_STATUS returnStatus = SNTI_SEQUENCE_IN_PROGRESS;
     pSrbExt = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb);
+   	pDevExt = (PNVME_DEVICE_EXTENSION)pSrbExt->pNvmeDevExt;
     mode = GET_U8_FROM_CDB(pSrb, WRITE_BUFFER_CDB_MODE_OFFSET);
+	bufferId = GET_U8_FROM_CDB(pSrb, WRITE_BUFFER_CDB_BUFFER_ID_OFFSET);
 
     switch (mode & WRITE_BUFFER_CDB_MODE_MASK) {
         case DOWNLOAD_SAVE_ACTIVATE:
             if (pSrbExt->nvmeSqeUnit.CDW0.OPC ==
                 ADMIN_FIRMWARE_IMAGE_DOWNLOAD) {
+                BOOLEAN ioStarted = FALSE;
+				dword10 |= bufferId;
+                dword10 |= 0x00000008;
+
                 /* Activate microcode upon completion of FW Image Download */
                 SntiBuildFirmwareActivateCmd(pSrbExt, dword10);
 
                 returnStatus = SNTI_SEQUENCE_IN_PROGRESS;
                 pSrb->SrbStatus = SRB_STATUS_PENDING;
+
+                /* Issue the command internally */
+                ioStarted = ProcessIo(pDevExt, pSrbExt, NVME_QUEUE_TYPE_ADMIN, FALSE);
+                if (ioStarted == FALSE)
+                 ASSERT(FALSE);
+               
             } else if (pSrbExt->nvmeSqeUnit.CDW0.OPC ==
                        ADMIN_FIRMWARE_ACTIVATE) {
                 /* Command is complete */

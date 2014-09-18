@@ -1263,60 +1263,34 @@ BOOLEAN NVMeResetAdapter(
      */
     CC.AsUlong= StorPortReadRegisterUlong(pAE,
                                           (PULONG)(&pAE->pCtrlRegister->CC));
-    CC.EN = 0;
+	if (CC.EN == 1) {
 
-    StorPortWriteRegisterUlong(pAE,
-                               (PULONG)(&pAE->pCtrlRegister->CC),
-                               CC.AsUlong);
+		/*
+         * Before we transition to 0, make sure the ctrl is actually RDY        
+         */
+        if(FALSE == NVMeWaitForCtrlRDY(pAE, 1)) {
+            return FALSE;
+        }
+		
+		CC.EN = 0;
 
-    if (NVMeWaitOnReady(pAE) == FALSE) {
-        StorPortDebugPrint(INFO,
-                       "NVMeResetAdapter: EN bit is not getting Cleared\n");
-        return (FALSE);
-    }
+		StorPortWriteRegisterUlong(pAE,
+			(PULONG)(&pAE->pCtrlRegister->CC),
+			CC.AsUlong);
 
+
+		if (NVMeWaitForCtrlRDY(pAE, 0) == FALSE) {
+			StorPortDebugPrint(INFO,
+				"NVMeResetAdapter: EN bit is not getting Cleared\n");
+			return (FALSE);
+		}
+	}
 
  	pAE->DriverState.NextDriverState = NVMeWaitOnRDY;
 
     return (TRUE);
 } /* NVMeResetAdapter */
 
-/*******************************************************************************
- * NVMeWaitOnReady
- *
- * @brief Polls on the status bit waiting for RDY state
- *
- * @param pAE - Pointer to hardware device extension.
- *
- * @return BOOLEAN
- *     TRUE - If it went RDY before the timeout
- *     FALSE - If anything goes wrong
- ******************************************************************************/
-BOOLEAN NVMeWaitOnReady(
-    PNVME_DEVICE_EXTENSION pAE
-)
-{
-    NVMe_CONTROLLER_STATUS CSTS;
-    ULONG PollMax = pAE->uSecCrtlTimeout / MAX_STATE_STALL_us;
-    ULONG PollCount;
-
-    /*
-     * Find out the Timeout value from Controller Capability register,
-     * which is in 500 ms.
-     * In case the read back unit is 0, make it 1, i.e., 500 ms wait.
-     */
-    for (PollCount = 0; PollCount < PollMax; PollCount++) {
-        CSTS.AsUlong = StorPortReadRegisterUlong(
-            pAE, (PULONG)(&pAE->pCtrlRegister->CSTS));
-
-        if (CSTS.RDY == 0)
-            return TRUE;
-
-        NVMeStallExecution(pAE, MAX_STATE_STALL_us);
-    }
-
-    return FALSE;
-} /* NVMeWaitOnReady */
 
 /*******************************************************************************
  * NVMeEnableAdapter
