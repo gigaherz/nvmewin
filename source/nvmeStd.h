@@ -48,6 +48,7 @@
 #ifndef __NVME_STD_H__
 #define __NVME_STD_H__
 
+#include <evntrace.h>
 
 #ifdef DUMB_DRIVER
 #define DUMB_DRIVER_SZ (1024 * 64)
@@ -250,15 +251,16 @@ void TraceEvent(HISTORY_TAG tag, ULONG queueId, ULONG CID,
 /* Callback function prototype for internal request completions */
 typedef BOOLEAN (*PNVME_COMPLETION_ROUTINE) (PVOID param1, PVOID param2);
 
-
 /* Debugging Printing Levels */
 enum
 {
-    INFO = 0,
-    WARNING,
-    ERROR,
-    TRACE
+    INFO = TRACE_LEVEL_INFORMATION,
+    WARNING = TRACE_LEVEL_WARNING,
+    ERROR = TRACE_LEVEL_ERROR,
+    TRACE = TRACE_LEVEL_VERBOSE
 };
+
+
 
 /*
  * PCI Access Ranges, need at least one PCI BAR memory for Controller Registers
@@ -946,6 +948,10 @@ typedef struct _nvme_device_extension
     /* Controller Identify Data */
     ADMIN_IDENTIFY_CONTROLLER   controllerIdentifyData;
 
+    /* Scsi WMI info */
+    SCSI_WMILIB_CONTEXT         WmiLibContext;
+    /* Wmi Custom Data */
+
     /* General Device Extension info */
 
     /* State Machine structure */
@@ -1032,6 +1038,11 @@ typedef struct _nvme_srb_extension
     /* Callback completion routine, if needed */
     PNVME_COMPLETION_ROUTINE     pNvmeCompletionRoutine;
 
+    /* WMI */
+
+    /* space for keeping info about the active WMI command */
+    SCSIWMI_REQUEST_CONTEXT        WmiReqContext;
+
     /*
      * dsmBuffer adds a DWORD-aligned 2K buffer that -- when combined with 
      * the prpList which immediately follows it -- serves as a 4K area that is 
@@ -1045,13 +1056,16 @@ typedef struct _nvme_srb_extension
 
 #define PRP_LIST_SIZE            sizeof(UINT64) * (MAX_TX_SIZE / PAGE_SIZE)
 
-    UINT32                       dsmBuffer[PAGE_SIZE_IN_DWORDS -
-                                        PRP_LIST_SIZE /sizeof(UINT32)];
+    // To allow for alignment of dsmBuffer on 16-byte boundary, add 1 extra element
+    UINT32                       dsmBuffer[(PAGE_SIZE_IN_DWORDS + 4) -
+                                         PRP_LIST_SIZE /sizeof(UINT32)];
+
     /* Temp PRP List */
     UINT64                       prpList[MAX_TX_SIZE / PAGE_SIZE];
     UINT32                       numberOfPrpEntries;
 
     /* Data buffer pointer for internally allocated memory */
+    UINT32                       dataBufferSize;
     PVOID                        pDataBuffer;
 
     /* Child/Parent pointers for child I/O's needed when holes in SGL's */
@@ -1565,6 +1579,10 @@ VOID IO_StorPortNotification(
 );
 #else
 #define IO_StorPortNotification StorPortNotification
+#endif
+
+#ifndef DBG
+VOID WppCleanupRoutine(PVOID arg1);
 #endif
 
 

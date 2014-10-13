@@ -46,6 +46,15 @@
  */
 
 #include "precomp.h"
+#ifndef DBG
+#include "nvmestd.tmh"
+#endif
+
+
+// Global variables
+#ifndef DBG
+PVOID TraceContext;
+#endif
 
 #ifdef HISTORY
 void TracePathSubmit(HISTORY_TAG tag, ULONG queueId, ULONG NSID,
@@ -122,6 +131,9 @@ ULONG DriverEntry(
 {
     HW_INITIALIZATION_DATA hwInitData = { 0 };
     ULONG Status = 0;
+#ifndef DBG
+    STORAGE_TRACE_INIT_INFO initInfo;
+#endif
 
     /* DbgBreakPoint(); */
 
@@ -151,7 +163,7 @@ ULONG DriverEntry(
 #if (NTDDI_VERSION > NTDDI_WIN7)
 	/* Specify support/use SRB Extension for Windows 8 and up */
     hwInitData.SrbTypeFlags = SRB_TYPE_FLAG_STORAGE_REQUEST_BLOCK;
-	hwInitData.FeatureSupport = STOR_FEATURE_FULL_PNP_DEVICE_CAPABILITIES;
+    hwInitData.FeatureSupport = STOR_FEATURE_FULL_PNP_DEVICE_CAPABILITIES;
 #endif
     /* Set required extension sizes. */
     hwInitData.DeviceExtensionSize = sizeof(NVME_DEVICE_EXTENSION);
@@ -163,9 +175,32 @@ ULONG DriverEntry(
                                 &hwInitData,
                                 NULL );
 
-    StorPortDebugPrint(INFO,
-                       "StorPortInitialize returns Status(0x%x)\n",
-                       Status);
+#ifndef DBG
+    // 
+    // Initialize storage tracing library
+    //
+    TraceContext = NULL;
+
+    memset(&initInfo, 0, sizeof(STORAGE_TRACE_INIT_INFO));
+    initInfo.Size = sizeof(STORAGE_TRACE_INIT_INFO);
+    initInfo.DriverObject = DriverObject;
+    initInfo.NumErrorLogRecords = 5;
+    initInfo.TraceCleanupRoutine = WppCleanupRoutine;
+    initInfo.TraceContext = NULL;
+
+    WPP_INIT_TRACING(DriverObject, RegistryPath, &initInfo);
+
+    //
+    // Save the traceContext 
+    // 
+    if (initInfo.TraceContext != NULL) {
+        TraceContext = initInfo.TraceContext;
+    }
+
+
+#endif
+
+    StorPortDebugPrint(INFO, "StorPortInitialize returns Status(0x%x)\n", Status);
 
     return (Status);
 } /* DriverEntry */
@@ -237,8 +272,8 @@ NVMeFindAdapter(
     } else {
         /* Print out where it is */
         StorPortDebugPrint(INFO,
-                           "Access Range, VirtualAddr=0x%llX.\n",
-                           pAE->pCtrlRegister);
+            "Access Range, VirtualAddr=0x%p.\n",
+            pAE->pCtrlRegister);
     }
 
 
@@ -396,8 +431,10 @@ NVMeFindAdapter(
     /* requesting memory buffers in crash dump or hibernation mode. */
     pPCI->RequestedDumpBufferSize = DUMP_BUFFER_SIZE;
     pAE->pPCI = pPCI;    
+    pPCI->WmiDataProvider = TRUE;
 
-    pPCI->WmiDataProvider = FALSE;
+
+    InitializeWmiContext(pAE);
 
     /* Confirm with Storport that device is found */
     return(SP_RETURN_FOUND);
@@ -1079,7 +1116,7 @@ BOOLEAN NVMeBuildIo(
                  * adapter. Fill in fields of STOR_DEVICE_CAPABILITIES_EX.
                  */
 #if (NTDDI_VERSION > NTDDI_WIN7)
-				PSTOR_DEVICE_CAPABILITIES_EX pDevCapabilities =
+                PSTOR_DEVICE_CAPABILITIES_EX pDevCapabilities =
                     (PSTOR_DEVICE_CAPABILITIES_EX)GET_DATA_BUFFER(Srb);
 #else
                 PSTOR_DEVICE_CAPABILITIES pDevCapabilities =
@@ -1285,18 +1322,18 @@ BOOLEAN NVMeBuildIo(
             } /* switch */
         break;
         case SRB_FUNCTION_WMI:
+            NVMeInitSrbExtension((PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(Srb),
+                pAdapterExtension,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                (PSCSI_REQUEST_BLOCK)Srb);
+#endif
             /* For WMI requests, just turn around and complete successfully */
             StorPortDebugPrint(INFO, "BuildIo: SRB_FUNCTION_WMI\n");
+            return TRUE;
 
-            Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
-            IO_StorPortNotification(RequestComplete, 
-                                    AdapterExtension, 
-#if (NTDDI_VERSION > NTDDI_WIN7)
-                                    (PSTORAGE_REQUEST_BLOCK)Srb);
-#else
-                                    (PSCSI_REQUEST_BLOCK)Srb);
-#endif
-            return FALSE;
+            /* handle in startio */    
         break;
         default:
             /*
@@ -1440,11 +1477,11 @@ BOOLEAN NVMeProcessAbortCmd(
                     pResetSrbExt->issuedAbortCmdCnt--;
                 }
 
-				if (pResetSrbExt->issuedAbortCmdCnt == 0) {
-					return FALSE;
-				} else {
-					return TRUE;
-				}
+                if (pResetSrbExt->issuedAbortCmdCnt == 0) {
+                    return FALSE;
+                } else {
+                    return TRUE;
+                }
             }
         } /* for cmds on the SQ */
     } /* for the SQ */
@@ -1603,6 +1640,25 @@ BOOLEAN NVMeStartIo(
                                     (PSCSI_REQUEST_BLOCK)Srb);
 #endif
         break;
+        case SRB_FUNCTION_WMI:
+            /* For WMI requests, just turn around and complete successfully */
+            StorPortDebugPrint(INFO, "NVMeStartIo: SRB_FUNCTION_WMI\n");
+
+            DispatchWmi(pAdapterExtension,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                (PSCSI_REQUEST_BLOCK)Srb);
+#endif
+
+            Srb->SrbStatus = SRB_STATUS_SUCCESS;
+            IO_StorPortNotification(RequestComplete, pAdapterExtension, 
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                (PSCSI_REQUEST_BLOCK)Srb);
+#endif
+            break;
         default:
             /*
              * For unsupported SRB, complete with status:
@@ -1869,7 +1925,7 @@ IoCompletionDpcRoutine(
     BOOLEAN InterruptClaimed = FALSE;
     STOR_LOCK_HANDLE DpcLockhandle = { 0 };
     STOR_LOCK_HANDLE StartLockHandle = { 0 };
-	BOOLEAN completeStatus = FALSE;
+    BOOLEAN completeStatus = FALSE;
 
     if (pDpc != NULL) {
         ASSERT(pAE->ntldrDump == FALSE);
@@ -1930,13 +1986,13 @@ IoCompletionDpcRoutine(
 
 #pragma prefast(suppress:6011,"This pointer is not NULL")
                 completeStatus = NVMeCompleteCmd(pAE,
-									pCplEntry->DW2.SQID,
-									pCplEntry->DW2.SQHD,
-									pCplEntry->DW3.CID,
-									(PVOID)&pSrbExtension);
-				if (completeStatus == FALSE) {
-					return;
-				}
+                                                 pCplEntry->DW2.SQID,
+                                                 pCplEntry->DW2.SQHD,
+                                                 pCplEntry->DW3.CID,
+                                                (PVOID)&pSrbExtension);
+                if (completeStatus == FALSE) {
+                    return;
+                }
 #ifdef HISTORY
                 TracePathComplete(COMPPLETE_CMD, pCplEntry->DW2.SQID,
                     pCplEntry->DW3.CID, pCplEntry->DW2.SQHD,
@@ -2022,7 +2078,7 @@ IoCompletionDpcRoutine(
 
                     if (pSrbExtension->pNvmeCompletionRoutine == NULL) {
                         /*
-                         * if no comp reoutine, call only if we had a valid
+                         * if no comp routine, call only if we had a valid
                          * status translation, otherwise let it timeout if
                          * if was host based
                          */
@@ -2080,12 +2136,12 @@ IoCompletionDpcRoutine(
         pAE->IntxMasked = FALSE;
     }
     if (pDpc != NULL) {
-		if (pAE->MultipleCoresToSingleQueueFlag) {
-			StorPortReleaseSpinLock(pAE, &StartLockHandle);
-		} else {
-			StorPortReleaseSpinLock(pAE, &DpcLockhandle);
-		}
-	}
+        if (pAE->MultipleCoresToSingleQueueFlag) {
+            StorPortReleaseSpinLock(pAE, &StartLockHandle);
+        } else {
+            StorPortReleaseSpinLock(pAE, &DpcLockhandle);
+        }
+    }
 } /* IoCompletionDpcRoutine */
 
 
@@ -2164,7 +2220,7 @@ BOOLEAN NVMeWaitForCtrlRDY(
          StorPortReadRegisterUlong(pAE,
                                    &pAE->pCtrlRegister->CSTS.AsUlong);
      while (CSTS.RDY != expectedValue) {
-		NVMeStallExecution(pAE, MAX_STATE_STALL_us);
+        NVMeStallExecution(pAE, MAX_STATE_STALL_us);
         time += STORPORT_TIMER_CB_us;
         if (time > pAE->uSecCrtlTimeout) {
             return FALSE;
@@ -2227,9 +2283,9 @@ VOID RecoveryDpcRoutine(
         /* Complete outstanding commands on submission queues */
         StorPortNotification(ResetDetected, pAE, 0);
 
-                /*
-         * detect and complete all commands
-                 */
+       /*
+        * detect and complete all commands
+        */
         NVMeDetectPendingCmds(pAE, TRUE);
 
         /*
@@ -4011,7 +4067,7 @@ BOOLEAN NVMeProcessPublicIoctl(
     STOR_PHYSICAL_ADDRESS physAddr;
     ULONG paLength;
     BOOLEAN status = IOCTL_PENDING;
-	UINT32 numDwords = 0;
+    UINT32 numDwords = 0;
 
     pSrbExt = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb);
 
@@ -4196,9 +4252,9 @@ BOOLEAN NVMeProcessPublicIoctl(
             pSrbExt->nvmeSqeUnit.CDW0.FUSE = FUSE_NORMAL_OPERATION;
 
             /* DWORD 10 */
-			numDwords =
-				((sizeof(ADMIN_GET_LOG_PAGE_ERROR_INFORMATION_LOG_ENTRY) / NUM_BYTES_IN_DWORD) - 1);
-			pSrbExt->nvmeSqeUnit.CDW10 |= (numDwords << BYTE_SHIFT_2);
+            numDwords =
+                ((sizeof(ADMIN_GET_LOG_PAGE_ERROR_INFORMATION_LOG_ENTRY) / NUM_BYTES_IN_DWORD) - 1);
+            pSrbExt->nvmeSqeUnit.CDW10 |= (numDwords << BYTE_SHIFT_2);
 
             pSrbExt->nvmeSqeUnit.CDW10 |=
                 (SMART_HEALTH_INFORMATION & DWORD_MASK_LOW_WORD);
@@ -4746,6 +4802,14 @@ VOID IO_StorPortNotification(
     StorPortNotification(NotificationType,
                          pHwDeviceExtension,
                          pSrb);
+}
+#endif
+
+#ifndef DBG
+VOID WppCleanupRoutine(PVOID arg1) {
+    StorPortDebugPrint(INFO, "WppCleanupRoutine\n");
+
+    WPP_CLEANUP(NULL, TraceContext);
 }
 #endif
 

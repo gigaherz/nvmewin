@@ -52,3 +52,6 @@
 #define VER_ORIGINALFILENAME_STR    "nvme.sys"
 
 #include "common.ver"
+
+
+MofResource MOFDATA nvmeMofData.bmf

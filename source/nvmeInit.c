@@ -46,6 +46,9 @@
  */
 
 #include "precomp.h"
+#ifndef DBG
+#include "nvmeinit.tmh"
+#endif
 
 /*******************************************************************************
  * NVMeGetPhysAddr
@@ -170,9 +173,9 @@ PVOID NVMeAllocateMem(
                                "NVMeAllocateMem: Failure from node=%d, sts=0x%x\n",
                                Node, Status);
             /* If the memory allocation fails for the requested node,
-		     * we will try to allocate from any available node, which is not
-		     * expected to fail.
-		     */
+            * we will try to allocate from any available node, which is not
+            * expected to fail.
+            */
 
             /* Give it another try from any nodes that can grant the request */
             Status = 0;
@@ -372,7 +375,7 @@ BOOLEAN NVMeEnumNumaCores(
             StorPortDebugPrint(INFO, "NVMeEnumNumaCores: Failed to retrieve group affinity(%d).\n", Grp);
             return (FALSE);
         }
-        StorPortDebugPrint(INFO, "NVMeEnumNumaCores: Group(%d) affinity mask(0x%x).\n", Grp, GrpAffinityMask);
+        StorPortDebugPrint(INFO, "NVMeEnumNumaCores: Group(%d) affinity mask(0x%Ix).\n", Grp, GrpAffinityMask);
         pProcGrpTbl = pRMT->pProcGroupTbl + Grp;
         pProcGrpTbl->GroupAffinity.Group = Grp;
         pProcGrpTbl->GroupAffinity.Mask = GrpAffinityMask;
@@ -403,7 +406,7 @@ BOOLEAN NVMeEnumNumaCores(
             return (FALSE);
         }
 
-        StorPortDebugPrint(INFO, "Core mask is 0x%x in Group(%d)\n", 
+        StorPortDebugPrint(INFO, "Core mask is 0x%Ix in Group(%d)\n", 
             GroupAffinity.Mask, GroupAffinity.Group);
 
         /* Find out the number of active cores of the NUMA node */
@@ -1011,7 +1014,7 @@ ULONG NVMeInitSubQueue(
     pSQI->pSubTDBL = (PULONG)(&pAE->pCtrlRegister->IODB[dbIndex].QHT );
 
     StorPortDebugPrint(INFO,
-                       "NVMeInitSubQueue : SQ 0x%x pSubTDBL 0x%x at index  0x%x\n",
+                       "NVMeInitSubQueue : SQ 0x%x pSubTDBL 0x%p at index  0x%x\n",
                        QueueID, pSQI->pSubTDBL, dbIndex);
     pSQI->Requests = 0;
     pSQI->SubQTailPtr = 0;
@@ -1133,7 +1136,7 @@ ULONG NVMeInitCplQueue(
     pCQI->pCplHDBL = (PULONG)(&pAE->pCtrlRegister->IODB[dbIndex].QHT );
 
     StorPortDebugPrint(INFO,
-                       "NVMeInitCplQueue : CQ 0x%x pCplHDBL 0x%x at index  0x%x\n",
+                       "NVMeInitCplQueue : CQ 0x%x pCplHDBL 0x%p at index  0x%x\n",
                        QueueID, pCQI->pCplHDBL, dbIndex);
     pCQI->Completions = 0;
     pCQI->CurPhaseTag = 0;
@@ -1183,8 +1186,8 @@ ULONG NVMeInitCplQueue(
     pCQI->pCplQStart = (PVOID)(PtrTemp + queueSize);
 
     queueSize = pSQI->SubQEntries * sizeof(NVMe_COMPLETION_QUEUE_ENTRY);
-    memset(pCQI->pCplQStart, 0, queueSize);
     pCQI->pCplQStart = PAGE_ALIGN_BUF_PTR(pCQI->pCplQStart);
+    memset(pCQI->pCplQStart, 0, queueSize);
 
     pCQI->CplQStart = NVMeGetPhysAddr( pAE, pCQI->pCplQStart );
     /* If fails on converting to physical address, return here */
@@ -1554,14 +1557,14 @@ VOID NVMeSetFeaturesCompletion(
                 /* driver only supports 1 LBA range type per NS (NUM is 0 based) */
                 if (pSetFeaturesCDW11->NUM == 0) {
 
-                        /*
+                    /*
                      *
                      * NOTE:  spec/group still working this behavior out
                      * wrt dealing with range tpyes so making this simple
                      * for now so we can update it when needed.  Currently
                      * we'll IGNORE the range TYPE entirely
                      *
-                         */
+                     */
                     StorPortDebugPrint(INFO,
                            "pLbaRangeTypeEntry type : 0x%llX lun id %d nsid 0x%x\n",
                            pLbaRangeTypeEntry->Type,
@@ -2618,6 +2621,8 @@ BOOLEAN NVMeNormalShutdown(
         return (FALSE);
     }
 
+    StorPortDebugPrint(INFO, "NVMeInit.c: Issue Shutdown Notification\n");
+
     /*
      * Read Controller Configuration first before setting SHN bits of
      * Controller Configuration to normal shutdown (01b)
@@ -2636,6 +2641,8 @@ BOOLEAN NVMeNormalShutdown(
                            (PULONG)(&pAE->pCtrlRegister->CSTS.AsUlong));
 
         if (CSTS.SHST == 2) {
+            StorPortDebugPrint(INFO, "NVMeInit.c: Shutdown Successful\n");
+
             /* Free the memory if we are doing shutdown */
             NVMeFreeBuffers(pAE);
             return (TRUE);
@@ -2853,7 +2860,6 @@ BOOLEAN NVMeAllocIoQueues(
     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
     PNUMA_NODE_TBL pNNT = NULL;
     PSUB_QUEUE_INFO pSQI = NULL;
-    PSUB_QUEUE_INFO pSQIDest = NULL, pSQISrc = NULL;
     PCORE_TBL pCT = NULL;
     ULONG Core, Node, QEntries;
     ULONG CoreTableIndex = 0;
@@ -3014,7 +3020,7 @@ PCMD_ENTRY NVMeAcqQueueEntry(
         pCmdEntry = CONTAINING_RECORD(pListEntry, CMD_ENTRY, ListEntry);
 
         StorPortDebugPrint(TRACE,
-                           "NVMeAcqQueueEntry : Entry at 0x%llX\n",
+                           "NVMeAcqQueueEntry : Entry at 0x%p\n",
                            pCmdEntry);
     } else {
         StorPortDebugPrint(WARNING,
@@ -3389,7 +3395,6 @@ VOID NVMeMaskInterrupts(
 )
 {
     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
-    PMSI_MESSAGE_TBL pMMT = NULL;
 
     /* Determine the Interrupt type */
     switch (pRMT->InterruptType) {
@@ -3427,7 +3432,6 @@ VOID NVMeUnmaskInterrupts(
 )
 {
     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
-    PMSI_MESSAGE_TBL pMMT = NULL;
 
     /* Determine the Interrupt type */
     switch (pRMT->InterruptType) {

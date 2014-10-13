@@ -46,6 +46,9 @@
  */
 
 #include "precomp.h"
+#ifndef DBG
+#include "nvmeIo.tmh"
+#endif
 
 #if DBG
 BOOLEAN gResetTest = FALSE;
@@ -77,7 +80,6 @@ ULONG NVMeIssueCmd(
 {
     PQUEUE_INFO pQI = &pAE->QueueInfo;
     PSUB_QUEUE_INFO pSQI = NULL;
-    PCMD_ENTRY pCmdEntry = NULL;
     PNVMe_COMMAND pNVMeCmd = NULL;
     USHORT tempSqTail = 0;
 
@@ -223,9 +225,8 @@ ProcessIo(
     PROCESSOR_NUMBER ProcNumber;
     USHORT SubQueue = 0;
     USHORT CplQueue = 0;
-    PQUEUE_INFO pQI = &pAdapterExtension->QueueInfo;
     STOR_LOCK_HANDLE hStartIoLock = {0};
-	BOOLEAN completeStatus = FALSE;
+    BOOLEAN completeStatus = FALSE;
 #ifdef PRP_DBG
     PVOID pVa = NULL;
 #endif
@@ -269,7 +270,7 @@ ProcessIo(
             }
     } else {
         /* It's an admin queue */
-            SubQueue = CplQueue = 0;
+        SubQueue = CplQueue = 0;
     }
 
     /* 2 - Choose CID for the CMD_ENTRY */
@@ -426,19 +427,19 @@ ProcessIo(
 
     if (StorStatus != STOR_STATUS_SUCCESS) {
         completeStatus = NVMeCompleteCmd(pAdapterExtension,
-							SubQueue,
-							NO_SQ_HEAD_CHANGE,
-							pNvmeCmd->CDW0.CID,
-							(PVOID)pSrbExtension);
+                                         SubQueue,
+                                         NO_SQ_HEAD_CHANGE,
+                                         pNvmeCmd->CDW0.CID,
+                                        (PVOID)pSrbExtension);
 
-		if (completeStatus == FALSE) {
-			IoStatus = NOT_SUBMITTED;
+        if (completeStatus == FALSE) {
+            IoStatus = NOT_SUBMITTED;
             __leave;
-		}
-		else {
-			IoStatus = BUSY;
+        }
+        else {
+            IoStatus = BUSY;
             __leave;
-		}
+        }
             
     }
 
@@ -584,7 +585,7 @@ BOOLEAN NVMeCompleteCmd(
 
     InsertTailList(&pSQI->FreeQList, &pCmdEntry->ListEntry);
 
-	return TRUE;
+    return TRUE;
 } /* NVMeCompleteCmd */
 
 /*******************************************************************************
@@ -668,7 +669,7 @@ BOOLEAN NVMeDetectPendingCmds(
 #if DBG
                 DbgPrintEx(DPFLTR_STORMINIPORT_ID,
                     DPFLTR_ERROR_LEVEL,
-                    "NVMeDetectPendingCmds: cmdinfo cmd id 0x%x srbExt 0x%x srb 0x%x\n",
+                    "NVMeDetectPendingCmds: cmdinfo cmd id 0x%x srbExt 0x%p srb 0x%p\n",
                     pCmdEntry->CmdInfo.CmdID, pSrbExtension, pSrbExtension->pSrb);
                 DbgPrintEx(DPFLTR_STORMINIPORT_ID,
                     DPFLTR_ERROR_LEVEL,

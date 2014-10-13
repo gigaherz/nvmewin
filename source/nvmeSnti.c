@@ -46,6 +46,9 @@
  */
 
 #include "precomp.h"
+#ifndef DBG
+#include "nvmeSnti.tmh"
+#endif
 
 HW_INITIALIZATION_DATA gHwInitializationData;
 
@@ -770,10 +773,10 @@ VOID SntiTranslateUnitSerialPage(
      * "0123_4567_89AB_CDEF." for a number like "0123456789ABCDEF".
      */
     srcSN = pDevExt->controllerIdentifyData.SN;
-	for (i = 1; i < INQ_SERIAL_NUMBER_LENGTH / INQ_SN_SUB_LENGTH; i++) {
-		StorPortCopyMemory(dstSN, srcSN, INQ_SN_SUB_LENGTH);
-		srcSN += INQ_SN_SUB_LENGTH;
-		dstSN += INQ_SN_SUB_LENGTH;
+    for (i = 1; i < INQ_SERIAL_NUMBER_LENGTH / INQ_SN_SUB_LENGTH; i++) {
+        StorPortCopyMemory(dstSN, srcSN, INQ_SN_SUB_LENGTH);
+        srcSN += INQ_SN_SUB_LENGTH;
+        dstSN += INQ_SN_SUB_LENGTH;
         *dstSN = '_';
         dstSN++;
     }
@@ -975,7 +978,6 @@ VOID SntiTranslateLogicalBlockProvisioningPage(
 )
 {
     UINT16 allocLen = 0;
-    SNTI_STATUS status;
     PNVME_SRB_EXTENSION pSrbExt = NULL;
     PADMIN_IDENTIFY_CONTROLLER pCntrlIdData = NULL;
     PVPD_LOGICAL_BLOCK_PROVISIONING_PAGE pLBPPage = NULL;
@@ -1579,9 +1581,11 @@ SNTI_TRANSLATION_STATUS SntiTranslateReadCapacity16(
 )
 {
     PREAD_CAPACITY_16_DATA pReadCapacityData = NULL;
+    READ_CAPACITY_16_DATA ReadCapacityTemp = {0};
     UINT64 lastLba;
     UINT32 lbaLength;
     UINT32 allocLength;
+    UINT32 copyLength;
     UINT32 lbaLengthPower;
     UINT8  flbas;
     UINT8  dps;
@@ -1626,7 +1630,8 @@ SNTI_TRANSLATION_STATUS SntiTranslateReadCapacity16(
         SntiMapInternalErrorStatus(pSrb, SNTI_FAILURE);
         returnStatus = SNTI_FAILURE_CHECK_RESPONSE_DATA;
     } else {
-        memset(pReadCapacityData, 0, sizeof(READ_CAPACITY_16_DATA));
+        /* Zero out the area for the response data */
+        memset(pReadCapacityData, 0, allocLength);
 
         /* Get the Data Protection Settings (DPS) */
         dps = pLunExt->identifyData.DPS.ProtectionEnabled;
@@ -1658,21 +1663,26 @@ SNTI_TRANSLATION_STATUS SntiTranslateReadCapacity16(
             }; /* end switch */
         }
 
+        /* Create the response data in a local buffer */
         /* Must byte swap these as they are returned in big endian */
-        REVERSE_BYTES_QUAD(&pReadCapacityData->LogicalBlockAddress, &lastLba);
-        REVERSE_BYTES(&pReadCapacityData->BytesPerBlock, &lbaLength);
+        REVERSE_BYTES_QUAD(&ReadCapacityTemp.LogicalBlockAddress, &lastLba);
+        REVERSE_BYTES(&ReadCapacityTemp.BytesPerBlock, &lbaLength);
 
-        pReadCapacityData->ProtectionType          = protectionType;
-        pReadCapacityData->ProtectionEnable        = protectionEnabled;
-        pReadCapacityData->ProtectionInfoIntervals = UNSPECIFIED;
+        ReadCapacityTemp.ProtectionType = protectionType;
+        ReadCapacityTemp.ProtectionEnable = protectionEnabled;
+        ReadCapacityTemp.ProtectionInfoIntervals = UNSPECIFIED;
 
-        pReadCapacityData->LogicalBlocksPerPhysicalBlockExponent =
+        ReadCapacityTemp.LogicalBlocksPerPhysicalBlockExponent =
             ONE_OR_MORE_PHYSICAL_BLOCKS;
 
-        pReadCapacityData->LogicalBlockProvisioningMgmtEnabled = UNSPECIFIED;
-        pReadCapacityData->LogicalBlockProvisioningReadZeros   = UNSPECIFIED;
-        pReadCapacityData->LowestAlignedLbaMsb                 = LBA_0;
-        pReadCapacityData->LowestAlignedLbaLsb                 = LBA_0;
+        ReadCapacityTemp.LogicalBlockProvisioningMgmtEnabled = UNSPECIFIED;
+        ReadCapacityTemp.LogicalBlockProvisioningReadZeros = UNSPECIFIED;
+        ReadCapacityTemp.LowestAlignedLbaMsb = LBA_0;
+        ReadCapacityTemp.LowestAlignedLbaLsb = LBA_0;
+
+        /* Determine the amount of data to be copied into the response buff */
+        copyLength = min(allocLength, READ_CAP_16_PARM_DATA_SIZE);
+        memcpy(pReadCapacityData, &ReadCapacityTemp, copyLength);
 
         SET_DATA_LENGTH(pSrb, min(allocLength, READ_CAP_16_PARM_DATA_SIZE));
     }
@@ -2426,8 +2436,8 @@ SNTI_TRANSLATION_STATUS SntiTranslateRequestSense(
     if (descFormat == DESCRIPTOR_FORMAT_SENSE_DATA_TYPE) {
         /* Descriptor Format Sense Data */
         PDESCRIPTOR_FORMAT_SENSE_DATA pSenseData = NULL;
-		pSenseData = (PDESCRIPTOR_FORMAT_SENSE_DATA)GET_DATA_BUFFER(pSrb);
-        StorPortDebugPrint(INFO, "SntiTranslateRequestSense: Desc Fmt buffer@ 0x%llX, len=%d\n", 
+        pSenseData = (PDESCRIPTOR_FORMAT_SENSE_DATA)GET_DATA_BUFFER(pSrb);
+        StorPortDebugPrint(INFO, "SntiTranslateRequestSense: Desc Fmt buffer@ 0x%p, len=%d\n", 
             pSenseData, allocLength);
         memset(pSenseData, 0, allocLength);
         pSenseData->ResponseCode                 = DESC_FORMAT_SENSE_DATA;
@@ -2441,8 +2451,8 @@ SNTI_TRANSLATION_STATUS SntiTranslateRequestSense(
     } else {
         /* Fixed Format Sense Data */
         PSENSE_DATA pSenseData = NULL;
-		pSenseData = (PSENSE_DATA)GET_DATA_BUFFER(pSrb);
-        StorPortDebugPrint(INFO, "SntiTranslateRequestSense: Fixed Fmt buffer@ 0x%llX, len=%d\n", 
+        pSenseData = (PSENSE_DATA)GET_DATA_BUFFER(pSrb);
+        StorPortDebugPrint(INFO, "SntiTranslateRequestSense: Fixed Fmt buffer@ 0x%p, len=%d\n", 
             pSenseData, allocLength);
         memset(pSenseData, 0, allocLength);
         pSenseData->ErrorCode                    = FIXED_SENSE_DATA;
@@ -2584,12 +2594,10 @@ SNTI_TRANSLATION_STATUS SntiTranslateStartStopUnit(
 )
 {
     PNVME_SRB_EXTENSION pSrbExt = NULL;
-    UINT32 dword11 = 0;
     UINT8 immed = 0;
     UINT8 powerCondMod = 0;
     UINT8 powerCond = 0;
     UINT8 noFlush = 0;
-    UINT8 loadEject = 0; /* Unspecified */
     UINT8 start = 0;
 
     /* Default to successful translation */
@@ -2684,7 +2692,6 @@ SNTI_TRANSLATION_STATUS SntiTransitionPowerState(
     UINT32 dword11 = 0;
     UINT8 numPowerStatesSupported = 0;
     UINT8 lowestPowerStateSupported = 0;
-    UINT8 lastPowerStateSupported = 0;
 
     /* Default to successful translation */
     SNTI_TRANSLATION_STATUS returnStatus = SNTI_TRANSLATION_SUCCESS;
@@ -2797,6 +2804,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateUnmap(
 {
     ULONG paLength = 0;
     UINT16 numBlockDescriptors = 0;
+    UINT16 numRanges = 0;
     STOR_PHYSICAL_ADDRESS physAddr;
     SNTI_STATUS status = SNTI_SUCCESS;
     UINT16 blockDescriptorDataLength = 0;
@@ -2805,7 +2813,10 @@ SNTI_TRANSLATION_STATUS SntiTranslateUnmap(
     PNVM_DATASET_MANAGEMENT_COMMAND_DW10 pCdw10 = NULL;
     PNVM_DATASET_MANAGEMENT_COMMAND_DW11 pCdw11 = NULL;
     PNVM_DATASET_MANAGEMENT_RANGE pCurrentDsmRange = NULL;
+    PNVM_DATASET_MANAGEMENT_RANGE pAlignedDsmRange = NULL;
+    PNVM_DATASET_MANAGEMENT_RANGE pPageAlignedDsmRange = NULL;
     PUNMAP_BLOCK_DESCRIPTOR pCurrentUnmapBlockDescriptor = NULL; 
+    ULONG dsmRangeSize = 0;
     SNTI_TRANSLATION_STATUS returnStatus = SNTI_TRANSLATION_SUCCESS;
 
     /*
@@ -2847,6 +2858,8 @@ SNTI_TRANSLATION_STATUS SntiTranslateUnmap(
     numBlockDescriptors = blockDescriptorDataLength / 
         sizeof(UNMAP_BLOCK_DESCRIPTOR);
 
+    dsmRangeSize = numBlockDescriptors * sizeof(NVM_DATASET_MANAGEMENT_RANGE);
+
     if (numBlockDescriptors > MAX_UNMAP_BLOCK_DESCRIPTOR_COUNT) {
         SntiSetScsiSenseData(pSrb, 
             SCSISTAT_CHECK_CONDITION,
@@ -2878,29 +2891,62 @@ SNTI_TRANSLATION_STATUS SntiTranslateUnmap(
             &(pSrbExt->nvmeSqeUnit.CDW11);
         pCdw11->AD = 1;
 
-		/* Point PRP1 to our dedicated DSM range definition buffer */
+        // Align the DSM buffer on a 16-byte boundary (size of the DSM range element)
+        pAlignedDsmRange =
+            (PNVM_DATASET_MANAGEMENT_RANGE)((((UINT64)&pSrbExt->dsmBuffer) + sizeof(NVM_DATASET_MANAGEMENT_RANGE)) &
+            ~(sizeof(NVM_DATASET_MANAGEMENT_RANGE)-1));
+
+        /* Clear out the range buffers */
+        memset(pAlignedDsmRange, 0, dsmRangeSize);
+
+        // Find the page-aligned address within this buffer
+        pPageAlignedDsmRange = PAGE_ALIGN_BUF_PTR(pAlignedDsmRange);
+
+        /* Point PRP1 to our dedicated DSM range definition buffer */
         physAddr = StorPortGetPhysicalAddress(pSrbExt->pNvmeDevExt, 
             NULL, 
-            pSrbExt->dsmBuffer, 
+            pAlignedDsmRange,
             &paLength);
 
         if (physAddr.QuadPart != 0) { 
             pSrbExt->nvmeSqeUnit.PRP1 = physAddr.QuadPart;
-            pSrbExt->nvmeSqeUnit.PRP2 = 0;
+
+            /* determine if PRP2 is necessary */
+
+            /* Is the dsm buffer already page-aligned? OR Do then entries fit in the first page */
+            if ((pAlignedDsmRange == pPageAlignedDsmRange) ||
+                (((PUINT8)pAlignedDsmRange) + dsmRangeSize) <= ((PUINT8)pPageAlignedDsmRange))
+            {
+                pSrbExt->nvmeSqeUnit.PRP2 = 0;
+                pSrbExt->numberOfPrpEntries = 1;
+            } else {
+                physAddr = StorPortGetPhysicalAddress(pSrbExt->pNvmeDevExt,
+                    NULL,
+                    pPageAlignedDsmRange,
+                    &paLength);
+
+                if (physAddr.QuadPart != 0) {
+                    pSrbExt->nvmeSqeUnit.PRP2 = physAddr.QuadPart;
+                    pSrbExt->numberOfPrpEntries = 2;
         } else { 
             StorPortDebugPrint(INFO, 
-                "SNTI: Get PhysAddr for UNMAP failed (pSrbExt = 0x%x)\n",
+                        "SNTI: Second Get PhysAddr for UNMAP failed (pSrbExt = 0x%p)\n",
+                        pSrbExt);
+                    ASSERT(FALSE);
+                }
+            }
+        } else {
+            StorPortDebugPrint(INFO,
+                "SNTI: First Get PhysAddr for UNMAP failed (pSrbExt = 0x%p)\n",
                 pSrbExt);
             ASSERT(FALSE);
         }
-        pSrbExt->numberOfPrpEntries = 1;
 
         pCurrentUnmapBlockDescriptor = 
             (PUNMAP_BLOCK_DESCRIPTOR)((UCHAR*)(GET_DATA_BUFFER(pSrb)) +
             sizeof(UNMAP_LIST_HEADER));
         
-        pCurrentDsmRange = 
-            (PNVM_DATASET_MANAGEMENT_RANGE)(pSrbExt->dsmBuffer);
+        pCurrentDsmRange = pAlignedDsmRange;
 
         /* 
            Iterate over all Unmap block descriptors, converting from big endian
@@ -2930,7 +2976,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateUnmap(
             if (status == SNTI_SUCCESS) {
                 if (pCurrentDsmRange->LengthInLogicalBlocks != 0) {
                     pCurrentDsmRange++;
-                    pCdw10->NR++;
+                    numRanges++;
                 }
 
                 pCurrentUnmapBlockDescriptor++; 
@@ -2939,14 +2985,17 @@ SNTI_TRANSLATION_STATUS SntiTranslateUnmap(
 
         if (status == SNTI_SUCCESS) {
             /* Adjust, as NR is a 0 based value */
-            if (pCdw10->NR > 0) pCdw10->NR--;
-            else
+            if (numRanges > 0) {
+                pCdw10->NR = --numRanges;
+            }
+            else{
             /* 
                If lengths in all descriptors happened to have been zero
                then there is no command to send down, so report
                that things are complete.
             */
             returnStatus = SNTI_COMMAND_COMPLETED;
+            }
         } else {
             returnStatus = SNTI_FAILURE_CHECK_RESPONSE_DATA;
         }
@@ -3047,7 +3096,6 @@ SNTI_TRANSLATION_STATUS SntiTranslateWriteBuffer(
 )
 {
     PNVME_SRB_EXTENSION pSrbExt = NULL;
-    PSTOR_SCATTER_GATHER_LIST pSgl = NULL;
     UINT32 bufferOffset = 0; /* 3 byte field */
     UINT32 paramListLength = 0; /* 3 byte field */
     UINT32 dword10 = 0;
@@ -3074,6 +3122,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateWriteBuffer(
     switch (mode & WRITE_BUFFER_CDB_MODE_MASK) {
         case DOWNLOAD_SAVE_ACTIVATE:
             /* Issue NVME FIRMWARE IMAGE DOWNLOAD command */
+            /* NVMe Spec 1.1, Section 5.8: dword10 (NUMD) is zero-based. */
             dword10 |= ((paramListLength / NUM_BYTES_IN_DWORD)- 1);
             dword11 |= bufferOffset;
 
@@ -3083,6 +3132,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateWriteBuffer(
         break;
         case DOWNLOAD_SAVE_DEFER_ACTIVATE:
             /* Issue NVME FIRMWARE IMAGE DOWNLOAD command */
+            /* NVMe Spec 1.1, Section 5.8: dword10 (NUMD) is zero-based. */
             dword10 |= ((paramListLength / NUM_BYTES_IN_DWORD)- 1);
             dword11 |= bufferOffset;
 
@@ -3436,13 +3486,10 @@ SNTI_TRANSLATION_STATUS SntiTranslateLogSense(
 )
 {
     PNVME_SRB_EXTENSION pSrbExt = NULL;
-    UINT32 bufferSize;
-    UINT16 allocLength;
     UINT8 saveParameters;
     UINT8 pageControl;
     UINT8 pageCode;
 
-    SNTI_STATUS status = SNTI_SUCCESS;
     SNTI_TRANSLATION_STATUS returnStatus = SNTI_COMMAND_COMPLETED;
 
     /* Extract the Log Sense fields to determine the page */
@@ -3509,11 +3556,11 @@ SNTI_TRANSLATION_STATUS SntiTranslateLogSense(
                  * Fall through to finish setting up the PRP entries and GET LOG
                  * PAGE command
                  */
-                bufferSize =
-                  sizeof(ADMIN_GET_LOG_PAGE_SMART_HEALTH_INFORMATION_LOG_ENTRY);
+                pSrbExt->dataBufferSize =
+                    sizeof(ADMIN_GET_LOG_PAGE_SMART_HEALTH_INFORMATION_LOG_ENTRY);
 
                 pSrbExt->pDataBuffer =
-                  SntiAllocatePhysicallyContinguousBuffer(pSrbExt, bufferSize);
+                    SntiAllocatePhysicallyContinguousBuffer(pSrbExt, pSrbExt->dataBufferSize);
 
                 if (pSrbExt->pDataBuffer != NULL) {
                     SntiBuildGetLogPageCmd(pSrbExt, SMART_HEALTH_INFORMATION);
@@ -3540,11 +3587,11 @@ SNTI_TRANSLATION_STATUS SntiTranslateLogSense(
                  * page is 512 bytes long. Therefore, the translation must be
                  * performed on the completion side of this command.
                  */
-                bufferSize =
+                pSrbExt->dataBufferSize =
                   sizeof(ADMIN_GET_LOG_PAGE_SMART_HEALTH_INFORMATION_LOG_ENTRY);
 
                 pSrbExt->pDataBuffer =
-                  SntiAllocatePhysicallyContinguousBuffer(pSrbExt, bufferSize);
+                    SntiAllocatePhysicallyContinguousBuffer(pSrbExt, pSrbExt->dataBufferSize);
 
                 if (pSrbExt->pDataBuffer != NULL) {
                     SntiBuildGetLogPageCmd(pSrbExt, SMART_HEALTH_INFORMATION);
@@ -3952,7 +3999,6 @@ VOID SntiCreateControlModePage(
 #endif
     UINT16 modeDataLength = 0;
     UINT16 blockDescLength = 0;
-    UINT8  flbas;
 
     /* Determine which Mode Parameter Descriptor Block to use (8 or 16) */
     if (longLbaAccepted == 0)
@@ -4031,8 +4077,8 @@ VOID SntiCreateControlModePage(
     }
 
     SET_DATA_LENGTH(pSrb, min(modeDataLength, allocLength));
-    StorPortCopyMemory((PVOID)GET_DATA_BUFFER(pSrb), 
-		(PVOID)(pSrbExt->modeSenseBuf), GET_DATA_LENGTH(pSrb));
+    StorPortCopyMemory((PVOID)GET_DATA_BUFFER(pSrb),
+        (PVOID)(pSrbExt->modeSenseBuf), GET_DATA_LENGTH(pSrb));
 
 } /* SntiCreateControlModePage*/
 
@@ -4048,7 +4094,7 @@ VOID SntiHardCodeCacheModePage(
     PMODE_PARAMETER_HEADER pModeHeader6 = NULL;
     PMODE_PARAMETER_HEADER10 pModeHeader10 = NULL;
     PMODE_PARAMETER_BLOCK pModeParamBlock = NULL;
-	PSNTI_CACHING_MODE_PAGE pCachingModePage = NULL;
+    PCACHING_MODE_PAGE pCachingModePage = NULL;
 #if (NTDDI_VERSION > NTDDI_WIN7)
     PSTORAGE_REQUEST_BLOCK pSrb = pSrbExt->pSrb;
 #else
@@ -4083,10 +4129,10 @@ VOID SntiHardCodeCacheModePage(
     }
 
     /* Cache Mode Page */
-	pCachingModePage = (PSNTI_CACHING_MODE_PAGE)pModeParamBlock;
-	modeDataLength += sizeof(SNTI_CACHING_MODE_PAGE);
+    pCachingModePage = (PCACHING_MODE_PAGE)pModeParamBlock;
+    modeDataLength += sizeof(CACHING_MODE_PAGE);
 
-	memset(pCachingModePage, 0, sizeof(SNTI_CACHING_MODE_PAGE));
+    memset(pCachingModePage, 0, sizeof(CACHING_MODE_PAGE));
     pCachingModePage->PageCode         = MODE_PAGE_CACHING;
     pCachingModePage->PageSavable      = MODE_PAGE_PARAM_SAVEABLE_DISABLED;
     pCachingModePage->PageLength       = CACHING_MODE_PAGE_LENGTH;
@@ -4109,8 +4155,8 @@ VOID SntiHardCodeCacheModePage(
     }
 
     SET_DATA_LENGTH(pSrb, min(modeDataLength, allocLength));
-    StorPortCopyMemory((PVOID)GET_DATA_BUFFER(pSrb), 
-		(PVOID)(pSrbExt->modeSenseBuf), GET_DATA_LENGTH(pSrb));
+    StorPortCopyMemory((PVOID)GET_DATA_BUFFER(pSrb),
+        (PVOID)(pSrbExt->modeSenseBuf), GET_DATA_LENGTH(pSrb));
 } /* SntiHardCodeCacheModePage */
 
 /******************************************************************************
@@ -4203,8 +4249,8 @@ VOID SntiCreatePowerConditionControlModePage(
     }
 
     SET_DATA_LENGTH(pSrb, min(modeDataLength, allocLength));
-    StorPortCopyMemory((PVOID)GET_DATA_BUFFER(pSrb), 
-		(PVOID)(pSrbExt->modeSenseBuf), GET_DATA_LENGTH(pSrb));
+    StorPortCopyMemory((PVOID)GET_DATA_BUFFER(pSrb),
+        (PVOID)(pSrbExt->modeSenseBuf), GET_DATA_LENGTH(pSrb));
 } /* SntiCreatePowerConditionControlModePage */
 
 /******************************************************************************
@@ -4298,8 +4344,8 @@ VOID SntiCreateInformationalExceptionsControlModePage(
     }
 
     SET_DATA_LENGTH(pSrb, min(modeDataLength, allocLength));
-    StorPortCopyMemory((PVOID)GET_DATA_BUFFER(pSrb), 
-		(PVOID)(pSrbExt->modeSenseBuf), GET_DATA_LENGTH(pSrb));
+    StorPortCopyMemory((PVOID)GET_DATA_BUFFER(pSrb),
+        (PVOID)(pSrbExt->modeSenseBuf), GET_DATA_LENGTH(pSrb));
 
 } /* SntiCreateInformationalExceptionsControlModePage*/
 
@@ -4465,8 +4511,8 @@ VOID SntiReturnAllModePages(
     }
 
     SET_DATA_LENGTH(pSrb, min(modeDataLength, allocLength));
-    StorPortCopyMemory((PVOID)GET_DATA_BUFFER(pSrb), 
-		(PVOID)(pSrbExt->modeSenseBuf), GET_DATA_LENGTH(pSrb));
+    StorPortCopyMemory((PVOID)GET_DATA_BUFFER(pSrb),
+        (PVOID)(pSrbExt->modeSenseBuf), GET_DATA_LENGTH(pSrb));
 
 } /* SntiReturnAllModePages */
 
@@ -4594,7 +4640,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeData(
     PMODE_PARAMETER_HEADER pModeHeader6 = NULL;
     PMODE_PARAMETER_HEADER10 pModeHeader10 = NULL;
     PMODE_PARAMETER_BLOCK pModeParamBlock = NULL;
-    PMODE_CACHING_PAGE pCacheModePage = NULL;
+    PCACHING_MODE_PAGE pCacheModePage = NULL;
     PPOWER_CONDITION_MODE_PAGE pPowerModePage = NULL;
 #if (NTDDI_VERSION > NTDDI_WIN7)
     PSTORAGE_REQUEST_BLOCK pSrb = pSrbExt->pSrb;
@@ -4671,7 +4717,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeData(
                 returnStatus = SNTI_COMMAND_COMPLETED;
             } else {
             /* Command requires NVMe Get Features to adapter - build DWORD 11 */
-            pCacheModePage = (PMODE_CACHING_PAGE)pModePagePtr;
+            pCacheModePage = (PCACHING_MODE_PAGE)pModePagePtr;
             dword11 = (pCacheModePage->WriteCacheEnable ? 1 : 0);
 
             SntiBuildSetFeaturesCmd(pSrbExt, VOLATILE_WRITE_CACHE, dword11);
@@ -5353,7 +5399,7 @@ VOID SntiBuildGetLogPageCmd(
             else
                 pSrbExt->nvmeSqeUnit.NSID = 0xFFFFFFFF;
             numDwords =
-				((sizeof(ADMIN_GET_LOG_PAGE_SMART_HEALTH_INFORMATION_LOG_ENTRY) / NUM_BYTES_IN_DWORD) - 1);
+                ((sizeof(ADMIN_GET_LOG_PAGE_SMART_HEALTH_INFORMATION_LOG_ENTRY) / NUM_BYTES_IN_DWORD) - 1);
         break;
         case FIRMWARE_SLOT_INFORMATION:
             pSrbExt->nvmeSqeUnit.NSID = 0xFFFFFFFF;
@@ -5390,7 +5436,7 @@ VOID SntiBuildGetLogPageCmd(
         } else {
             StorPortDebugPrint(
                 INFO,
-                "SNTI: Get PhysAddr for GET LOG PAGE failed (pSrbExt = 0x%x)\n",
+                "SNTI: Get PhysAddr for GET LOG PAGE failed (pSrbExt = 0x%p)\n",
                 pSrbExt);
 
             ASSERT(FALSE);
@@ -5415,7 +5461,7 @@ VOID SntiBuildGetLogPageCmd(
         } else {
             StorPortDebugPrint(
                 INFO,
-                "SNTI: Get SGL for GET LOG PAGE failed (pSrbExt = 0x%x)\n",
+                "SNTI: Get SGL for GET LOG PAGE failed (pSrbExt = 0x%p)\n",
                 pSrbExt);
 
             ASSERT(FALSE);
@@ -5424,6 +5470,7 @@ VOID SntiBuildGetLogPageCmd(
 
     /* SRB Status must be set to PENDING */
     pSrbExt->pSrb->SrbStatus = SRB_STATUS_PENDING;
+
 } /* SntiBuildGetLogPageCmd */
 
 /******************************************************************************
@@ -5448,6 +5495,7 @@ VOID SntiBuildFirmwareImageDownloadCmd(
     PSTOR_SCATTER_GATHER_LIST pSgl = NULL;
     UINT32 numDwords = 0;
 
+
     /* Make sure we indicate which I/Os are the child and parent */
     pSrbExt->pParentIo = NULL;
     pSrbExt->pChildIo = NULL;
@@ -5455,7 +5503,7 @@ VOID SntiBuildFirmwareImageDownloadCmd(
     /* And which queue to use */
     pSrbExt->forAdminQueue = TRUE;
 
-    /* Set up the GET LOG PAGE command */
+    /* Set up the Firmware Image Download command */
     memset(&pSrbExt->nvmeSqeUnit, 0, sizeof(NVMe_COMMAND));
     pSrbExt->nvmeSqeUnit.CDW0.OPC = ADMIN_FIRMWARE_IMAGE_DOWNLOAD;
     pSrbExt->nvmeSqeUnit.CDW0.CID = 0;
@@ -5617,8 +5665,6 @@ VOID SntiBuildSecuritySendReceiveCmd(
 )
 {
     PSTOR_SCATTER_GATHER_LIST pSgl = NULL;
-    STOR_PHYSICAL_ADDRESS physAddr;
-    ULONG length;
 
     PADMIN_SECURITY_SEND_COMMAND_DW10 pCdw10 =
         (PADMIN_SECURITY_SEND_COMMAND_DW10)&pSrbExt->nvmeSqeUnit.CDW10;
@@ -6208,8 +6254,8 @@ VOID SntiTranslateCachingModePageResponse(
     }
 
     SET_DATA_LENGTH(pSrb, min(modeDataLength, allocLength));
-    StorPortCopyMemory((PVOID)GET_DATA_BUFFER(pSrb), 
-		(PVOID)(pSrbExt->modeSenseBuf), GET_DATA_LENGTH(pSrb));
+    StorPortCopyMemory((PVOID)GET_DATA_BUFFER(pSrb),
+        (PVOID)(pSrbExt->modeSenseBuf), GET_DATA_LENGTH(pSrb));
 #if (NTDDI_VERSION > NTDDI_WIN7)
     scsiStatus = SCSISTAT_GOOD;
     SrbSetScsiData(pSrb, NULL, NULL, &scsiStatus, NULL, NULL);
@@ -6239,7 +6285,7 @@ VOID SntiTranslateReturnAllModePagesResponse(
 )
 {
     PUCHAR pBuffPtr = NULL;
-    PMODE_CACHING_PAGE pCachingModePage = NULL;
+    PCACHING_MODE_PAGE pCachingModePage = NULL;
 #if (NTDDI_VERSION > NTDDI_WIN7)
     PSTORAGE_REQUEST_BLOCK pSrb = pSrbExt->pSrb;
     UCHAR scsiStatus = 0;
@@ -6265,7 +6311,7 @@ VOID SntiTranslateReturnAllModePagesResponse(
     else
         pBuffPtr -= sizeof(MODE_PARAMETER_HEADER10);
 
-    pCachingModePage = (PMODE_CACHING_PAGE)pBuffPtr;
+    pCachingModePage = (PCACHING_MODE_PAGE)pBuffPtr;
     pCachingModePage--;
 
     pCachingModePage->WriteCacheEnable =
@@ -6394,7 +6440,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateWriteBufferResponse(
 )
 {
     PNVME_SRB_EXTENSION pSrbExt = NULL;
-   	PNVME_DEVICE_EXTENSION pDevExt = NULL;
+    PNVME_DEVICE_EXTENSION pDevExt = NULL;
     PSTOR_SCATTER_GATHER_LIST pSgl = NULL;
     UINT32 bufferOffset = 0; /* 3 byte field */
     UINT32 paramListLength = 0; /* 3 byte field */
@@ -6406,16 +6452,16 @@ SNTI_TRANSLATION_STATUS SntiTranslateWriteBufferResponse(
     /* Default to successful translation */
     SNTI_TRANSLATION_STATUS returnStatus = SNTI_SEQUENCE_IN_PROGRESS;
     pSrbExt = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb);
-   	pDevExt = (PNVME_DEVICE_EXTENSION)pSrbExt->pNvmeDevExt;
+    pDevExt = (PNVME_DEVICE_EXTENSION)pSrbExt->pNvmeDevExt;
     mode = GET_U8_FROM_CDB(pSrb, WRITE_BUFFER_CDB_MODE_OFFSET);
-	bufferId = GET_U8_FROM_CDB(pSrb, WRITE_BUFFER_CDB_BUFFER_ID_OFFSET);
+    bufferId = GET_U8_FROM_CDB(pSrb, WRITE_BUFFER_CDB_BUFFER_ID_OFFSET);
 
     switch (mode & WRITE_BUFFER_CDB_MODE_MASK) {
         case DOWNLOAD_SAVE_ACTIVATE:
             if (pSrbExt->nvmeSqeUnit.CDW0.OPC ==
                 ADMIN_FIRMWARE_IMAGE_DOWNLOAD) {
                 BOOLEAN ioStarted = FALSE;
-				dword10 |= bufferId;
+                dword10 |= bufferId;
                 dword10 |= 0x00000008;
 
                 /* Activate microcode upon completion of FW Image Download */
@@ -6555,9 +6601,7 @@ VOID SntiMapGenericCommandStatus(
     UINT8 genericCommandStatus
 )
 {
-    PSENSE_DATA pSenseData = NULL;
     SNTI_RESPONSE_BLOCK responseData;
-    BOOLEAN status = TRUE;
 
     memset(&responseData, 0, sizeof(SNTI_RESPONSE_BLOCK));
 
@@ -6613,9 +6657,7 @@ VOID SntiMapCommandSpecificStatus(
     UINT8 commandSpecificStatus
 )
 {
-    PSENSE_DATA pSenseData = NULL;
     SNTI_RESPONSE_BLOCK responseData;
-    BOOLEAN status = TRUE;
 
     memset(&responseData, 0, sizeof(SNTI_RESPONSE_BLOCK));
 
@@ -6670,9 +6712,7 @@ VOID SntiMapMediaErrors(
     UINT8 mediaError
 )
 {
-    PSENSE_DATA pSenseData = NULL;
     SNTI_RESPONSE_BLOCK responseData;
-    BOOLEAN status = TRUE;
 
     memset(&responseData, 0, sizeof(SNTI_RESPONSE_BLOCK));
 

@@ -46,6 +46,9 @@
  */
 
 #include "precomp.h"
+#ifndef DBG
+#include "nvmestat.tmh"
+#endif
 
 /*******************************************************************************
  * NVMeCallArbiter
@@ -662,7 +665,6 @@ VOID NVMeRunningWaitOnLearnMapping(
     STOR_PHYSICAL_ADDRESS PhysAddr;
     PNVME_LUN_EXTENSION pLunExt = NULL;
     UINT32 lbaLengthPower, lbaLength;
-    PQUEUE_INFO pQI = &pAE->QueueInfo;
     UINT8 flbas;
     BOOLEAN error = FALSE;
 
@@ -751,7 +753,6 @@ VOID NVMeRunningWaitOnReSetupQueues(
     PNVME_DEVICE_EXTENSION pAE
 )
 {
-    PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
     PQUEUE_INFO pQI = &pAE->QueueInfo;
 
     /* Delete all submission queues */

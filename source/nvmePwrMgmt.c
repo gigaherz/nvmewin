@@ -46,6 +46,9 @@
  */
 
 #include "precomp.h"
+#ifndef DBG
+#include "nvmePwrMgmt.tmh"
+#endif
 
 /*******************************************************************************
  * NVMeAdapterControlPowerUp
