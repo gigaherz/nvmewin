@@ -719,13 +719,16 @@ ULONG NVMeMapCore2Queue(
 {
     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
     PCORE_TBL pCT = NULL;
-    PPROC_GROUP_TBL pPGT = pRMT->pProcGroupTbl + pPN->Group;
-    ULONG coreNum = (ULONG)(pPN->Number + pPGT->BaseProcessor);
+	PPROC_GROUP_TBL pPGT = NULL;
+    ULONG coreNum;
 
     if (pAE->ntldrDump == TRUE) {
         *pSubQueue = *pCplQueue = 1;
         return (STOR_STATUS_SUCCESS);
     }
+
+	pPGT = pRMT->pProcGroupTbl + pPN->Group;
+	coreNum = (ULONG)(pPN->Number + pPGT->BaseProcessor);
     
     /* Ensure the core number is valid first */
     if (coreNum >= pRMT->NumActiveCores) {

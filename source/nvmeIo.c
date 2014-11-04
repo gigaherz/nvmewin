@@ -495,6 +495,15 @@ ProcessIo(
                                         pSrbExtension->pSrb);
             }
         }
+
+		if (IoStatus == NOT_SUBMITTED) {
+			if (pSrbExtension->pSrb != NULL) {
+				pSrbExtension->pSrb->SrbStatus = SRB_STATUS_ERROR;
+				IO_StorPortNotification(RequestComplete,
+					pAdapterExtension,
+					pSrbExtension->pSrb);
+			}
+		}
     }
 
     return (IoStatus == SUBMITTED) ? TRUE : FALSE;

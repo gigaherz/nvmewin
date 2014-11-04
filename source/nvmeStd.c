@@ -577,7 +577,7 @@ BOOLEAN NVMePassiveInitialize(
     for (i = 0; i < pAE->NumDpc; i++) {
         StorPortInitializeDpc(pAE,
             (PSTOR_DPC)pAE->pDpcArray + i,
-            IoCompletionDpcRoutine);
+            IoCompletionRoutine);
     }
 
     pAE->RecoveryAttemptPossible = FALSE;
@@ -1534,18 +1534,19 @@ BOOLEAN NVMeStartIo(
      * resources, slot and command history. Check if command processing should
      * happen.
      */
-    if ((Function != SRB_FUNCTION_POWER) &&
-        (pAdapterExtension->DriverState.NextDriverState != NVMeStartComplete)) {
-        Srb->SrbStatus = SRB_STATUS_NO_DEVICE;
-        IO_StorPortNotification(RequestComplete, 
-                                pAdapterExtension, 
+
+	if (pAdapterExtension->DriverState.NextDriverState != NVMeStartComplete) {
+	        Srb->SrbStatus = SRB_STATUS_NO_DEVICE;
+	        IO_StorPortNotification(RequestComplete, 
+	                                pAdapterExtension, 
 #if (NTDDI_VERSION > NTDDI_WIN7)
-                                (PSTORAGE_REQUEST_BLOCK)Srb);
+	                                (PSTORAGE_REQUEST_BLOCK)Srb);
 #else
-                                (PSCSI_REQUEST_BLOCK)Srb);
+	                                (PSCSI_REQUEST_BLOCK)Srb);
 #endif
-        return TRUE;
+	        return TRUE;
     }
+
     pSrbExtension = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(Srb);
 
     switch (Function) {
@@ -1891,17 +1892,18 @@ BOOLEAN NVMeIsrIntx(
 
 
 /*******************************************************************************
- * IoCompletionDpcRoutine
+ * IoCompletionRoutine
  *
- * @brief IO DPC completion routine; called by all IO completion objects
- *
+ * @brief IO completion routine; can either be scheduled to run as a DPC or 
+ * called directly
+ * 
  * @param pHwDeviceExtension - Pointer to device extension
  * @param pSystemArgument1 - MSI-X message Id
  *
  * @return void
  ******************************************************************************/
 VOID
-IoCompletionDpcRoutine(
+IoCompletionRoutine(
     IN PSTOR_DPC  pDpc,
     IN PVOID  pHwDeviceExtension,
     IN PVOID  pSystemArgument1,
@@ -2142,7 +2144,7 @@ IoCompletionDpcRoutine(
             StorPortReleaseSpinLock(pAE, &DpcLockhandle);
         }
     }
-} /* IoCompletionDpcRoutine */
+} /* IoCompletionRoutine */
 
 
 /*******************************************************************************
@@ -2168,12 +2170,12 @@ NVMeIsrMsix (
     ULONG                         qNum = 0;
     BOOLEAN                       status = FALSE;
 
-    if (pAE->hwResetInProg)
+	if (pAE->polledResetInProg)
         return TRUE;
 
     if (pAE->ntldrDump == TRUE) {
     	/* status will return TRUE, if the request has been completed. */
-        IoCompletionDpcRoutine(NULL, AdapterExtension, &status, 0);
+        IoCompletionRoutine(NULL, AdapterExtension, &status, 0);
         return status;
     }
     
@@ -2346,7 +2348,7 @@ BOOLEAN NVMeResetController(
      */
     if (pAdapterExtension->RecoveryAttemptPossible == TRUE) {
         /* We don't want any new stoport reqeusts during reset */
-        StorPortBusy(pAdapterExtension, STOR_ALL_REQUESTS);
+        StorPortPause(pAdapterExtension, STOR_ALL_REQUESTS);
         StorPortDebugPrint(INFO,
                        "NVMeResetController: Issue DPC.\n");
         storStatus = StorPortIssueDpc(pAdapterExtension,
@@ -2367,63 +2369,69 @@ BOOLEAN NVMeResetController(
     return storStatus;
 } /* NVMeResetController */
 
-
 /*******************************************************************************
- * NVMeSynchronizeReset
+ * NVMeReInitializeController
  *
- * @This is the syncrhonized routine that resets NVMe controller.
+ * @This is the syncrhonized routine that resets NVMe controller.  This routine
+ * is only called from NVMeResetBus or NVMeAdapterControl->ScsRestartAdapter 
+ * paths, both of which are synchronous. i.e., must not return to caller 
+ * till done
  *
- * @param pHwDeviceExtension - Pointer to device extension
- * @param dummy - NULL pointer (not used).
+ * @param pAE - Pointer to device extension
  *
  * @return BOOLEAN
  ******************************************************************************/
-BOOLEAN
-NVMeSynchronizeReset(
-    __in PVOID Context,
-    __in PVOID dummy
-    )
+BOOLEAN NVMeReInitializeController(
+	__in PNVME_DEVICE_EXTENSION pAE
+	)
 {
-    PNVME_DEVICE_EXTENSION pAE = Context;
-    
-    UNREFERENCED_PARAMETER( dummy );
+	ULONG passiveTimeout;
 
-    /*
-     * perform the reset operations, Reset the controller; if any steps 
-     * fail we just quit which will leave the controller 
-     * un-usable(storport queues frozen)
-     * on purpose to prevent possible data corruption
-     */
-    if (NVMeResetAdapter(pAE) == TRUE) {
-        
-        /* Complete outstanding commands on submission queues */
-        StorPortNotification(ResetDetected, pAE, 0);
-        
-        /*
-         * detect and complete all commands
-         */
-        NVMeDetectPendingCmds(pAE, TRUE);
-        
-        /* Prepare for new commands */
-        if (NVMeInitAdminQueues(pAE) == STOR_STATUS_SUCCESS) {
-            /*
-             * Start the state mahcine, if all goes well we'll complete the
-             * reset Srb when the machine is done.
-             */
-            NVMeRunningStartAttempt(pAE, FALSE, NULL);
-            
-            /* resume I/Os */
-            StorPortResume(pAE);
+	if (pAE->polledResetInProg)
+		return TRUE;
 
-        } /* init the admin queues */
-    }
+	pAE->polledResetInProg = TRUE;
 
+	/* pause the adapter to block any new I/Os */
+	StorPortPause(pAE, STOR_ALL_REQUESTS);
 
-    pAE->hwResetInProg = FALSE;
+	/*
+	* perform the reset operations, Reset the controller; if any steps fail we
+	* just quit which will leave the controller un-usable(storport queues frozen)
+	* on purpose to prevent possible data corruption
+	*/
+	if (NVMeResetAdapter(pAE) == TRUE) {
 
-    return TRUE;
-} /* NVMeSynchronizeReset */
+		/* Complete outstanding commands on submission queues */
+		StorPortNotification(ResetDetected, pAE, 0);
 
+		/*
+		* detect and complete all commands
+		*/
+		NVMeDetectPendingCmds(pAE, TRUE);
+
+		/* Prepare for new commands */
+		if (NVMeInitAdminQueues(pAE) == STOR_STATUS_SUCCESS) {
+			/*
+			* Start the state machine, if all goes well we'll complete the
+			* reset Srb when the machine is done.
+			*/
+			NVMeRunningStartAttempt(pAE, FALSE, NULL);
+		
+		} /* init the admin queues */
+	}
+
+	pAE->polledResetInProg = FALSE;
+
+    /* if init state machine completed successfully, we allow IOs to resume */
+    if (pAE->DriverState.NextDriverState == NVMeStartComplete) {
+		NVMeRunning(pAE);
+	} else {
+		StorPortResume(pAE);
+	}
+
+	return (pAE->DriverState.NextDriverState == NVMeStartComplete) ? TRUE : FALSE;
+} /* NVMeReInitializeController */
 
 /*******************************************************************************
  * NVMeResetBus
@@ -2440,21 +2448,16 @@ BOOLEAN NVMeResetBus(
     __in ULONG PathId
 )
 {
-    PNVME_DEVICE_EXTENSION pAE = AdapterExtension;
+	PNVME_DEVICE_EXTENSION pAE = (PNVME_DEVICE_EXTENSION)AdapterExtension;
 
     UNREFERENCED_PARAMETER(PathId);
 
-    if (pAE->hwResetInProg)
-        return TRUE; 
+	/* In Hibernation/CrashDump mode, reset command is ignored. */
+	if (pAE->ntldrDump == TRUE) {
+		return TRUE;
+	}
 
-    /* pause the adapter to block any new I/Os */
-    if (!pAE->ntldrDump)
-        StorPortPause(pAE, STOR_ALL_REQUESTS);
-
-    pAE->hwResetInProg = TRUE;
-    StorPortSynchronizeAccess(pAE, NVMeSynchronizeReset, NULL);
-
-    return TRUE;
+	return NVMeReInitializeController(AdapterExtension);
 } /* NVMeResetBus */
 
 /*******************************************************************************

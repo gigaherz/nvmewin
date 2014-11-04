@@ -998,14 +998,13 @@ typedef struct _nvme_device_extension
     /* Flag to indicate multiple cores are sharing a single queue */
     BOOLEAN                     MultipleCoresToSingleQueueFlag;
 
-    /* Flag to indicate hardReset is in progress */
-    BOOLEAN                     hwResetInProg;
+    /* Flag to indicate hardReset is in progress in polled mode */
+	BOOLEAN                     polledResetInProg;
 
 #if DBG
     /* part of debug code to sanity check learning */
     BOOLEAN                     LearningComplete;
 #endif
-
 
 } NVME_DEVICE_EXTENSION, *PNVME_DEVICE_EXTENSION;
 
@@ -1140,6 +1139,10 @@ BOOLEAN NVMeStrCompare(
     __in PCSTR pArgumentString
 );
 
+BOOLEAN NVMeReInitializeController(
+	__in PNVME_DEVICE_EXTENSION pAE
+	);
+
 BOOLEAN NVMeResetController(
     __in PNVME_DEVICE_EXTENSION pAdapterExtension,
 #if (NTDDI_VERSION > NTDDI_WIN7)
@@ -1174,7 +1177,7 @@ ULONG NVMeMapCore2Queue(
 
 
 VOID
-IoCompletionDpcRoutine(
+IoCompletionRoutine(
     IN PSTOR_DPC  pDpc,
     IN PVOID  pHwDeviceExtension,
     IN PVOID  pSystemArgument1,

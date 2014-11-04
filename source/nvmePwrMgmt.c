@@ -68,7 +68,7 @@ BOOLEAN NVMeAdapterControlPowerUp(
     BOOLEAN status = TRUE;
 
     /* Reset the controller */
-    if (NVMeResetController(pAE, NULL) == FALSE) {
+    if (NVMeReInitializeController(pAE) == FALSE) {
         NVMeFreeBuffers(pAE);
         return (FALSE);
     }
