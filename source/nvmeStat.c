@@ -308,7 +308,9 @@ VOID NVMeRunning(
         break;
         case NVMeStartComplete:
             pAE->RecoveryAttemptPossible = TRUE;
-
+			if (pAE->ntldrDump == FALSE) {
+				StorPortNotification(RequestTimerCall, pAE, IsDeviceRemoved, START_SURPRISE_REMOVAL_TIMER); //start after 1 seconds
+			}
             /* Indicate learning is done with no unassigned cores */
             pAE->LearningCores = pAE->ResMapTbl.NumActiveCores;
 

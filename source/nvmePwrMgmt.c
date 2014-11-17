@@ -106,8 +106,10 @@ BOOLEAN NVMeAdapterControlPowerDown(
         /* Shutdown */
         status = TRUE;
     } else {
+		pAE->ShutdownInProgress = TRUE;
+
         /* Hibernate or Sleep - sanity check that there is no cmd pending */
-        if (NVMeDetectPendingCmds(pAE, FALSE) == TRUE)
+        if (NVMeDetectPendingCmds(pAE, FALSE, SRB_STATUS_BUS_RESET) == TRUE)
             return status;
 
         /* Stop the controller, but do not free the resources */
@@ -116,7 +118,6 @@ BOOLEAN NVMeAdapterControlPowerDown(
         }
     }
 
-    pAE->ShutdownInProgress = TRUE;
     StorPortDebugPrint(INFO,
                        "NvmeAdapterControlPowerDown: returning %d\n",
                        status);

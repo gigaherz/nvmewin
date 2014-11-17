@@ -604,7 +604,8 @@ BOOLEAN NVMeCompleteCmd(
  *        be pending. Called when the caller is about to shutdown per S3 or S4.
  *
  * @param pAE - Pointer to hardware device extension.
- * @param completeCmd - determines if deteced commands should be completed
+ * @param completeCmd - determines if detected commands should be completed
+ * @param SrbStatus - Srb Status value for the completing SRBs
  *
  * @return BOOLEAN
  *     TRUE if commands are detected that are still pending
@@ -612,7 +613,8 @@ BOOLEAN NVMeCompleteCmd(
  ******************************************************************************/
 BOOLEAN NVMeDetectPendingCmds(
     PNVME_DEVICE_EXTENSION pAE,
-    BOOLEAN completeCmd
+    BOOLEAN completeCmd,
+	UCHAR SrbStatus
 )
 {
     PQUEUE_INFO pQI = &pAE->QueueInfo;
@@ -752,7 +754,7 @@ BOOLEAN NVMeDetectPendingCmds(
                             (ULONGLONG)pSrbExtension->pNvmeCompletionRoutine,
                             0);
 #endif
-                        pSrbExtension->pSrb->SrbStatus = SRB_STATUS_BUS_RESET;
+						pSrbExtension->pSrb->SrbStatus = SrbStatus;
                         IO_StorPortNotification(RequestComplete,
                                                 pAE,
                                                 pSrbExtension->pSrb);

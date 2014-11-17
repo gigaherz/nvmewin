@@ -1320,12 +1320,6 @@ BOOLEAN NVMeEnableAdapter(
     PQUEUE_INFO pQI = &pAE->QueueInfo;
     NVMe_CONTROLLER_CONFIGURATION CC = {0};
 
-    /* 
-     * Disable the adapter
-     */
-    if (NVMeResetAdapter(pAE) != TRUE) {
-        return (FALSE);
-    }
 
     /*
      * Program Admin queue registers before enabling the adapter:
@@ -1736,6 +1730,8 @@ BOOLEAN NVMeInitCallback(
     PNVMe_COMMAND pNVMeCmd = (PNVMe_COMMAND)(&pSrbExt->nvmeSqeUnit);
     PNVMe_COMPLETION_QUEUE_ENTRY pCplEntry = pSrbExt->pCplEntry;
     PQUEUE_INFO pQI = &pAE->QueueInfo;
+	ULONG totalQueuePairs;
+	PRES_MAPPING_TBL pRMT;
 
     NVMe_CONTROLLER_CAPABILITIES CAP = {0};
     StorPortDebugPrint(INFO,"NVMeInitCallback: Driver state: %d\n", pAE->DriverState.NextDriverState);
@@ -1897,10 +1893,9 @@ BOOLEAN NVMeInitCallback(
             }
         break;
         case NVMeWaitOnLearnMapping:
-            if ((pCplEntry->DW3.SF.SC == 0) &&
-                (pCplEntry->DW3.SF.SCT == 0)) {
-                PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
-                ULONG totalQueuePairs;
+
+				pRMT = &pAE->ResMapTbl;
+                
 
                 /*
                  * see if we still have more core/vector mapping to learn
@@ -1959,16 +1954,7 @@ BOOLEAN NVMeInitCallback(
                         pAE->DriverState.NextDriverState = NVMeWaitOnReSetupQueues;
                     }
                 }
-            } else {
-                PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
 
-                /* possibly no NS exists at all, either way this isn't fatal */
-                StorPortDebugPrint(INFO,
-                    "NVMeInitCallback: WARNING: no learning possible, SC 0x%x SCT 0x%x\n",
-                     pCplEntry->DW3.SF.SC, pCplEntry->DW3.SF.SCT);
-                pAE->LearningCores = pRMT->NumActiveCores;
-                pAE->DriverState.NextDriverState = NVMeStartComplete;
-            }
         break;
         case NVMeWaitOnReSetupQueues:
             if (TRUE == NVMeDeleteQueueCallback(pAE, pSrbExt)) {
@@ -2610,7 +2596,7 @@ BOOLEAN NVMeNormalShutdown(
     ULONG PollCount;
 
     /* Check for any pending cmds. */
-    if (NVMeDetectPendingCmds(pAE, FALSE) == TRUE) {
+    if (NVMeDetectPendingCmds(pAE, FALSE, SRB_STATUS_BUS_RESET) == TRUE) {
         return FALSE;
     }
 

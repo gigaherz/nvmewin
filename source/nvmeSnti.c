@@ -165,7 +165,7 @@ SNTI_RESPONSE_BLOCK genericCommandStatusTable[] = {
         SCSISTAT_CHECK_CONDITION,
         SCSI_SENSE_NOT_READY,
         SCSI_ADSENSE_LUN_NOT_READY,
-        SCSI_ADSENSE_NO_SENSE}
+        SCSI_SENSEQ_BECOMING_READY}
 };
 
 /* Command Specific Status Lookup Table */

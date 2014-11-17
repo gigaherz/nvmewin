@@ -136,6 +136,11 @@
 #define IOCTL_COMPLETED  TRUE
 #define IOCTL_PENDING    FALSE
 
+/* Surprise Removal*/
+#define START_SURPRISE_REMOVAL_TIMER	1000000	//1 Second
+#define STOP_SURPRISE_REMOVAL_TIMER		0
+#define INVALID_DEVICE_REGISTER_VALUE	0xFFFFFFFF
+
 /* Helper Macros */
 
 /* Get field values from specified value */
@@ -1006,6 +1011,10 @@ typedef struct _nvme_device_extension
     BOOLEAN                     LearningComplete;
 #endif
 
+
+    ULONG						originalVersion;
+	BOOLEAN						DeviceRemovedDuringIO;
+
 } NVME_DEVICE_EXTENSION, *PNVME_DEVICE_EXTENSION;
 
 /* SRB Extension */
@@ -1417,6 +1426,10 @@ BOOLEAN NVMePassiveInitialize(
 
 BOOLEAN NVMeInitialize(
     __in PVOID AdapterExtension
+);
+
+VOID IsDeviceRemoved(
+	__in PNVME_DEVICE_EXTENSION pAE
 );
 
 BOOLEAN NVMeStartIo(

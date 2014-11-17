@@ -276,6 +276,7 @@ NVMeFindAdapter(
             pAE->pCtrlRegister);
     }
 
+    pAE->originalVersion = StorPortReadRegisterUlong(pAE, (PULONG)(&pAE->pCtrlRegister->VS));
 
     /*
      * Parse the ArgumentString to find out if it's a normal driver loading
@@ -471,6 +472,7 @@ BOOLEAN NVMePassiveInitialize(
     ULONG Lun;
     ULONG i;
     ULONG passiveTimeout;
+	ULONG newVersion = 0;
 
     /* Ensure the Context is valid first */
     if (pAE == NULL)
@@ -611,11 +613,14 @@ BOOLEAN NVMePassiveInitialize(
      while ((pAE->DriverState.NextDriverState != NVMeStartComplete) &&
             (pAE->DriverState.NextDriverState != NVMeStateFailed)){
 
+		newVersion = StorPortReadRegisterUlong(pAE, (PULONG)(&pAE->pCtrlRegister->VS));
         /* increment 5000us (timer callback val */
         pAE->DriverState.TimeoutCounter += pAE->DriverState.CheckbackInterval;
-        if (pAE->DriverState.TimeoutCounter > passiveTimeout) {
-            NVMeDriverFatalError(pAE,
-                                (1 << START_STATE_TIMEOUT_FAILURE));
+        if ((pAE->DriverState.TimeoutCounter > passiveTimeout) || (pAE->originalVersion != newVersion)) {
+			pAE->DriverState.NextDriverState = NVMeStartComplete;
+			pAE->DeviceRemovedDuringIO = TRUE;
+            StorPortDebugPrint(ERROR, "NVMePassiveInitialize: <Error> State machine timeout or device removed during \
+                          controller initialization\n");
             break;
         }
         NVMeStallExecution(pAE,STORPORT_TIMER_CB_us);
@@ -934,6 +939,9 @@ SCSI_ADAPTER_CONTROL_STATUS NVMeAdapterControl(
         /* StopAdapter routine called just before power down of adapter */
         case ScsiStopAdapter:
             StorPortDebugPrint(INFO,"NVMeAdapterControl: ScsiStopAdapter\n");
+			if ((pAE->ntldrDump == FALSE) && (pAE->ShutdownInProgress == FALSE)) {
+				StorPortNotification(RequestTimerCall, pAE, IsDeviceRemoved, STOP_SURPRISE_REMOVAL_TIMER);
+			}
             status = NVMeAdapterControlPowerDown(pAE);
             break;
         /*
@@ -943,6 +951,9 @@ SCSI_ADAPTER_CONTROL_STATUS NVMeAdapterControl(
          */
         case ScsiRestartAdapter:
             StorPortDebugPrint(INFO,"NVMeAdapterControl: ScsiRestartAdapter\n");
+			if (pAE->ntldrDump == FALSE) {
+				StorPortNotification(RequestTimerCall, pAE, IsDeviceRemoved, START_SURPRISE_REMOVAL_TIMER);
+			}
             status = NVMeAdapterControlPowerUp(pAE);
         break;
         default:
@@ -997,6 +1008,20 @@ BOOLEAN NVMeBuildIo(
         Function = (UCHAR)((PSTORAGE_REQUEST_BLOCK)Srb)->SrbFunction;
     }
 #endif
+
+	if(pAdapterExtension->DeviceRemovedDuringIO == TRUE) {
+		Srb->SrbStatus = SRB_STATUS_ERROR;
+		IO_StorPortNotification(RequestComplete, 
+								AdapterExtension, 
+#if (NTDDI_VERSION > NTDDI_WIN7)
+								(PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+								(PSCSI_REQUEST_BLOCK)Srb);
+#endif
+		StorPortDebugPrint(ERROR, "BuildIo: <Error> NO DEVICE\n");
+        return FALSE;
+	}
+
     /*
      * Need to ensure the PathId, TargetId and Lun is supported by the
      * controller before processing the request.
@@ -1078,6 +1103,9 @@ BOOLEAN NVMeBuildIo(
              * sends down SRB_FUNCTION_POWER.
              */
             pAdapterExtension->ShutdownInProgress = TRUE;
+			if (pAdapterExtension->ntldrDump == FALSE) {
+				StorPortNotification(RequestTimerCall, AdapterExtension, IsDeviceRemoved, STOP_SURPRISE_REMOVAL_TIMER);
+			}
             Srb->SrbStatus = SRB_STATUS_SUCCESS;
             IO_StorPortNotification(RequestComplete, 
                                     AdapterExtension, 
@@ -1147,16 +1175,9 @@ BOOLEAN NVMeBuildIo(
                  * allocated for it.
                  */
                 if (pAdapterExtension->ntldrDump == FALSE) {
-                    ULONG i;
-                    PVOID bufferToFree = NULL;
-                    /*
-                    for (i = 0; i <= adapterExtension->HighestBuffer; i++) {
-                        bufferToFree = adapterExtension->Buffer[i];
-                        if (bufferToFree != NULL) {
-                            StorPortFreePool(AdapterExtension, bufferToFree);
-                        }
-                    }
-                    */
+						StorPortNotification(RequestTimerCall, pAdapterExtension, IsDeviceRemoved, STOP_SURPRISE_REMOVAL_TIMER);
+						NVMeAdapterControlPowerDown(pAdapterExtension);
+						NVMeFreeBuffers(pAdapterExtension);
                 }
 
                 Srb->SrbStatus = SRB_STATUS_SUCCESS;
@@ -1358,6 +1379,45 @@ BOOLEAN NVMeBuildIo(
 
     return TRUE;
 } /* NVMeBuildIo */
+
+/*******************************************************************************
+* IsDeviceRemoved
+*
+* @brief Surprise removal timer routine to check if the device is surprise 
+* removed by checking the validity of the Version register. Whenever device is 
+* surprise removed, the memory mapped registers will be unmapped and returns 1 
+* when read. 
+*
+* @param pAE - Pointer to Device extension.
+*
+* @return VOID
+******************************************************************************/
+VOID IsDeviceRemoved(
+	PNVME_DEVICE_EXTENSION pAE
+)
+{
+	ULONG Version = 0;
+
+	if (pAE->ShutdownInProgress == TRUE)
+		return;
+
+	Version = StorPortReadRegisterUlong(pAE, (PULONG)(&pAE->pCtrlRegister->VS));
+
+	if(Version == INVALID_DEVICE_REGISTER_VALUE) {
+		pAE->DeviceRemovedDuringIO = TRUE;
+		StorPortPause(pAE, STOR_ALL_REQUESTS);
+#if DBG
+		StorPortDebugPrint(ERROR, "IsDeviceRemoved: <Error> Device removed with outstanding IO\n");
+#endif
+		NVMeDetectPendingCmds(pAE, TRUE, SRB_STATUS_ERROR);		
+		NVMeFreeBuffers(pAE);
+		StorPortResume(pAE);
+	} else {
+		if(pAE->DriverState.NextDriverState == NVMeStartComplete)
+			StorPortNotification(RequestTimerCall, pAE, IsDeviceRemoved, START_SURPRISE_REMOVAL_TIMER); //every 1 seconds
+	}
+
+}
 
 /*******************************************************************************
  * NVMeIssueAbortCmd
@@ -2230,6 +2290,11 @@ BOOLEAN NVMeWaitForCtrlRDY(
         CSTS.AsUlong =
             StorPortReadRegisterUlong(pAE,
                                       &pAE->pCtrlRegister->CSTS.AsUlong);
+
+		if(CSTS.AsUlong == INVALID_DEVICE_REGISTER_VALUE) {
+			/* During hot removal, return immediately */
+			return FALSE;
+		}
      }
 
      return TRUE;
@@ -2288,7 +2353,7 @@ VOID RecoveryDpcRoutine(
        /*
         * detect and complete all commands
         */
-        NVMeDetectPendingCmds(pAE, TRUE);
+        NVMeDetectPendingCmds(pAE, TRUE, SRB_STATUS_BUS_RESET);
 
         /*
          * Don't need to hold this anymore, we won't accept new IOs until the
@@ -2408,7 +2473,7 @@ BOOLEAN NVMeReInitializeController(
 		/*
 		* detect and complete all commands
 		*/
-		NVMeDetectPendingCmds(pAE, TRUE);
+		NVMeDetectPendingCmds(pAE, TRUE, SRB_STATUS_BUS_RESET);
 
 		/* Prepare for new commands */
 		if (NVMeInitAdminQueues(pAE) == STOR_STATUS_SUCCESS) {
