@@ -48,6 +48,7 @@
 #include "ntddk.h"
 #include "ntddscsi.h"
 #include "ntdddisk.h"
+#include "stdlib.h"
 #include <guiddef.h>
 #include <storport.h>
 #if (NTDDI_VERSION > NTDDI_WIN7)

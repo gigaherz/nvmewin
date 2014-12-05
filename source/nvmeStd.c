@@ -159,9 +159,9 @@ ULONG DriverEntry(
     hwInitData.MultipleRequestPerLu = TRUE;
     hwInitData.HwDmaStarted = NULL;
     hwInitData.HwAdapterState = NULL;
-	
+    
 #if (NTDDI_VERSION > NTDDI_WIN7)
-	/* Specify support/use SRB Extension for Windows 8 and up */
+    /* Specify support/use SRB Extension for Windows 8 and up */
     hwInitData.SrbTypeFlags = SRB_TYPE_FLAG_STORAGE_REQUEST_BLOCK;
     hwInitData.FeatureSupport = STOR_FEATURE_FULL_PNP_DEVICE_CAPABILITIES;
 #endif
@@ -286,7 +286,8 @@ NVMeFindAdapter(
     if (NVMeStrCompare("dump=1", ArgumentString) == TRUE)
         pAE->ntldrDump = TRUE;
 
-#if (NTDDI_VERSION > NTDDI_WIN7) && defined(_WIN64)
+/* Code Analysis fails on StoPortReadRegisterUlong64 */
+#if 0 // (NTDDI_VERSION > NTDDI_WIN7) && defined(_WIN64)
     CAP.AsUlonglong = StorPortReadRegisterUlong64(pAE,
         (PULONG64)(&pAE->pCtrlRegister->CAP));
 #else
@@ -472,7 +473,7 @@ BOOLEAN NVMePassiveInitialize(
     ULONG Lun;
     ULONG i;
     ULONG passiveTimeout;
-	ULONG newVersion = 0;
+    ULONG newVersion = 0;
 
     /* Ensure the Context is valid first */
     if (pAE == NULL)
@@ -613,12 +614,12 @@ BOOLEAN NVMePassiveInitialize(
      while ((pAE->DriverState.NextDriverState != NVMeStartComplete) &&
             (pAE->DriverState.NextDriverState != NVMeStateFailed)){
 
-		newVersion = StorPortReadRegisterUlong(pAE, (PULONG)(&pAE->pCtrlRegister->VS));
+        newVersion = StorPortReadRegisterUlong(pAE, (PULONG)(&pAE->pCtrlRegister->VS));
         /* increment 5000us (timer callback val */
         pAE->DriverState.TimeoutCounter += pAE->DriverState.CheckbackInterval;
         if ((pAE->DriverState.TimeoutCounter > passiveTimeout) || (pAE->originalVersion != newVersion)) {
-			pAE->DriverState.NextDriverState = NVMeStartComplete;
-			pAE->DeviceRemovedDuringIO = TRUE;
+            pAE->DriverState.NextDriverState = NVMeStartComplete;
+            pAE->DeviceRemovedDuringIO = TRUE;
             StorPortDebugPrint(ERROR, "NVMePassiveInitialize: <Error> State machine timeout or device removed during \
                           controller initialization\n");
             break;
@@ -939,9 +940,9 @@ SCSI_ADAPTER_CONTROL_STATUS NVMeAdapterControl(
         /* StopAdapter routine called just before power down of adapter */
         case ScsiStopAdapter:
             StorPortDebugPrint(INFO,"NVMeAdapterControl: ScsiStopAdapter\n");
-			if ((pAE->ntldrDump == FALSE) && (pAE->ShutdownInProgress == FALSE)) {
-				StorPortNotification(RequestTimerCall, pAE, IsDeviceRemoved, STOP_SURPRISE_REMOVAL_TIMER);
-			}
+            if ((pAE->ntldrDump == FALSE) && (pAE->ShutdownInProgress == FALSE)) {
+                StorPortNotification(RequestTimerCall, pAE, IsDeviceRemoved, STOP_SURPRISE_REMOVAL_TIMER);
+            }
             status = NVMeAdapterControlPowerDown(pAE);
             break;
         /*
@@ -951,9 +952,9 @@ SCSI_ADAPTER_CONTROL_STATUS NVMeAdapterControl(
          */
         case ScsiRestartAdapter:
             StorPortDebugPrint(INFO,"NVMeAdapterControl: ScsiRestartAdapter\n");
-			if (pAE->ntldrDump == FALSE) {
-				StorPortNotification(RequestTimerCall, pAE, IsDeviceRemoved, START_SURPRISE_REMOVAL_TIMER);
-			}
+            if (pAE->ntldrDump == FALSE) {
+                StorPortNotification(RequestTimerCall, pAE, IsDeviceRemoved, START_SURPRISE_REMOVAL_TIMER);
+            }
             status = NVMeAdapterControlPowerUp(pAE);
         break;
         default:
@@ -963,6 +964,39 @@ SCSI_ADAPTER_CONTROL_STATUS NVMeAdapterControl(
 
     return scsiStatus;
 } /* NVMeAdapterControl */
+
+
+/*******************************************************************************
+* NVMeIsReadWriteCmd
+*
+* @brief NVMeIsReadWriteCmd helps to determine if the request is a SCSI read or
+*        write command
+* @param function - SRB defined Function
+* @param opCode - SCSI opcodes
+*
+* @return BOOLEAN
+*     TRUE - Indicates it's a read or write command
+*     FALSE - It's not a read or write command
+******************************************************************************/
+BOOLEAN NVMeIsReadWriteCmd(
+    UCHAR function,
+    UCHAR opCode
+    )
+{
+    if (function == SRB_FUNCTION_EXECUTE_SCSI) {
+        if ((opCode == SCSIOP_READ6) ||
+            (opCode == SCSIOP_READ) ||
+            (opCode == SCSIOP_READ12) ||
+            (opCode == SCSIOP_READ16) ||
+            (opCode == SCSIOP_WRITE6) ||
+            (opCode == SCSIOP_WRITE) ||
+            (opCode == SCSIOP_WRITE12) ||
+            (opCode == SCSIOP_WRITE16))
+            return TRUE;
+    }
+    return FALSE;
+} /* NVMeIsReadWriteCmd */
+
 
 /*******************************************************************************
  * NVMeBuildIo
@@ -1002,6 +1036,7 @@ BOOLEAN NVMeBuildIo(
     UCHAR Function = Srb->Function;
     SNTI_TRANSLATION_STATUS sntiStatus;
     BOOLEAN ioctlStatus = FALSE;
+    UCHAR opCode = 0;
 
 #if (NTDDI_VERSION > NTDDI_WIN7)
     if (Function == SRB_FUNCTION_STORAGE_REQUEST_BLOCK) {
@@ -1009,18 +1044,18 @@ BOOLEAN NVMeBuildIo(
     }
 #endif
 
-	if(pAdapterExtension->DeviceRemovedDuringIO == TRUE) {
-		Srb->SrbStatus = SRB_STATUS_ERROR;
-		IO_StorPortNotification(RequestComplete, 
-								AdapterExtension, 
+    if(pAdapterExtension->DeviceRemovedDuringIO == TRUE) {
+        Srb->SrbStatus = SRB_STATUS_ERROR;
+        IO_StorPortNotification(RequestComplete, 
+                                AdapterExtension, 
 #if (NTDDI_VERSION > NTDDI_WIN7)
-								(PSTORAGE_REQUEST_BLOCK)Srb);
+                                (PSTORAGE_REQUEST_BLOCK)Srb);
 #else
-								(PSCSI_REQUEST_BLOCK)Srb);
+                                (PSCSI_REQUEST_BLOCK)Srb);
 #endif
-		StorPortDebugPrint(ERROR, "BuildIo: <Error> NO DEVICE\n");
+        StorPortDebugPrint(ERROR, "BuildIo: <Error> NO DEVICE\n");
         return FALSE;
-	}
+    }
 
     /*
      * Need to ensure the PathId, TargetId and Lun is supported by the
@@ -1041,6 +1076,42 @@ BOOLEAN NVMeBuildIo(
                                 (PSCSI_REQUEST_BLOCK)Srb);
 #endif
         return FALSE;
+    }
+
+
+    /*
+     * Block Read/Write commands while Format NVM is in progress
+     * Case 1: All namespace are being formatted.
+     * Case 2: Only one namespace is being formatted.
+     */
+    if (pAdapterExtension->FormatNvmInfo.State != FORMAT_NVM_NO_ACTIVITY) {
+        opCode = GET_OPCODE(Srb);
+        if (pAdapterExtension->FormatNvmInfo.FormatAllNamespaces == TRUE) {
+            if (NVMeIsReadWriteCmd(Function, opCode) == TRUE) {
+                Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
+                IO_StorPortNotification(RequestComplete,
+                    AdapterExtension,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                    (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                    (PSCSI_REQUEST_BLOCK)Srb);
+#endif
+                return FALSE;
+            }
+        } else {
+            if ((pAdapterExtension->FormatNvmInfo.TargetLun == Lun) &&
+                (NVMeIsReadWriteCmd(Function, opCode) == TRUE)) {
+                Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
+                IO_StorPortNotification(RequestComplete,
+                    AdapterExtension,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                    (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                    (PSCSI_REQUEST_BLOCK)Srb);
+#endif
+                return FALSE;
+            }
+        }
     }
 
     /* Check to see if the controller has started yet */
@@ -1103,9 +1174,9 @@ BOOLEAN NVMeBuildIo(
              * sends down SRB_FUNCTION_POWER.
              */
             pAdapterExtension->ShutdownInProgress = TRUE;
-			if (pAdapterExtension->ntldrDump == FALSE) {
-				StorPortNotification(RequestTimerCall, AdapterExtension, IsDeviceRemoved, STOP_SURPRISE_REMOVAL_TIMER);
-			}
+            if (pAdapterExtension->ntldrDump == FALSE) {
+                StorPortNotification(RequestTimerCall, AdapterExtension, IsDeviceRemoved, STOP_SURPRISE_REMOVAL_TIMER);
+            }
             Srb->SrbStatus = SRB_STATUS_SUCCESS;
             IO_StorPortNotification(RequestComplete, 
                                     AdapterExtension, 
@@ -1175,9 +1246,9 @@ BOOLEAN NVMeBuildIo(
                  * allocated for it.
                  */
                 if (pAdapterExtension->ntldrDump == FALSE) {
-						StorPortNotification(RequestTimerCall, pAdapterExtension, IsDeviceRemoved, STOP_SURPRISE_REMOVAL_TIMER);
-						NVMeAdapterControlPowerDown(pAdapterExtension);
-						NVMeFreeBuffers(pAdapterExtension);
+                        StorPortNotification(RequestTimerCall, pAdapterExtension, IsDeviceRemoved, STOP_SURPRISE_REMOVAL_TIMER);
+                        NVMeAdapterControlPowerDown(pAdapterExtension);
+                        NVMeFreeBuffers(pAdapterExtension);
                 }
 
                 Srb->SrbStatus = SRB_STATUS_SUCCESS;
@@ -1393,29 +1464,29 @@ BOOLEAN NVMeBuildIo(
 * @return VOID
 ******************************************************************************/
 VOID IsDeviceRemoved(
-	PNVME_DEVICE_EXTENSION pAE
+    PNVME_DEVICE_EXTENSION pAE
 )
 {
-	ULONG Version = 0;
+    ULONG Version = 0;
 
-	if (pAE->ShutdownInProgress == TRUE)
-		return;
+    if (pAE->ShutdownInProgress == TRUE)
+        return;
 
-	Version = StorPortReadRegisterUlong(pAE, (PULONG)(&pAE->pCtrlRegister->VS));
+    Version = StorPortReadRegisterUlong(pAE, (PULONG)(&pAE->pCtrlRegister->VS));
 
-	if(Version == INVALID_DEVICE_REGISTER_VALUE) {
-		pAE->DeviceRemovedDuringIO = TRUE;
-		StorPortPause(pAE, STOR_ALL_REQUESTS);
+    if(Version == INVALID_DEVICE_REGISTER_VALUE) {
+        pAE->DeviceRemovedDuringIO = TRUE;
+        StorPortPause(pAE, STOR_ALL_REQUESTS);
 #if DBG
-		StorPortDebugPrint(ERROR, "IsDeviceRemoved: <Error> Device removed with outstanding IO\n");
+        StorPortDebugPrint(ERROR, "IsDeviceRemoved: <Error> Device removed with outstanding IO\n");
 #endif
-		NVMeDetectPendingCmds(pAE, TRUE, SRB_STATUS_ERROR);		
-		NVMeFreeBuffers(pAE);
-		StorPortResume(pAE);
-	} else {
-		if(pAE->DriverState.NextDriverState == NVMeStartComplete)
-			StorPortNotification(RequestTimerCall, pAE, IsDeviceRemoved, START_SURPRISE_REMOVAL_TIMER); //every 1 seconds
-	}
+        NVMeDetectPendingCmds(pAE, TRUE, SRB_STATUS_ERROR);     
+        NVMeFreeBuffers(pAE);
+        StorPortResume(pAE);
+    } else {
+        if(pAE->DriverState.NextDriverState == NVMeStartComplete)
+            StorPortNotification(RequestTimerCall, pAE, IsDeviceRemoved, START_SURPRISE_REMOVAL_TIMER); //every 1 seconds
+    }
 
 }
 
@@ -1595,16 +1666,16 @@ BOOLEAN NVMeStartIo(
      * happen.
      */
 
-	if (pAdapterExtension->DriverState.NextDriverState != NVMeStartComplete) {
-	        Srb->SrbStatus = SRB_STATUS_NO_DEVICE;
-	        IO_StorPortNotification(RequestComplete, 
-	                                pAdapterExtension, 
+    if (pAdapterExtension->DriverState.NextDriverState != NVMeStartComplete) {
+            Srb->SrbStatus = SRB_STATUS_NO_DEVICE;
+            IO_StorPortNotification(RequestComplete, 
+                                    pAdapterExtension, 
 #if (NTDDI_VERSION > NTDDI_WIN7)
-	                                (PSTORAGE_REQUEST_BLOCK)Srb);
+                                    (PSTORAGE_REQUEST_BLOCK)Srb);
 #else
-	                                (PSCSI_REQUEST_BLOCK)Srb);
+                                    (PSCSI_REQUEST_BLOCK)Srb);
 #endif
-	        return TRUE;
+            return TRUE;
     }
 
     pSrbExtension = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(Srb);
@@ -1796,8 +1867,18 @@ void NVMeStartIoProcessIoctl(
                 switch (pNvmeCmdDW0->OPC) {
                 case ADMIN_FORMAT_NVM:
                     pFormatNvmInfo = &pAdapterExtension->FormatNvmInfo;
-                    if (pFormatNvmInfo->State == FORMAT_NVM_NO_ACTIVITY) {
-                        pFormatNvmInfo->State = FORMAT_NVM_RECEIVED;
+
+                    if (pFormatNvmInfo->State != FORMAT_NVM_RECEIVED) {
+                        /*
+                        * Wrong FormatNvmInfo state and no pre-processing done,
+                        * need to fail it here.
+                        */
+                        pFormatNvmInfo->State = FORMAT_NVM_NO_ACTIVITY;
+                        pSrb->SrbStatus = SRB_STATUS_SUCCESS;
+                        IO_StorPortNotification(RequestComplete,
+                            pAdapterExtension,
+                            pSrb);
+                        return;
                     }
 
                     /* Save the original SRB for later completion */
@@ -1820,6 +1901,10 @@ void NVMeStartIoProcessIoctl(
                      * to add back the formatted namespace
                      */
                     if (FORMAT_NVM_NS_REMOVED == pFormatNvmInfo->State) {
+
+                        StorPortDebugPrint(INFO,
+                            "NVMeStartIoProcessIoctl: Add NS needed.\n");
+
                         pFormatNvmInfo->AddNamespaceNeeded = TRUE;
                     }
                     /*
@@ -1850,7 +1935,7 @@ void NVMeStartIoProcessIoctl(
                 IO_StorPortNotification(RequestComplete, pAdapterExtension, pSrb);
                 return;
                 break;
-        case NVME_RESET_DEVICE:
+            case NVME_RESET_DEVICE:
                 /*
                  * Need to reset the controller per request from applications,
                  * e.g. after Firmware Activate command completed successfully.
@@ -1991,12 +2076,12 @@ IoCompletionRoutine(
 
     if (pDpc != NULL) {
         ASSERT(pAE->ntldrDump == FALSE);
-		if (pAE->MultipleCoresToSingleQueueFlag) {
-			StorPortAcquireSpinLock(pAE, StartIoLock, NULL, &StartLockHandle);
-		} else {
-			StorPortAcquireSpinLock(pAE, DpcLock, pDpc, &DpcLockhandle);
-		}
-	}
+        if (pAE->MultipleCoresToSingleQueueFlag) {
+            StorPortAcquireSpinLock(pAE, StartIoLock, NULL, &StartLockHandle);
+        } else {
+            StorPortAcquireSpinLock(pAE, DpcLock, pDpc, &DpcLockhandle);
+        }
+    }
     
     /* Use the message id to find the correct entry in the MSI_MESSAGE_TBL */
     pMMT = pRMT->pMsiMsgTbl + MsgID;
@@ -2230,11 +2315,11 @@ NVMeIsrMsix (
     ULONG                         qNum = 0;
     BOOLEAN                       status = FALSE;
 
-	if (pAE->polledResetInProg)
+    if (pAE->polledResetInProg)
         return TRUE;
 
     if (pAE->ntldrDump == TRUE) {
-    	/* status will return TRUE, if the request has been completed. */
+        /* status will return TRUE, if the request has been completed. */
         IoCompletionRoutine(NULL, AdapterExtension, &status, 0);
         return status;
     }
@@ -2291,10 +2376,10 @@ BOOLEAN NVMeWaitForCtrlRDY(
             StorPortReadRegisterUlong(pAE,
                                       &pAE->pCtrlRegister->CSTS.AsUlong);
 
-		if(CSTS.AsUlong == INVALID_DEVICE_REGISTER_VALUE) {
-			/* During hot removal, return immediately */
-			return FALSE;
-		}
+        if(CSTS.AsUlong == INVALID_DEVICE_REGISTER_VALUE) {
+            /* During hot removal, return immediately */
+            return FALSE;
+        }
      }
 
      return TRUE;
@@ -2447,55 +2532,55 @@ BOOLEAN NVMeResetController(
  * @return BOOLEAN
  ******************************************************************************/
 BOOLEAN NVMeReInitializeController(
-	__in PNVME_DEVICE_EXTENSION pAE
-	)
+    __in PNVME_DEVICE_EXTENSION pAE
+    )
 {
-	ULONG passiveTimeout;
+    ULONG passiveTimeout;
 
-	if (pAE->polledResetInProg)
-		return TRUE;
+    if (pAE->polledResetInProg)
+        return TRUE;
 
-	pAE->polledResetInProg = TRUE;
+    pAE->polledResetInProg = TRUE;
 
-	/* pause the adapter to block any new I/Os */
-	StorPortPause(pAE, STOR_ALL_REQUESTS);
+    /* pause the adapter to block any new I/Os */
+    StorPortPause(pAE, STOR_ALL_REQUESTS);
 
-	/*
-	* perform the reset operations, Reset the controller; if any steps fail we
-	* just quit which will leave the controller un-usable(storport queues frozen)
-	* on purpose to prevent possible data corruption
-	*/
-	if (NVMeResetAdapter(pAE) == TRUE) {
+    /*
+    * perform the reset operations, Reset the controller; if any steps fail we
+    * just quit which will leave the controller un-usable(storport queues frozen)
+    * on purpose to prevent possible data corruption
+    */
+    if (NVMeResetAdapter(pAE) == TRUE) {
 
-		/* Complete outstanding commands on submission queues */
-		StorPortNotification(ResetDetected, pAE, 0);
+        /* Complete outstanding commands on submission queues */
+        StorPortNotification(ResetDetected, pAE, 0);
 
-		/*
-		* detect and complete all commands
-		*/
-		NVMeDetectPendingCmds(pAE, TRUE, SRB_STATUS_BUS_RESET);
+        /*
+        * detect and complete all commands
+        */
+        NVMeDetectPendingCmds(pAE, TRUE, SRB_STATUS_BUS_RESET);
 
-		/* Prepare for new commands */
-		if (NVMeInitAdminQueues(pAE) == STOR_STATUS_SUCCESS) {
-			/*
-			* Start the state machine, if all goes well we'll complete the
-			* reset Srb when the machine is done.
-			*/
-			NVMeRunningStartAttempt(pAE, FALSE, NULL);
-		
-		} /* init the admin queues */
-	}
+        /* Prepare for new commands */
+        if (NVMeInitAdminQueues(pAE) == STOR_STATUS_SUCCESS) {
+            /*
+            * Start the state machine, if all goes well we'll complete the
+            * reset Srb when the machine is done.
+            */
+            NVMeRunningStartAttempt(pAE, FALSE, NULL);
+        
+        } /* init the admin queues */
+    }
 
-	pAE->polledResetInProg = FALSE;
+    pAE->polledResetInProg = FALSE;
 
     /* if init state machine completed successfully, we allow IOs to resume */
     if (pAE->DriverState.NextDriverState == NVMeStartComplete) {
-		NVMeRunning(pAE);
-	} else {
-		StorPortResume(pAE);
-	}
+        NVMeRunning(pAE);
+    } else {
+        StorPortResume(pAE);
+    }
 
-	return (pAE->DriverState.NextDriverState == NVMeStartComplete) ? TRUE : FALSE;
+    return (pAE->DriverState.NextDriverState == NVMeStartComplete) ? TRUE : FALSE;
 } /* NVMeReInitializeController */
 
 /*******************************************************************************
@@ -2513,16 +2598,16 @@ BOOLEAN NVMeResetBus(
     __in ULONG PathId
 )
 {
-	PNVME_DEVICE_EXTENSION pAE = (PNVME_DEVICE_EXTENSION)AdapterExtension;
+    PNVME_DEVICE_EXTENSION pAE = (PNVME_DEVICE_EXTENSION)AdapterExtension;
 
     UNREFERENCED_PARAMETER(PathId);
 
-	/* In Hibernation/CrashDump mode, reset command is ignored. */
-	if (pAE->ntldrDump == TRUE) {
-		return TRUE;
-	}
+    /* In Hibernation/CrashDump mode, reset command is ignored. */
+    if (pAE->ntldrDump == TRUE) {
+        return TRUE;
+    }
 
-	return NVMeReInitializeController(AdapterExtension);
+    return NVMeReInitializeController(AdapterExtension);
 } /* NVMeResetBus */
 
 /*******************************************************************************
@@ -3405,8 +3490,8 @@ VOID NVMeIoctlHotRemoveNamespace (
                 /* Now we are in namespace hot remove state. */
                 pDevExt->FormatNvmInfo.State = FORMAT_NVM_NS_REMOVED;
             }
-    }
-    } else if (TRUE == NVMeIsNamespaceVisible(pSrbExt, &lunId)) {
+        }
+    } else if (TRUE == NVMeIsNamespaceVisible(pSrbExt, 0, &lunId)) {
         /* We just have to format one namespace; OFFLINE it if it's visible */
         if (INVALID_LUN_EXTN != lunId) {
             pLunExt = pDevExt->pLunExtensionTable[lunId];
@@ -3414,18 +3499,18 @@ VOID NVMeIoctlHotRemoveNamespace (
                 pDevExt->FormatNvmInfo.TargetLun = lunId;
                 pLunExt->slotStatus = OFFLINE;
                 pLunExt->offlineReason = FORMAT_IN_PROGRESS;
-    /* Now we are in namespace hot remove state. */
-    pDevExt->FormatNvmInfo.State = FORMAT_NVM_NS_REMOVED;
+                /* Now we are in namespace hot remove state. */
+                pDevExt->FormatNvmInfo.State = FORMAT_NVM_NS_REMOVED;
             }
         }
     }
 
     if (FORMAT_NVM_NS_REMOVED == pDevExt->FormatNvmInfo.State) {
-    /*
-     * Force bus re-enumeration,
-     * then, Windows won't see the target namespace(s)
-     */
-    StorPortNotification(BusChangeDetected, pDevExt);
+        /*
+         * Force bus re-enumeration,
+         * then, Windows won't see the target namespace(s)
+         */
+        StorPortNotification(BusChangeDetected, pDevExt);
     } else {
         /* We did not take any lun extension offline */
         pDevExt->FormatNvmInfo.TargetLun = INVALID_LUN_EXTN;
@@ -3503,6 +3588,200 @@ VOID NVMeIoctlHotAddNamespace (
     StorPortNotification(BusChangeDetected, pDevExt);
 } /* NVMeIoctlHotAddNamespace */
 
+
+/******************************************************************************
+* NVMeFormatNVMHotRemoveNamespace
+*
+* @brief This function calls StorPortNotification with BusChangeDetected to
+*        force a bus re-enumeration after removing a namespace which used to
+*        be seen by Windows system. After removal, a Format NVM command is
+*        applied to the removed namespace(s).
+*
+* @param pSrbExt - Pointer to Srb Extension allocated in SRB.
+*
+* @return None
+******************************************************************************/
+VOID NVMeFormatNVMHotRemoveNamespace(
+    PNVME_SRB_EXTENSION pSrbExt
+)
+{
+    PNVME_DEVICE_EXTENSION pDevExt = pSrbExt->pNvmeDevExt;
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSTORAGE_REQUEST_BLOCK pSrb = pSrbExt->pSrb;
+#else
+    PSCSI_REQUEST_BLOCK pSrb = pSrbExt->pSrb;
+#endif
+
+    PNVME_PASS_THROUGH_IOCTL pNvmePtIoctl = NULL;
+    PNVMe_COMMAND pNvmeCmd = NULL;
+    ULONG NS = 0;
+    ULONG lunId = INVALID_LUN_EXTN;
+    PNVME_LUN_EXTENSION pLunExt = NULL;
+
+    pNvmePtIoctl = (PNVME_PASS_THROUGH_IOCTL)GET_DATA_BUFFER(pSrb);
+    pNvmeCmd = (PNVMe_COMMAND)pNvmePtIoctl->NVMeCmd;
+
+    /*
+     * If we're in the middle of formatting NVM,
+     * simply reject current request:
+     * SrbStatus = SRB_STATUS_INVALID_REQUEST
+     * ReturCode = NVME_IOCTL_UNSUPPORTED_OPERATION
+     */
+    if ((pDevExt->FormatNvmInfo.State != FORMAT_NVM_RECEIVED) &&
+        (pDevExt->FormatNvmInfo.State != FORMAT_NVM_NO_ACTIVITY)) {
+        pNvmePtIoctl->SrbIoCtrl.ReturnCode = NVME_IOCTL_UNSUPPORTED_OPERATION;
+        pSrb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
+        return;
+    }
+
+    StorPortDebugPrint(INFO, "NVMeFormatNVMHotRemoveNamespace: NSID:0x%x\n",
+        pNvmeCmd->NSID);
+
+    /* Set the namespace(s) as unavailable now */
+    if (pNvmeCmd->NSID == ALL_NAMESPACES_APPLIED) {
+        /*
+         * Set all reported namespaces as unavailable
+         * by setting all lun slot statuses to OFFLINE
+         */
+        pDevExt->FormatNvmInfo.FormatAllNamespaces = TRUE;
+        for (lunId = 0; lunId < MAX_NAMESPACES; lunId++) {
+            pLunExt = pDevExt->pLunExtensionTable[lunId];
+            if (ONLINE == pLunExt->slotStatus && pLunExt->identifyData.NSZE != 0) {
+                pLunExt->slotStatus = OFFLINE;
+                pLunExt->offlineReason = FORMAT_IN_PROGRESS;
+                /* Now we are in namespace hot remove state. */
+                pDevExt->FormatNvmInfo.State = FORMAT_NVM_NS_REMOVED;
+            }
+        }
+    } else if (TRUE == NVMeIsNamespaceVisible(pSrbExt, 0, &lunId)) {
+       /*
+        * Mark down the target namespace to format.
+        */
+       StorPortDebugPrint(INFO, 
+           "NVMeFormatNVMHotRemoveNamespace: Target lunID=%d.\n", lunId);
+       pDevExt->FormatNvmInfo.TargetLun = lunId;
+
+       /* We just have to format one namespace; OFFLINE it if it's visible */
+       if (INVALID_LUN_EXTN != lunId) {
+           pLunExt = pDevExt->pLunExtensionTable[lunId];
+           if (ONLINE == pLunExt->slotStatus && pLunExt->identifyData.NSZE != 0) {
+               pDevExt->FormatNvmInfo.TargetLun = lunId;
+               pLunExt->slotStatus = OFFLINE;
+               pLunExt->offlineReason = FORMAT_IN_PROGRESS;
+               /* Now we are in namespace hot remove state. */
+               pDevExt->FormatNvmInfo.State = FORMAT_NVM_NS_REMOVED;
+           }
+        }
+    }
+
+    StorPortDebugPrint(INFO, "NVMeFormatNVMHotRemoveNamespace: Hold off IOs.\n");
+    /*
+     * Notify Storport the device is busy and stop sending more requests down
+     * While re-enumerating bus.
+     */
+    if (StorPortBusy(pDevExt, ALL_NAMESPACES_APPLIED) != TRUE) {
+        pSrb->SrbStatus = SRB_STATUS_SUCCESS;
+        pNvmePtIoctl->SrbIoCtrl.ReturnCode = NVME_IOCTL_FORMAT_NVM_FAILED;
+        return;
+    }
+
+    if (FORMAT_NVM_NS_REMOVED == pDevExt->FormatNvmInfo.State) {
+        StorPortDebugPrint(INFO, 
+            "NVMeFormatNVMHotRemoveNamespace: Start re-enumeration.\n");
+        /*
+         * Force bus re-enumeration,
+         * then, Windows won't see the target namespace(s)
+         */
+        StorPortNotification(BusChangeDetected, pDevExt);
+    } else {
+        /* We did not take any lun extension offline */
+        pDevExt->FormatNvmInfo.TargetLun = INVALID_LUN_EXTN;
+    }
+} /* NVMeFormatNVMHotRemoveNamespace */
+
+
+/******************************************************************************
+* NVMeFormatNVMHotAddNamespace
+*
+* @brief This function calls StorPortNotification with BusChangeDetected to
+*        force a bus re-enumeration to let Windows discover the newly added
+*        namespace after successful completion of a Format NVM command.
+*
+* @param pSrbExt - Pointer to Srb Extension allocated in SRB.
+*
+* @return None
+******************************************************************************/
+VOID NVMeFormatNVMHotAddNamespace(
+    PNVME_SRB_EXTENSION pSrbExt
+)
+{
+    PNVME_DEVICE_EXTENSION pDevExt = pSrbExt->pNvmeDevExt;
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSTORAGE_REQUEST_BLOCK pSrb = pSrbExt->pSrb;
+#else
+    PSCSI_REQUEST_BLOCK pSrb = pSrbExt->pSrb;
+#endif
+
+    PNVME_PASS_THROUGH_IOCTL pNvmePtIoctl = NULL;
+    ULONG lunId = 0;
+    PNVME_LUN_EXTENSION pLunExt = NULL;
+
+    /*
+     * If haven't received NVME_PASS_THROUGH_SRB_IO_CODE(Format NVM) or
+     * NVME_HOT_REMOVE_NAMESPACE request, reject current request:
+     * SrbStatus = SRB_STATUS_SUCCESS
+     * ReturCode = NVME_IOCTL_UNSUPPORTED_OPERATION
+     */
+    if (INVALID_LUN_EXTN == pDevExt->FormatNvmInfo.TargetLun) {
+        pNvmePtIoctl = (PNVME_PASS_THROUGH_IOCTL)GET_DATA_BUFFER(pSrb);
+        pNvmePtIoctl->SrbIoCtrl.ReturnCode = NVME_IOCTL_UNSUPPORTED_OPERATION;
+        pSrb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
+        return;
+    }
+
+    StorPortDebugPrint(INFO, "NVMeFormatNVMHotAddNamespace: For all NS:0x%x\n",
+        pDevExt->FormatNvmInfo.FormatAllNamespaces);
+
+    /*
+     * We previously OFFLINED one or more luns, we'll make
+     * them ONLINE now.
+     */
+    if (TRUE == pDevExt->FormatNvmInfo.FormatAllNamespaces) {
+        for (lunId = 0; lunId < MAX_NAMESPACES; lunId++) {
+            pLunExt = pDevExt->pLunExtensionTable[lunId];
+            if ((OFFLINE == pLunExt->slotStatus) &&
+                (FORMAT_IN_PROGRESS == pLunExt->offlineReason)) {
+                pLunExt->slotStatus = ONLINE;
+                pLunExt->offlineReason = NOT_OFFLINE;
+            }
+        }
+    } else {
+        lunId = pDevExt->FormatNvmInfo.TargetLun;
+        if (INVALID_LUN_EXTN != lunId) {
+            pLunExt = pDevExt->pLunExtensionTable[lunId];
+            if ((OFFLINE == pLunExt->slotStatus) &&
+                (FORMAT_IN_PROGRESS == pLunExt->offlineReason)) {
+                pLunExt->slotStatus = ONLINE;
+                pLunExt->offlineReason = NOT_OFFLINE;
+            }
+        }
+    }
+
+    /*
+     * Reset FORMAT_NVM_INFO structure to zero
+     * since the request is completed
+     */
+    memset((PVOID)(&pDevExt->FormatNvmInfo), 0, sizeof(FORMAT_NVM_INFO));
+
+    /*
+     * Force bus re-enumeration
+     * and report the available namespace(s) via Inquiry commands
+     */
+    NVMeStallExecution(pDevExt, MAX_STATE_STALL_us);
+    StorPortNotification(BusChangeDetected, pDevExt);
+} /* NVMeFormatNVMHotAddNamespace */
+
+
 /******************************************************************************
  * FormatNVMGetIdentify
  *
@@ -3548,7 +3827,7 @@ BOOLEAN FormatNVMGetIdentify(
             Status = FALSE;
         } else {
             /* Assign the destination buffer for retrieved structure */
-            if (FALSE == NVMeIsNamespaceVisible(pSrbExt, &lunId)) {
+            if (FALSE == NVMeIsNamespaceVisible(pSrbExt, NamespaceID, &lunId)) {
                 /*
                  * Not a visible namespace, so we can skip fetching identify
                  * namespace structure. Return TRUE so we can complete the
@@ -3558,16 +3837,16 @@ BOOLEAN FormatNVMGetIdentify(
             } else {
                 ASSERT(INVALID_LUN_EXTN != lunId);
                 pIdenNS = &pAE->pLunExtensionTable[lunId]->identifyData;
-            /* Namespace ID is 1-based. */
-            pIdentify->NSID = NamespaceID;
-            /* Prepare PRP entries, need at least one PRP entry */
-            if (NVMePreparePRPs(pAE, 
-                                pSrbExt,
-                                (PVOID)pIdenNS,
-                                sizeof(ADMIN_IDENTIFY_CONTROLLER)) == FALSE)
+                /* Namespace ID is 1-based. */
+                pIdentify->NSID = NamespaceID;
+                /* Prepare PRP entries, need at least one PRP entry */
+                if (NVMePreparePRPs(pAE, 
+                                    pSrbExt,
+                                    (PVOID)pIdenNS,
+                                    sizeof(ADMIN_IDENTIFY_CONTROLLER)) == FALSE)
                 Status = FALSE;
+            }
         }
-    }
     }
     /* Complete the request now if something goes wrong */
     if (Status == FALSE) {
@@ -3586,7 +3865,7 @@ BOOLEAN FormatNVMGetIdentify(
  *        preparations Format NVM and Identify commands in
  *        NVMeIoctlFormatNVMCallback:
  *        Depending on the value of AddNamespaceNeeded:
- *        If TRUE, call NVMeIoctlHotAddNamespace to force bus re-enumeration
+ *        If TRUE, call NVMeFormatNVMHotAddNamespace to force bus re-enumeration
  *        and add back the formatted namespace(s).
  *        If FALSE, simply complete the request. User applications need to
  *        issue a NVME_HOT_ADD_NAMESPACE request to add back namespace(s).
@@ -3603,16 +3882,19 @@ BOOLEAN FormatNVMFailure(
 )
 {
     PFORMAT_NVM_INFO pFormatNvmInfo = &pDevExt->FormatNvmInfo;
+
+    StorPortDebugPrint(INFO, "FormatNVMFailure: Called!\n");
+
     /*
      * If AddNamespaceNeeded is TRUE, add back the namespace(s) via 
-     * NVMeIoctlHotAddNamespace. Then clear the FORMAT_NVM_INFO structure and
+     * NVMeFormatNVMHotAddNamespace. Then clear the FORMAT_NVM_INFO structure and
      * return TRUE in order to complete the request. Since we hit an error
      * we need to finish it.
      */
 
     if (pFormatNvmInfo->AddNamespaceNeeded == TRUE) {
         /* Need to add back namespace(s) first */
-        NVMeIoctlHotAddNamespace(pSrbExt);
+        NVMeFormatNVMHotAddNamespace(pSrbExt);
     }
     /*
      * Reset FORMAT_NVM_INFO structure to zero
@@ -3663,6 +3945,9 @@ BOOLEAN NVMeIoctlFormatNVMCallback(
     pNvmeCmd = (PNVMe_COMMAND)pNvmePtIoctl->NVMeCmd;
     NS = pNvmeCmd->NSID;
 
+    StorPortDebugPrint(INFO, "NVMeIoctlFormatNVMCallback: State=0x%x\n",
+        pFormatNvmInfo->State);
+
     switch (pFormatNvmInfo->State) {
         case FORMAT_NVM_CMD_ISSUED:
             /*
@@ -3671,6 +3956,9 @@ BOOLEAN NVMeIoctlFormatNVMCallback(
              */
             if ((pSrbExt->pCplEntry->DW3.SF.SC != 0) ||
                 (pSrbExt->pCplEntry->DW3.SF.SCT != 0)) {
+                StorPortDebugPrint(ERROR,
+                    "NVMeIoctlFormatNVMCallback: Format NVM command failed.\n");
+
                 /*
                  * Copy the completion entry to
                  * NVME_PASS_THROUGH_IOCTL structure
@@ -3693,6 +3981,9 @@ BOOLEAN NVMeIoctlFormatNVMCallback(
                 }
                 /* Now, Identify/Controller command is issued successfully. */
                 pFormatNvmInfo->State = FORMAT_NVM_IDEN_CONTROLLER_ISSUED;
+                StorPortDebugPrint(INFO,
+                    "NVMeIoctlFormatNVMCallback: Fetching controller data.\n");
+
                 return FALSE;
             }
         break;
@@ -3704,6 +3995,10 @@ BOOLEAN NVMeIoctlFormatNVMCallback(
              */
             if ((pSrbExt->pCplEntry->DW3.SF.SC != 0) ||
                 (pSrbExt->pCplEntry->DW3.SF.SCT != 0)) {
+
+                StorPortDebugPrint(ERROR,
+                    "NVMeIoctlFormatNVMCallback: Identify command failed.\n");
+
                 /*
                  * Copy the completion entry to
                  * NVME_PASS_THROUGH_IOCTL structure
@@ -3733,33 +4028,49 @@ BOOLEAN NVMeIoctlFormatNVMCallback(
                      */
 
                     lunId = pFormatNvmInfo->NextLun;
-                    if (lunId >= MAX_NAMESPACES) {
-                        /*
-                         * We've fetched identify_namespace structure for
-                         * all namespaces; move on to the next state.
-                         */
-                        pFormatNvmInfo->State =
-                            FORMAT_NVM_IDEN_NAMESPACE_FETCHED;
-                        return FALSE;
-                    }
-                    pLunExt = pDevExt->pLunExtensionTable[lunId];
-                    if ((OFFLINE == pLunExt->slotStatus) &&
-                        (FORMAT_IN_PROGRESS == pLunExt->offlineReason)) {
 
-                        /*
-                         * Fetch identify namespace structure for the NS
-                         * associated with this lun extension
-                         */
-                        pFormatNvmInfo->NextNs = pLunExt->namespaceId;
-                        if (FormatNVMGetIdentify(pSrbExt,
-                                                 pFormatNvmInfo->NextNs) == FALSE) {
+                    while (lunId < MAX_NAMESPACES) {
+                        pLunExt = pDevExt->pLunExtensionTable[lunId];
+                        if ((OFFLINE == pLunExt->slotStatus) &&
+                            (FORMAT_IN_PROGRESS == pLunExt->offlineReason)) {
                             /*
-                             * Can't issue Identify command, complete request now
-                 */
-                            return FormatNVMFailure(pDevExt, pSrbExt);
+                             * Fetch identify namespace structure for the NS
+                             * associated with this lun extension
+                             */
+                            pFormatNvmInfo->NextNs = pLunExt->namespaceId;
+                            if (FormatNVMGetIdentify(pSrbExt,
+                                pFormatNvmInfo->NextNs) == FALSE) {
+                                /*
+                                 * Can't issue Identify command, complete request now
+                                 */
+                                return FormatNVMFailure(pDevExt, pSrbExt);
+                            }
+
+                            pFormatNvmInfo->State = FORMAT_NVM_IDEN_CONTROLLER_ISSUED;
+                            StorPortDebugPrint(INFO,
+                                "NVMeIoctlFormatNVMCallback: Fetching NS(ID=%d) data.\n",
+                                pFormatNvmInfo->NextNs);
+                            pFormatNvmInfo->NextLun++;
+                            return FALSE;
+                        } else {
+                            pFormatNvmInfo->NextLun++;
+                            lunId = pFormatNvmInfo->NextLun;
+                        }
+                    } /* while looping thru LUN Ext */
+                    /*
+                     * We've fetched all identify_namespace structures for
+                     * all namespaces; Complete the request now.
+                     */
+                    StorPortDebugPrint(INFO,
+                        "NVMeIoctlFormatNVMCallback: All IDEN data fetched!\n");
+                    pFormatNvmInfo->State = FORMAT_NVM_IDEN_NAMESPACE_FETCHED;
+                    if (TRUE == pFormatNvmInfo->AddNamespaceNeeded) {
+                        NVMeFormatNVMHotAddNamespace(pSrbExt);
                     }
-                }
-                    pFormatNvmInfo->NextLun++;
+                    pSrb->SrbStatus = SRB_STATUS_SUCCESS;
+                    pNvmePtIoctl->SrbIoCtrl.ReturnCode = NVME_IOCTL_SUCCESS;
+                    return TRUE;
+
                 } else if (INVALID_LUN_EXTN != pFormatNvmInfo->TargetLun) {
                     /*
                      * Case 2: We formatted only one namespace, and that is a
@@ -3777,35 +4088,41 @@ BOOLEAN NVMeIoctlFormatNVMCallback(
                      * All done here; move on to the next state
                      */
                     pFormatNvmInfo->State = FORMAT_NVM_IDEN_NAMESPACE_FETCHED;
-                    } else {
+                    StorPortDebugPrint(INFO,
+                        "NVMeIoctlFormatNVMCallback: Fetching NS(ID=%d) data.\n",
+                        pFormatNvmInfo->NextNs);
+                    return FALSE;
+
+                } else {
                     /*
                      * Case 3: We formatted one or more hidden namespaces;
                      * nothing more to do here.
                      */
-                        pSrb->SrbStatus = SRB_STATUS_SUCCESS;
+                    pSrb->SrbStatus = SRB_STATUS_SUCCESS;
                     pNvmePtIoctl->SrbIoCtrl.ReturnCode = NVME_IOCTL_SUCCESS;
-                        /*
+                    /*
                      * Reset FORMAT_NVM_INFO structure to zero
                      * since the request is completed
-                         */
+                     */
                     memset((PVOID)pFormatNvmInfo, 0, sizeof(FORMAT_NVM_INFO));
-                        return TRUE;
-                    }
+                    StorPortDebugPrint(INFO,
+                        "NVMeIoctlFormatNVMCallback: Format hidden NS.\n");
+
+                    return TRUE;
+                }
                 return FALSE;
             }
         break;
 
         case FORMAT_NVM_IDEN_NAMESPACE_FETCHED:
+            StorPortDebugPrint(INFO,
+                "NVMeIoctlFormatNVMCallback: All IDEN data fetched!\n");
             if (TRUE == pFormatNvmInfo->AddNamespaceNeeded) {
-                NVMeIoctlHotAddNamespace(pSrbExt);
-                }
+                NVMeFormatNVMHotAddNamespace(pSrbExt);
+            }
             pSrb->SrbStatus = SRB_STATUS_SUCCESS;
             pNvmePtIoctl->SrbIoCtrl.ReturnCode = NVME_IOCTL_SUCCESS;
-                    /*
-             * Reset FORMAT_NVM_INFO structure to zero
-             * since the request is completed
-                     */
-            memset((PVOID)pFormatNvmInfo, 0, sizeof(FORMAT_NVM_INFO));
+
             return TRUE;
         break;
 
@@ -3821,7 +4138,7 @@ BOOLEAN NVMeIoctlFormatNVMCallback(
  *
  * @brief This function is the entry point handling Format NVM command:
  *        1. It does some checkings and initial settings
- *        2. Calls NVMeIoctlHotRemoveNamespace if no NVME_HOT_REMOVE_NAMESPACE
+ *        2. Calls NVMeFormatNVMHotRemoveNamespace if no NVME_HOT_REMOVE_NAMESPACE
  *           previously received.
  *        3. NVMeStartIo will issue Format NVM command later.
  *
@@ -3849,11 +4166,6 @@ BOOLEAN NVMeIoctlFormatNVM (
     PNVME_SRB_EXTENSION pSrbExt = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb);
     ULONG NS = 0;
 
-    /* Ensure the command is supported */
-    if (pDevExt->controllerIdentifyData.OACS.SupportsFormatNVM == 0) {
-        pSrbIoCtrl->ReturnCode = NVME_IOCTL_UNSUPPORTED_ADMIN_CMD;
-        return IOCTL_COMPLETED;
-    }
     /*
      * Ensure the Namespace ID is valid:
      * It's 1-based.
@@ -3868,10 +4180,10 @@ BOOLEAN NVMeIoctlFormatNVM (
 
     /*
      * When no namespace had been removed yet,
-     * call NVMeIoctlHotRemoveNamespace to remove the namespace(s) first
+     * call NVMeFormatNVMHotRemoveNamespace to remove the namespace(s) first
      */
     if (pDevExt->FormatNvmInfo.State == FORMAT_NVM_RECEIVED) {
-        NVMeIoctlHotRemoveNamespace(pSrbExt);
+        NVMeFormatNVMHotRemoveNamespace(pSrbExt);
     } else {
         pSrbIoCtrl->ReturnCode = NVME_IOCTL_FORMAT_NVM_PENDING;
         return IOCTL_COMPLETED;
@@ -3879,6 +4191,8 @@ BOOLEAN NVMeIoctlFormatNVM (
 
     return IOCTL_PENDING;
 } /* NVMeIoctlFormatNVM */
+
+
 /******************************************************************************
  * NVMeIsNamespaceVisible
  *
@@ -3891,6 +4205,7 @@ BOOLEAN NVMeIoctlFormatNVM (
  ******************************************************************************/
 BOOLEAN NVMeIsNamespaceVisible(
     PNVME_SRB_EXTENSION pSrbExt,
+    ULONG targetNSID,
     PULONG pLunId
 )
 {
@@ -3913,7 +4228,16 @@ BOOLEAN NVMeIsNamespaceVisible(
     pDevExt = pSrbExt->pNvmeDevExt;
     pNvmePtIoctl = (PNVME_PASS_THROUGH_IOCTL)GET_DATA_BUFFER(pSrb);
     pNvmeCmd = (PNVMe_COMMAND)pNvmePtIoctl->NVMeCmd;
-    NSID = pNvmeCmd->NSID;
+
+    /*
+     * Need to identify the association between NSID and Lun extension
+     * If calling function specifies a valid NSID, use it. Otherwise, use
+     * the one specified in command entry.
+     */
+    if (targetNSID != 0)
+        NSID = targetNSID;
+    else
+        NSID = pNvmeCmd->NSID;
 
     for (lunId = 0; lunId < MAX_NAMESPACES; lunId++) {
         pLunExt = pDevExt->pLunExtensionTable[lunId];
@@ -4512,6 +4836,13 @@ BOOLEAN NVMeProcessPrivateIoctl(
                     }
                 break;
                 case ADMIN_FORMAT_NVM:
+
+                    /* Ensure the command is supported */
+                    if (pDevExt->controllerIdentifyData.OACS.SupportsFormatNVM == 0) {
+                        pSrbIoCtrl->ReturnCode = NVME_IOCTL_UNSUPPORTED_ADMIN_CMD;
+                        return IOCTL_COMPLETED;
+                    }
+
                     if (pDevExt->FormatNvmInfo.State !=
                             FORMAT_NVM_NO_ACTIVITY) {
                         pSrb->SrbStatus = SRB_STATUS_SUCCESS;
@@ -4519,6 +4850,9 @@ BOOLEAN NVMeProcessPrivateIoctl(
                                     NVME_IOCTL_FORMAT_NVM_FAILED;
                         return IOCTL_COMPLETED;
                     }
+
+                    pDevExt->FormatNvmInfo.State = FORMAT_NVM_RECEIVED;
+
                     /* Set status as pending and handle it in StartIo */
                     pSrbExt->pNvmeCompletionRoutine = NVMeIoctlFormatNVMCallback;
                     pSrb->SrbStatus = SRB_STATUS_PENDING;

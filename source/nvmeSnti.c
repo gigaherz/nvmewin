@@ -579,6 +579,8 @@ SNTI_TRANSLATION_STATUS SntiTranslateInquiry(
 
     pSrbExt = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb);
 
+    StorPortDebugPrint(INFO, "SntiTranslateInquiry: called.\n");
+
     evpd = GET_INQ_EVPD_BIT(pSrb);
     pageCode = GET_INQ_PAGE_CODE(pSrb);
 
@@ -793,64 +795,172 @@ VOID SntiTranslateUnitSerialPage(
                           INQ_SERIAL_NUMBER_LENGTH)));
 } /* SntiTranslateUnitSerialPage */
 
+
+/*
+ * With HCK 8.100.26795, Type 8, SCSI NameString Descriptor is required in
+ * order to pass NVMe SCSI Compliance Test
+ */
 /******************************************************************************
- * SntiTranslateDeviceIdentificationPage
- *
- * @brief Translates the SCSI Inquiry VPD page - Device Identification Page.
- *        Populates the appropriate SCSI Inqiry response fields based on the
- *        NVMe Translation spec. Do not need to create SQE here as we just
- *        complete the command in the build phase (by returning FALSE to
- *        StorPort with SRB status of SUCCESS).
- *
- * @param pSrb - This parameter specifies the SCSI I/O request. SNTI expects
- *               that the user can access the SCSI CDB, response, and data from
- *               this pointer. For example, if there is a failure in translation
- *               resulting in sense data, then SNTI will call the appropriate
- *               internal error handling code and set the status info/data and
- *               pass the pSrb pointer as a parameter.
- *
- * @return VOID
- ******************************************************************************/
+* SntiTranslateDeviceIdentificationPage
+*
+* @brief Translates the SCSI Inquiry VPD page - Device Identification Page.
+*        Populates the appropriate SCSI Inqiry response fields based on the
+*        NVMe Translation spec. Do not need to create SQE here as we just
+*        complete the command in the build phase (by returning FALSE to
+*        StorPort with SRB status of SUCCESS).
+*
+* @param pSrb - This parameter specifies the SCSI I/O request. SNTI expects
+*               that the user can access the SCSI CDB, response, and data from
+*               this pointer. For example, if there is a failure in translation
+*               resulting in sense data, then SNTI will call the appropriate
+*               internal error handling code and set the status info/data and
+*               pass the pSrb pointer as a parameter.
+*
+* @return VOID
+******************************************************************************/
 VOID SntiTranslateDeviceIdentificationPage(
 #if (NTDDI_VERSION > NTDDI_WIN7)
-    PSTORAGE_REQUEST_BLOCK pSrb
+	PSTORAGE_REQUEST_BLOCK pSrb
 #else
-    PSCSI_REQUEST_BLOCK pSrb
+	PSCSI_REQUEST_BLOCK pSrb
 #endif
 )
 {
-	PVPD_IDENTIFICATION_PAGE pDeviceIdPage = NULL;
-	PVPD_IDENTIFICATION_DESCRIPTOR pIdDescriptor = NULL;
-	UINT16 allocLength = 0;
+    PVPD_IDENTIFICATION_PAGE pDeviceIdPage = NULL;
+    PVPD_IDENTIFICATION_DESCRIPTOR pIdDescriptor = NULL;
+    PNVME_LUN_EXTENSION pLunExt = NULL;
+    PNVME_SRB_EXTENSION pSrbExt = NULL;
+    UINT16 allocLength = 0;
+    SNTI_STATUS status;
+    PNVME_DEVICE_EXTENSION pDevExt = NULL;
+	UCHAR tempNSId[SCSI_NAME_NAMESPACE_ID_SIZE+1] = { 0 };
+	UCHAR tempVId[SCSI_NAME_PCI_VENDOR_ID_SIZE+1] = { 0 };
+	UCHAR tempSN[SCSI_NAME_SERIAL_NUM_SIZE] = { 0 };
+	UCHAR tempMN[SCSI_NAME_MODEL_NUM_SIZE] = { 0 };
+    UINT16 i = 0;
+    ULONGLONG Val = 0x00;
+	UCHAR tempEUI64[EUI64_ASCII_SIZE+1] = { 0 };
+    NVMe_VERSION specVersion = { 0 };
 
-	INT64 Eui64Id = EUI64_ID;
-	pDeviceIdPage = (PVPD_IDENTIFICATION_PAGE)GET_DATA_BUFFER(pSrb);
-	allocLength = GET_INQ_ALLOC_LENGTH(pSrb);
+    pDevExt = ((PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb))->pNvmeDevExt;
+    pSrbExt = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb);
 
-	memset(pDeviceIdPage, 0, allocLength);
-	pDeviceIdPage->DeviceType = DIRECT_ACCESS_DEVICE;
-	pDeviceIdPage->DeviceTypeQualifier = DEVICE_CONNECTED;
-	pDeviceIdPage->PageCode = VPD_DEVICE_IDENTIFIERS;
-	pDeviceIdPage->PageLength = VPD_ID_DESCRIPTOR_LENGTH +
-		EUI64_16_ID_SZ;
+    specVersion.AsUlong = StorPortReadRegisterUlong(pDevExt, 
+                              (PULONG)(&pDevExt->pCtrlRegister->VS));
 
-	pIdDescriptor = (PVPD_IDENTIFICATION_DESCRIPTOR)pDeviceIdPage->Descriptors;
+    status = GetLunExtension(pSrbExt, &pLunExt);
+    if (status != SNTI_SUCCESS) {
+        /* Map the translation error to a SCSI error */
+        SntiMapInternalErrorStatus(pSrb, status);
+        return;
+    }
 
-	memset(pIdDescriptor, 0, sizeof(VPD_IDENTIFICATION_DESCRIPTOR));
-	pIdDescriptor->CodeSet = VpdCodeSetBinary;
+    if ((specVersion.MJR == 1) && (specVersion.MNR == 0)) {
+        pDeviceIdPage = ((PVPD_IDENTIFICATION_PAGE)
+            (NVMeAllocatePool(pDevExt, DEVICE_IDENTIFICATION_PAGE_SIZE_SCSI_NAME_STRING_V1_0)));
+		if (pDeviceIdPage == NULL) {
+            /* Map the memory allocation failure to a SCSI error */
+            SntiMapInternalErrorStatus(pSrb, SNTI_NO_MEMORY);
+			return;
+		}
+		memset(pDeviceIdPage, 0, DEVICE_IDENTIFICATION_PAGE_SIZE_SCSI_NAME_STRING_V1_0);
+    } else {
+        pDeviceIdPage = ((PVPD_IDENTIFICATION_PAGE)
+            (NVMeAllocatePool(pDevExt, DEVICE_IDENTIFICATION_PAGE_SIZE_SCSI_NAME_STRING_V1_1)));
+		if (pDeviceIdPage == NULL) {
+			/* Map the memory allocation failure to a SCSI error */
+			SntiMapInternalErrorStatus(pSrb, SNTI_NO_MEMORY);
+			return;
+		}
+        memset(pDeviceIdPage, 0, DEVICE_IDENTIFICATION_PAGE_SIZE_SCSI_NAME_STRING_V1_1);
+    }
 
-	pIdDescriptor->Reserved = INQ_DEV_ID_DESCRIPTOR_RESERVED;
-	pIdDescriptor->Association = VpdAssocDevice;
-	pIdDescriptor->IdentifierType = VpdIdentifierTypeEUI64;
-	pIdDescriptor->IdentifierLength = EUI64_16_ID_SZ;
+    allocLength = GET_INQ_ALLOC_LENGTH(pSrb);
 
-	StorPortCopyMemory(pIdDescriptor->Identifier + INQ_DEV_ID_DESCRIPTOR_OFFSET,
-		&Eui64Id,
-		INQ_DEV_ID_DESCRIPTOR_OFFSET);
+    pDeviceIdPage->DeviceType = DIRECT_ACCESS_DEVICE;
+    pDeviceIdPage->DeviceTypeQualifier = DEVICE_CONNECTED;
+    pDeviceIdPage->PageCode = VPD_DEVICE_IDENTIFIERS;
+    pIdDescriptor = (PVPD_IDENTIFICATION_DESCRIPTOR)pDeviceIdPage->Descriptors;
 
-	SET_DATA_LENGTH(pSrb,
-		min(DEVICE_IDENTIFICATION_PAGE_SIZE, allocLength));
+    memset(pIdDescriptor, 0, sizeof(VPD_IDENTIFICATION_DESCRIPTOR));
+    pIdDescriptor->CodeSet = VpdCodeSetUTF8;
+
+    pIdDescriptor->Reserved = INQ_DEV_ID_DESCRIPTOR_RESERVED;
+    pIdDescriptor->Association = VpdAssocDevice;
+    pIdDescriptor->IdentifierType = VpdIdentifierTypeSCSINameString;
+    /*
+     * Program PageLength, IdentifierLength and others per NVMe Spec version
+     * based on the definitions in the translation spec.
+     */
+    if ((specVersion.MJR == 1) && (specVersion.MNR == 0)) {
+        pDeviceIdPage->PageLength = VPD_ID_DESCRIPTOR_LENGTH + 
+                                    SCSI_NAME_STRING_SIZE_V1_0;
+
+        pIdDescriptor->IdentifierLength = SCSI_NAME_STRING_SIZE_V1_0;
+
+        _ultoa_s(pLunExt->namespaceId, (char*)tempNSId, sizeof(tempNSId), 10);
+
+        for (i = 0; i < SCSI_NAME_NAMESPACE_ID_SIZE; i++) {
+            if (tempNSId[i] == 0x00)
+				tempNSId[i] = ASCII_SPACE_CHAR_VALUE;
+        }
+
+        for (i = 0; i < SCSI_NAME_MODEL_NUM_SIZE; i++) {
+            tempMN[i] = pDevExt->controllerIdentifyData.MN[i];
+            if (tempMN[i] == 0x00)
+				tempMN[i] = ASCII_SPACE_CHAR_VALUE;
+        }
+
+        for (i = 0; i < SCSI_NAME_SERIAL_NUM_SIZE; i++) {
+            tempSN[i] = pDevExt->controllerIdentifyData.SN[i];
+            if (tempSN[i] == 0x00)
+				tempSN[i] = ASCII_SPACE_CHAR_VALUE;
+        }
+
+        _ultoa_s(pDevExt->controllerIdentifyData.VID, (char*)tempVId, sizeof(tempVId), 16);
+
+        StorPortCopyMemory(pIdDescriptor->Identifier, 
+                           &tempVId, 
+                           SCSI_NAME_PCI_VENDOR_ID_SIZE);
+		StorPortCopyMemory(pIdDescriptor->Identifier + SCSI_NAME_MODEL_NUM_OFFSET,
+                           tempMN, 
+                           SCSI_NAME_MODEL_NUM_SIZE);
+		StorPortCopyMemory(pIdDescriptor->Identifier + SCSI_NAME_NAMESPACE_ID_OFFSET,
+                           tempNSId, 
+                           SCSI_NAME_NAMESPACE_ID_SIZE);
+		StorPortCopyMemory(pIdDescriptor->Identifier + SCSI_NAME_SERIAL_NUM_OFFSET,
+                           tempSN, 
+                           SCSI_NAME_SERIAL_NUM_SIZE);
+
+		pSrb->DataTransferLength = 
+            min(DEVICE_IDENTIFICATION_PAGE_SIZE_SCSI_NAME_STRING_V1_0, allocLength);
+	} else {
+        pDeviceIdPage->PageLength = VPD_ID_DESCRIPTOR_LENGTH + 
+                                    SCSI_NAME_STRING_SIZE_V1_1;
+        pIdDescriptor->IdentifierLength = SCSI_NAME_STRING_SIZE_V1_1;
+
+        StorPortCopyMemory(pIdDescriptor->Identifier, "EUI.", EUI64_ID_SIZE);
+
+        StorPortCopyMemory(&Val, 
+                           &pDevExt->pLunExtensionTable[0]->identifyData.EUI64[0], 
+                           sizeof(ULONGLONG));
+
+		_ui64toa_s(Val, (char*)tempEUI64, sizeof(tempEUI64), 16);
+
+        StorPortCopyMemory(pIdDescriptor->Identifier + EUI64_ID_SIZE, 
+                           tempEUI64,
+                           EUI64_ASCII_SIZE);
+
+        pSrb->DataTransferLength =
+            min(DEVICE_IDENTIFICATION_PAGE_SIZE_SCSI_NAME_STRING_V1_1, allocLength);
+    }
+
+    StorPortCopyMemory(pSrb->DataBuffer, pDeviceIdPage, pSrb->DataTransferLength);
+    StorPortFreePool((PVOID)pDevExt, pDeviceIdPage);
+
 } /* SntiTranslateDeviceIdentificationPage */
+
+
 
 #if (NTDDI_VERSION > NTDDI_WIN7)
 /******************************************************************************
@@ -1273,10 +1383,13 @@ SNTI_TRANSLATION_STATUS SntiTranslateReportLuns(
     UINT8 selectReport = 0;
     UCHAR lunExtIdx = 0;
     PNVME_LUN_EXTENSION pLunExt = NULL;
+	UINT8 flbas = 0;
 
     /* Default to a successful command completion */
     SNTI_TRANSLATION_STATUS returnStatus = SNTI_COMMAND_COMPLETED;
     pSrbExt = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb);
+
+    StorPortDebugPrint(INFO, "SntiTranslateReportLuns: called.\n");
 
     pDevExt = pSrbExt->pNvmeDevExt;
     pResponseBuffer = (PUCHAR)GET_DATA_BUFFER(pSrb);
@@ -1321,8 +1434,13 @@ SNTI_TRANSLATION_STATUS SntiTranslateReportLuns(
         /* The first LUN Id will always be 0 per the SAM spec */
         for (lunExtIdx = 0; lunExtIdx < MAX_NAMESPACES; lunExtIdx++) {
              pLunExt = pDevExt->pLunExtensionTable[lunExtIdx];
-             // Don't report the LUN with zero size in capacity
-             if (pLunExt->identifyData.NSZE == 0)
+             /*
+              * Don't report the LUN when the namespace:
+              * (1) with zero size in capacity, or
+              * (2) is formatted using metadata, which is not supported now.
+              */
+			 flbas = pLunExt->identifyData.FLBAS.SupportedCombination;
+			 if ((pLunExt->identifyData.NSZE == 0) || (pLunExt->identifyData.LBAFx[flbas].MS != 0))
                 continue;
              if ((pLunExt->slotStatus == ONLINE) &&
                  (++numberOfLunsFound <= numberOfLuns)) {
@@ -1394,6 +1512,8 @@ SNTI_TRANSLATION_STATUS SntiTranslateReadCapacity(
     pSrbExt = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb);
 
     pResponseBuffer = (PUCHAR)GET_DATA_BUFFER(pSrb);
+
+    StorPortDebugPrint(INFO, "SntiTranslateReadCapacity: called.\n");
 
     /*
      * Set SRB status to success to indicate the command will complete
@@ -1530,6 +1650,10 @@ SNTI_TRANSLATION_STATUS SntiTranslateReadCapacity10(
             lastLba = LBA_MASK_LOWER_32_BITS;
         else
             lastLba = (UINT32)namespaceSize-1; /* NSZE is not zero based */
+
+
+        StorPortDebugPrint(INFO, "ReadCapacity10: LastLBA=0x%x, LBALen=%d.\n", 
+            lastLba, lbaLength);
 
         /* Must byte swap these as they are returned in big endian */
         REVERSE_BYTES(&pReadCapacityData->LogicalBlockAddress, &lastLba);

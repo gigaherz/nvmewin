@@ -310,6 +310,41 @@
 #define VERSION_DESC_2                                4
 #define EUI64_ID                     0x84EB0AFFFF171500
 #define EUI64_16_ID_SZ                             0x10
+#define SCSI_NVMe_NAMESTRING         0x534353494E564D65 //SCSINVMe
+#define SCSI_NAMESTRING_SZ                            8
+
+// SCSI Name String defined in NVMe-SCSI Translation Spec 1.4
+/* SCSI name string defines for V1.0 */
+#define VPD_ID_DESCRIPTOR_LENGTH (sizeof(VPD_IDENTIFICATION_DESCRIPTOR))
+#define ASCII_SPACE_CHAR_VALUE                     0x20
+#define SCSI_NAME_PCI_VENDOR_ID_SIZE	              4
+#define SCSI_NAME_NAMESPACE_ID_SIZE                   4	
+#define SCSI_NAME_MODEL_NUM_SIZE                     40
+#define SCSI_NAME_SERIAL_NUM_SIZE                    20
+#define SCSI_NAME_STRING_SIZE_V1_0	(SCSI_NAME_PCI_VENDOR_ID_SIZE + \
+                                     SCSI_NAME_MODEL_NUM_SIZE + \
+                                     SCSI_NAME_NAMESPACE_ID_SIZE + \
+                                     SCSI_NAME_SERIAL_NUM_SIZE)
+
+#define DEVICE_IDENTIFICATION_PAGE_SIZE_SCSI_NAME_STRING_V1_0	(sizeof(VPD_IDENTIFICATION_PAGE) + \
+                                                                 VPD_ID_DESCRIPTOR_LENGTH + \
+                                                                 SCSI_NAME_STRING_SIZE_V1_0)
+
+#define SCSI_NAME_NAMESPACE_ID_OFFSET (SCSI_NAME_PCI_VENDOR_ID_SIZE + \
+                                       SCSI_NAME_MODEL_NUM_SIZE)	
+#define SCSI_NAME_MODEL_NUM_OFFSET (SCSI_NAME_PCI_VENDOR_ID_SIZE)
+#define SCSI_NAME_SERIAL_NUM_OFFSET (SCSI_NAME_PCI_VENDOR_ID_SIZE + \
+                                     SCSI_NAME_MODEL_NUM_SIZE + \
+                                     SCSI_NAME_NAMESPACE_ID_SIZE)
+
+/* SCSI name string defines for V1.1 */
+#define EUI64_ID_SIZE                                 4
+#define EUI64_ASCII_SIZE                             16
+#define SCSI_NAME_STRING_SIZE_V1_1	(EUI64_ID_SIZE + EUI64_ASCII_SIZE)
+#define DEVICE_IDENTIFICATION_PAGE_SIZE_SCSI_NAME_STRING_V1_1   (sizeof(VPD_IDENTIFICATION_PAGE) + \
+                                                                 VPD_ID_DESCRIPTOR_LENGTH + \
+                                                                 SCSI_NAME_STRING_SIZE_V1_1)
+
 #define INQ_DEV_ID_DESCRIPTOR_RESERVED                0
 #define INQ_DEV_ID_DESCRIPTOR_OFFSET                0x8
 #define DATA_PROTECTION_CAPABILITIES_MASK           0xF
@@ -553,6 +588,5 @@
  * enable DPOFUA support type 0x10 value.
  */
 #define DEVICE_SPECIFIC_PARAMETER                     0
-#define VPD_ID_DESCRIPTOR_LENGTH sizeof(VPD_IDENTIFICATION_DESCRIPTOR)
 
 #endif /* __SNTI_TYPES_H__ */

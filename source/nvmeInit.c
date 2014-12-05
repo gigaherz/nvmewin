@@ -992,8 +992,9 @@ ULONG NVMeInitSubQueue(
     /* Ensure the QueueID is valid via the number of active cores in system */
     if (QueueID > maxCore)
         return ( STOR_STATUS_INVALID_PARAMETER );
-
-#if (NTDDI_VERSION > NTDDI_WIN7) && defined(_WIN64)
+		
+/* Code Analysis fails on StoPortReadRegisterUlong64 */
+#if 0 // (NTDDI_VERSION > NTDDI_WIN7) && defined(_WIN64)
     CAP.AsUlonglong = StorPortReadRegisterUlong64(pAE,
         (PULONG64)(&pAE->pCtrlRegister->CAP));
 #else
@@ -1113,8 +1114,9 @@ ULONG NVMeInitCplQueue(
     /* Ensure the QueueID is valid via the number of active cores in system */
     if (QueueID > maxCore)
         return ( STOR_STATUS_INVALID_PARAMETER );
-
-#if (NTDDI_VERSION > NTDDI_WIN7) && defined(_WIN64)
+		
+/* Code Analysis fails on StoPortReadRegisterUlong64 */
+#if 0 // (NTDDI_VERSION > NTDDI_WIN7) && defined(_WIN64)
     CAP.AsUlonglong = StorPortReadRegisterUlong64(pAE,
         (PULONG64)(&pAE->pCtrlRegister->CAP));
 #else
@@ -1754,8 +1756,9 @@ BOOLEAN NVMeInitCallback(
                 StorPortCopyMemory(&pAE->controllerIdentifyData,
                                 pAE->DriverState.pDataBuffer,
                                 sizeof(ADMIN_IDENTIFY_CONTROLLER));
-
-#if (NTDDI_VERSION > NTDDI_WIN7) && defined(_WIN64)
+								
+/* Code Analysis fails on StoPortReadRegisterUlong64 */
+#if 0 // (NTDDI_VERSION > NTDDI_WIN7) && defined(_WIN64)
                 CAP.AsUlonglong = StorPortReadRegisterUlong64(pAE,
                     (PULONG64)(&pAE->pCtrlRegister->CAP));
 #else

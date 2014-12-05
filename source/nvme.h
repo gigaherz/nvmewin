@@ -1662,7 +1662,91 @@ typedef struct _ADMIN_IDENTIFY_NAMESPACE
         UCHAR   Reserved                    :4;
     } DPS;
 
-    UCHAR                       Reserved1[98];
+	/*
+	* [Namespace Multi-path I/O and Namespace Sharing Capabilities (NMIC)]
+	* This field specifies multi-path I/O and namespace sharing capabilities
+	* of the namespace.
+	*/
+	struct
+	{
+		/*
+		* Bits 0, if set to 1, indicate whether the NVM namespace may be
+		* accessible by two or more controllers in the NVM subsystem
+		* (i.e., may be a shared namespace). If cleared to '0', then the
+		* NVM namespace is a private namespace and may only be accessed by
+		* the controller that returned this namespace data structure.
+		*/
+		UCHAR   NamespaceSharing : 1;
+		UCHAR   Reserved : 7;
+	} NMIC;
+
+	/*
+	* [Reservation Capabilities (RESCAP)]
+	* This field indicates the reservation capabilities of the namespace.
+	* A value of 00h in this field indicates that reservations are not
+	* supported by this namespace.
+	*/
+	struct
+	{
+		/*
+		* if set to ‘1’ indicates that the namespace supports the Persist
+		* Through Power Loss capability. If this bit is cleared to ‘0’,
+		* then the namespace does not support the Persist Through Power
+		* Loss Capability.
+		*/
+		UCHAR   PTPLC : 1;
+		/*
+		* Bit 1 if set to ‘1’ indicates that the namespace supports the
+		* Write Exclusive reservation type. If this bit is cleared to ‘0’,
+		* then the namespace does not support the reservation type.
+		*/
+		UCHAR   WrEx : 1;
+		/*
+		* Bit 2 if set to ‘1’ indicates that the namespace supports the
+		* Exclusive Access reservation type. If this bit is cleared to ‘0’,
+		* then the namespace does not support the reservation type.
+		*/
+		UCHAR   ExAccess : 1;
+		/*
+		* Bit 3 if set to ‘1’ indicates that the namespace supports the
+		* Write Exclusive-Registrants Only reservation type. If this bit
+		* is cleared to ‘0’, then the namespace does not support the
+		* reservation type.
+		*/
+		UCHAR   WrExReg : 1;
+		/*
+		* Bit 4 if set to ‘1’ indicates that the namespace supports the
+		* Exclusive Access-Registrants Only reservation type. If this bit
+		* is cleared to ‘0’, then the namespace does not support the
+		* reservation type.
+		*/
+		UCHAR   ExAccessReg : 1;
+		/*
+		* Bit 5 if set to ‘1’ indicates that the namespace supports the
+		* Write Exclusive-All Registrants reservation type. If this bit
+		* is cleared to ‘0’, then the namespace does not support the
+		* reservation type.
+		*/
+		UCHAR   WrExAllReg : 1;
+		/*
+		* Bit 6 if set to ‘1’ indicates that the namespace supports the
+		* Exclusive Access-All Registrants reservation type. If this bit
+		* is cleared to ‘0’, then the namespace does not support the
+		* reservation type.
+		*/
+		UCHAR   ExAccessAllReg : 1;
+		UCHAR   Reserved : 1;
+	} RESCAP;
+
+	UCHAR                       Reserved1[88];
+	/*
+	* This field contains a 64-bit IEEE Extended Unique Identifier (EUI-64) 
+    * that is globally unique and assigned to the namespace when the namespace
+    * is created. This field remains fixed throughout the life of the namespace
+    * and is preserved across namespace and controller operations 
+    * (e.g., controller reset, namespace format, etc.).
+	*/
+	UCHAR                       EUI64[8];
 
     /*
      * [LBA Format x Support] This field indicates the LBA format x that is

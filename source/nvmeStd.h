@@ -50,6 +50,14 @@
 
 #include <evntrace.h>
 
+
+sp_DRIVER_INITIALIZE DriverEntry;
+HW_BUILDIO NVMeBuildIo;
+HW_STARTIO NVMeStartIo;
+HW_RESET_BUS NVMeResetBus;
+HW_ADAPTER_CONTROL NVMeAdapterControl;
+HW_PASSIVE_INITIALIZE_ROUTINE NVMePassiveInitialize;
+
 #ifdef DUMB_DRIVER
 #define DUMB_DRIVER_SZ (1024 * 64)
 #endif
@@ -1501,6 +1509,13 @@ VOID NVMeIoctlHotAddNamespace(
     PNVME_SRB_EXTENSION pSrbExt
 );
 
+VOID NVMeFormatNVMHotRemoveNamespace(
+    PNVME_SRB_EXTENSION pSrbExt
+);
+
+VOID NVMeFormatNVMHotAddNamespace(
+    PNVME_SRB_EXTENSION pSrbExt
+);
 
 BOOLEAN NVMeIoctlFormatNVMCallback(
     PVOID pNVMeDevExt,
@@ -1575,6 +1590,7 @@ ULONG NVMeInitAdminQueues(
 
 BOOLEAN NVMeIsNamespaceVisible(
     __in PNVME_SRB_EXTENSION pSrbExt,
+    __in ULONG targetNSID,
     __out PULONG pLunId
 );
 
