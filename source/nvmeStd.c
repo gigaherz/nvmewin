@@ -3283,14 +3283,16 @@ BOOLEAN NVMeIoctlSecuritySendRcv(
         return IOCTL_COMPLETED;
     }
 
-    /* Prepare the PRP entries for the transfer */
-    if (NVMePreparePRPs(pDevExt,
-                        (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb),
-                        pNvmePtIoctl->DataBuffer,
-                        DataBufferSize) == FALSE) {
-        pSrbIoCtrl->ReturnCode = NVME_IOCTL_PRP_TRANSLATION_ERROR;
+    if(DataBufferSize != 0)	{
+        /* Prepare the PRP entries for the transfer */
+        if (NVMePreparePRPs(pDevExt,
+                            (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb),
+                            pNvmePtIoctl->DataBuffer,
+                            DataBufferSize) == FALSE) {
+            pSrbIoCtrl->ReturnCode = NVME_IOCTL_PRP_TRANSLATION_ERROR;
 
-        return IOCTL_COMPLETED;
+            return IOCTL_COMPLETED;
+        }
     }
 
     pSrbIoCtrl->ReturnCode = NVME_IOCTL_SUCCESS;
