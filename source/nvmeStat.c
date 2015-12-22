@@ -64,16 +64,16 @@ VOID NVMeCallArbiter(
     PNVME_DEVICE_EXTENSION pAE
 )
 {
-	if ((pAE->ntldrDump == FALSE) && (pAE->polledResetInProg != TRUE)) {
+    if ((pAE->ntldrDump == FALSE) && (pAE->polledResetInProg != TRUE)) {
         StorPortNotification(RequestTimerCall,
                              pAE,
                              NVMeRunning,
                              pAE->DriverState.CheckbackInterval);
     } else {
-		/*
-		 * NoOp in dump mode because NVMeRunningStartAttempt() steps through
-		 * the initialization state machine in a while loop.
-		 */
+        /*
+         * NoOp in dump mode because NVMeRunningStartAttempt() steps through
+         * the initialization state machine in a while loop.
+         */
     }
 } /* NVMeCallArbiter */
 
@@ -181,48 +181,48 @@ BOOLEAN NVMeRunningStartAttempt(
      * We won't accept IOs until the machine finishes and if it
      * fails to finish we'll never accept IOs and simply log an error
      */
-	if (pAE->ntldrDump == FALSE) {
-		if (pAE->polledResetInProg == FALSE) {
-			NVMeRunning(pAE);
-		} else {
-			/* 
-			* we poll if we're launching the reinit state machine from HwStorResetBus
-			* or HwStorAdapterControl->ScsiRestartAdapter path
-			*/
-			NVMeRunning(pAE);
+    if (pAE->ntldrDump == FALSE) {
+        if (pAE->polledResetInProg == FALSE) {
+            NVMeRunning(pAE);
+        } else {
+            /* 
+            * we poll if we're launching the reinit state machine from HwStorResetBus
+            * or HwStorAdapterControl->ScsiRestartAdapter path
+            */
+            NVMeRunning(pAE);
 
-			/* TO val is based on CAP register plus a few, 5, seconds to init post RDY */
-			passiveTimeout = pAE->uSecCrtlTimeout + (STORPORT_TIMER_CB_us * MICRO_TO_SEC);
+            /* TO val is based on CAP register plus a few, 5, seconds to init post RDY */
+            passiveTimeout = pAE->uSecCrtlTimeout + (STORPORT_TIMER_CB_us * MICRO_TO_SEC);
 
-			while ((pAE->DriverState.NextDriverState != NVMeStartComplete) &&
-				(pAE->DriverState.NextDriverState != NVMeStateFailed)){
+            while ((pAE->DriverState.NextDriverState != NVMeStartComplete) &&
+                (pAE->DriverState.NextDriverState != NVMeStateFailed)){
 
-				/* increment 5000us (timer callback val */
-				pAE->DriverState.TimeoutCounter += pAE->DriverState.CheckbackInterval;
-				if (pAE->DriverState.TimeoutCounter > passiveTimeout) {
-					NVMeDriverFatalError(pAE,
-						(1 << START_STATE_TIMEOUT_FAILURE));
-					break;
-				}
+                /* increment 5000us (timer callback val */
+                pAE->DriverState.TimeoutCounter += pAE->DriverState.CheckbackInterval;
+                if (pAE->DriverState.TimeoutCounter > passiveTimeout) {
+                    NVMeDriverFatalError(pAE,
+                        (1 << START_STATE_TIMEOUT_FAILURE));
+                    break;
+                }
 
-				NVMeRunning(pAE);
-				NVMeStallExecution(pAE, STORPORT_TIMER_CB_us);
-				IoCompletionRoutine(NULL, pAE, (PVOID)0, 0);
-			}
+                NVMeRunning(pAE);
+                NVMeStallExecution(pAE, STORPORT_TIMER_CB_us);
+                IoCompletionRoutine(NULL, pAE, (PVOID)0, 0);
+            }
 
-			return (pAE->DriverState.NextDriverState == NVMeStartComplete) ? TRUE : FALSE;
-		}
-	} else {
-		PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
-		pAE->LearningCores = pRMT->NumActiveCores; /* no need to learn cores in dump mode */
+            return (pAE->DriverState.NextDriverState == NVMeStartComplete) ? TRUE : FALSE;
+        }
+    } else {
+        PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
+        pAE->LearningCores = pRMT->NumActiveCores; /* no need to learn cores in dump mode */
 
-		/* In dump mode there is no timer. We have to poll for completion at each state. */
-		while (pAE->DriverState.NextDriverState != NVMeStateFailed &&
-			pAE->DriverState.NextDriverState != NVMeStartComplete) {
-			NVMeRunning(pAE);
-			NVMeCrashDelay(pAE->DriverState.CheckbackInterval, pAE->ntldrDump);
-		}
-	}
+        /* In dump mode there is no timer. We have to poll for completion at each state. */
+        while (pAE->DriverState.NextDriverState != NVMeStateFailed &&
+            pAE->DriverState.NextDriverState != NVMeStartComplete) {
+            NVMeRunning(pAE);
+            NVMeCrashDelay(pAE->DriverState.CheckbackInterval, pAE->ntldrDump);
+        }
+    }
 
     return (TRUE);
 } /* NVMeRunningStartAttempt */
@@ -308,9 +308,9 @@ VOID NVMeRunning(
         break;
         case NVMeStartComplete:
             pAE->RecoveryAttemptPossible = TRUE;
-			if (pAE->ntldrDump == FALSE) {
-				StorPortNotification(RequestTimerCall, pAE, IsDeviceRemoved, START_SURPRISE_REMOVAL_TIMER); //start after 1 seconds
-			}
+            if (pAE->ntldrDump == FALSE) {
+                StorPortNotification(RequestTimerCall, pAE, IsDeviceRemoved, START_SURPRISE_REMOVAL_TIMER); //start after 1 seconds
+            }
             /* Indicate learning is done with no unassigned cores */
             pAE->LearningCores = pAE->ResMapTbl.NumActiveCores;
 

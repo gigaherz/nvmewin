@@ -56,6 +56,12 @@
 #define SCSIOP_WRITE_LONG16                        0x9F
 
 /* CDB offsets */
+#define CDB_6_CONTROL_OFFSET                          5
+#define CDB_10_CONTROL_OFFSET                         9
+#define CDB_12_CONTROL_OFFSET                        11
+#define CDB_16_CONTROL_OFFSET                        15
+#define CDB_VAR_CONTROL_OFFSET                        1
+#define CONTROL_BYTE_NACA_MASK                      0x4
 #define READ_6_LBA_OFFSET                             1
 #define READ_10_LBA_OFFSET                            2
 #define READ_12_LBA_OFFSET                            2
@@ -153,6 +159,7 @@
 #define NIBBLE_SHIFT                                  4
 #define ONE_OR_MORE_PHYSICAL_BLOCKS                   0
 #define UNSPECIFIED                                   0
+#define SPECIFIED                                     1
 #define LBA_0                                         0
 #define PROTECTION_DISABLED                           0
 #define PROTECTION_ENABLED                            1
@@ -162,6 +169,9 @@
 #define RESERVED_FIELDS                             0x0
 #define LUN_ENTRY_SIZE                                8
 #define LUN_DATA_HEADER_SIZE                          8
+#define LOGICAL_AND_SUBS_LUNS_RET                  0x12
+#define ADMIN_AND_LOGICAL_LUNS_RET                 0x11
+#define ADMIN_LUNS_RETURNED                        0x10
 #define ALL_LUNS_RETURNED                          0x02
 #define ALL_WELL_KNOWN_LUNS_RETURNED               0x01
 #define RESTRICTED_LUNS_RETURNED                   0x00
@@ -261,7 +271,10 @@
 #define INQ_UNIT_SERIAL_NUMBER_PAGE                0x80
 #define INQ_DEVICE_IDENTIFICATION_PAGE             0x83
 #define INQ_EXTENDED_INQUIRY_DATA_PAGE             0x86
-#define INQ_SERIAL_NUMBER_LENGTH                   0x14
+#define INQ_SN_FROM_EUI64_LENGTH                   0x14
+#define INQ_SN_FROM_NGUID_LENGTH                   0x28
+#define INQ_V10_SN_LENGTH                          0x1E
+
 #define INQ_SN_SUB_LENGTH                             4
 /* For Win 8 UNMAP support, there are additional VPD pages
    we provide such as logical block provisioning
@@ -309,41 +322,37 @@
 #define VERSION_DESC_1                                2
 #define VERSION_DESC_2                                4
 #define EUI64_ID                     0x84EB0AFFFF171500
-#define EUI64_16_ID_SZ                             0x10
-#define SCSI_NVMe_NAMESTRING         0x534353494E564D65 //SCSINVMe
-#define SCSI_NAMESTRING_SZ                            8
+#define NAA_IEEE_EX                                   6
 
-// SCSI Name String defined in NVMe-SCSI Translation Spec 1.4
+// Device Identification defined in NVMe-SCSI Translation Spec 1.5, Section 6.1.4
+#define VPD_ID_DESCRIPTOR_HDR_LENGTH (sizeof(VPD_IDENTIFICATION_DESCRIPTOR))
+#define EUI64_DATA_SIZE                              8
+#define EUI64_ASCII_SIZE                             EUI64_DATA_SIZE*2
+#define NGUID_DATA_SIZE                              16
+#define NGUID_ASCII_SIZE                             NGUID_DATA_SIZE*2
+#define PRODUCT_ID_ASCII_SIZE                        16
+#define VENDOR_ID_DATA_SIZE                          2
+#define VENDOR_ID_ASCII_SIZE                         VENDOR_ID_DATA_SIZE*2
+#define VENDOR_SPEC_V10_SN_ASCII_SIZE                13
+#define VENDOR_SPEC_V10_NSID_ASCII_SIZE              8
+
+
+// T10 Vendor Specific identifier defined in NVMe-SCSI Translation Spec 1.5
+#define T10_VID_DES_VID_FIELD_SIZE                    sizeof(SNTI_T10_VID_DESCRIPTOR) - 1
+
+
+// SCSI Name String defined in NVMe-SCSI Translation Spec 1.5
 /* SCSI name string defines for V1.0 */
-#define VPD_ID_DESCRIPTOR_LENGTH (sizeof(VPD_IDENTIFICATION_DESCRIPTOR))
 #define ASCII_SPACE_CHAR_VALUE                     0x20
 #define SCSI_NAME_PCI_VENDOR_ID_SIZE	              4
 #define SCSI_NAME_NAMESPACE_ID_SIZE                   4	
 #define SCSI_NAME_MODEL_NUM_SIZE                     40
 #define SCSI_NAME_SERIAL_NUM_SIZE                    20
-#define SCSI_NAME_STRING_SIZE_V1_0	(SCSI_NAME_PCI_VENDOR_ID_SIZE + \
-                                     SCSI_NAME_MODEL_NUM_SIZE + \
-                                     SCSI_NAME_NAMESPACE_ID_SIZE + \
-                                     SCSI_NAME_SERIAL_NUM_SIZE)
-
-#define DEVICE_IDENTIFICATION_PAGE_SIZE_SCSI_NAME_STRING_V1_0	(sizeof(VPD_IDENTIFICATION_PAGE) + \
-                                                                 VPD_ID_DESCRIPTOR_LENGTH + \
-                                                                 SCSI_NAME_STRING_SIZE_V1_0)
-
-#define SCSI_NAME_NAMESPACE_ID_OFFSET (SCSI_NAME_PCI_VENDOR_ID_SIZE + \
-                                       SCSI_NAME_MODEL_NUM_SIZE)	
-#define SCSI_NAME_MODEL_NUM_OFFSET (SCSI_NAME_PCI_VENDOR_ID_SIZE)
-#define SCSI_NAME_SERIAL_NUM_OFFSET (SCSI_NAME_PCI_VENDOR_ID_SIZE + \
-                                     SCSI_NAME_MODEL_NUM_SIZE + \
-                                     SCSI_NAME_NAMESPACE_ID_SIZE)
 
 /* SCSI name string defines for V1.1 */
-#define EUI64_ID_SIZE                                 4
-#define EUI64_ASCII_SIZE                             16
-#define SCSI_NAME_STRING_SIZE_V1_1	(EUI64_ID_SIZE + EUI64_ASCII_SIZE)
-#define DEVICE_IDENTIFICATION_PAGE_SIZE_SCSI_NAME_STRING_V1_1   (sizeof(VPD_IDENTIFICATION_PAGE) + \
-                                                                 VPD_ID_DESCRIPTOR_LENGTH + \
-                                                                 SCSI_NAME_STRING_SIZE_V1_1)
+#define EUI_ASCII_SIZE                                4
+#define NGUID_ID_SIZE                                 4
+
 
 #define INQ_DEV_ID_DESCRIPTOR_RESERVED                0
 #define INQ_DEV_ID_DESCRIPTOR_OFFSET                0x8
@@ -436,6 +445,27 @@
 #define SECURITY_RECEIVE_SEND_DWORD_10_SPSP_SHIFT     8
 #define SECURITY_RECEIVE_SEND_DWORD_11_TL_SHIFT      16
 
+/* Persistent Reservation In/Out defines */
+#define PERSISTENT_RES_CDB_SER_ACTION_OFFSET          1
+#define PERSISTENT_RES_CDB_RTYPE_OFFSET               2
+#define PERSISTENT_RES_CDB_RTYPE_MASK               0xF
+#define PERSISTENT_RES_CDB_SCOPE_OFFSET               2
+#define PERSISTENT_RES_CDB_SCOPE_MASK              0XF0
+#define PERSISTENT_RESIN_CDB_ALLOC_LEN_OFFSET         7
+#define PERSISTENT_RESOUT_CDB_ALLOC_LEN_OFFSET        5
+#define PERSISTENT_RESOUT_LU_SCOPE                    0
+
+/* Persistent Reservation Actions*/
+#define RESERVATION_ACTION_REPORT_CAPABILITIES        2
+#define RESERVATION_ACTION_READ_FULL_STATUS           3
+#define RESERVATION_ACTION_REGISTER_AND_MOVE          7
+
+/* Persistent Reservation Types */
+#define RESERVATION_TYPE_NONE                         0
+#define RESERVATION_TYPE_WRITE_EXCLUSIVE_ALL          7
+#define RESERVATION_TYPE_EXCLUSIVE_ACCESS_ALL         8
+#define RESERVATION_TYPE_MAX_VALUE                    8
+
 /* Mode Sense/Select defines */
 #define MODE_PAGE_READ_WRITE_ERROR_RECOVERY        0x01
 #define MODE_PAGE_DISCONNECT_RECONNECT             0x02
@@ -500,6 +530,7 @@
 #define UA_CLEARED_AT_CC_STATUS                     0x0
 #define SW_WRITE_PROTECT_UNSUPPORTED                  0
 #define LBAT_LBRT_MODIFIABLE                          0
+#define LBAT_LBRT_NOT_MODIFIABLE                      1
 #define TASK_ABORTED_STATUS_FOR_ABORTED_CMDS          1
 #define MEDIUM_LOADED_FULL_ACCESS                   0x0
 #define UNLIMITED_BUSY_TIMEOUT_HIGH                0xFF
@@ -588,5 +619,9 @@
  * enable DPOFUA support type 0x10 value.
  */
 #define DEVICE_SPECIFIC_PARAMETER                     0
+#define NIBBLES_PER_LONGLONG                         16
+#define NIBBLES_PER_LONG                              8
+#define LOWER_NIBBLE_MASK                           0xF
+#define UPPER_NIBBLE_MASK                          0xF0
 
 #endif /* __SNTI_TYPES_H__ */

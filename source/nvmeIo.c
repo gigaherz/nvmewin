@@ -496,14 +496,14 @@ ProcessIo(
             }
         }
 
-		if (IoStatus == NOT_SUBMITTED) {
-			if (pSrbExtension->pSrb != NULL) {
-				pSrbExtension->pSrb->SrbStatus = SRB_STATUS_ERROR;
-				IO_StorPortNotification(RequestComplete,
-					pAdapterExtension,
-					pSrbExtension->pSrb);
-			}
-		}
+        if (IoStatus == NOT_SUBMITTED) {
+            if (pSrbExtension->pSrb != NULL) {
+                pSrbExtension->pSrb->SrbStatus = SRB_STATUS_ERROR;
+                IO_StorPortNotification(RequestComplete,
+                    pAdapterExtension,
+                    pSrbExtension->pSrb);
+            }
+        }
     }
 
     return (IoStatus == SUBMITTED) ? TRUE : FALSE;
@@ -614,7 +614,7 @@ BOOLEAN NVMeCompleteCmd(
 BOOLEAN NVMeDetectPendingCmds(
     PNVME_DEVICE_EXTENSION pAE,
     BOOLEAN completeCmd,
-	UCHAR SrbStatus
+    UCHAR SrbStatus
 )
 {
     PQUEUE_INFO pQI = &pAE->QueueInfo;
@@ -651,21 +651,21 @@ BOOLEAN NVMeDetectPendingCmds(
                 /*
                  * Since pending is set, pSrbExtension should exist
                  */
-		        ASSERT(pSrbExtension != NULL);
+                ASSERT(pSrbExtension != NULL);
                         
-		        pNVMeCmd = &pSrbExtension->nvmeSqeUnit;
+                pNVMeCmd = &pSrbExtension->nvmeSqeUnit;
 
-		        /*
-		         * Internal cmd need to be completed
-		         */
-		        if (pSrbExtension->pSrb == NULL) {
-			        NVMeCompleteCmd(pAE,
+                /*
+                 * Internal cmd need to be completed
+                 */
+                if (pSrbExtension->pSrb == NULL) {
+                    NVMeCompleteCmd(pAE,
                                         pSQI->SubQueueID,
                                         NO_SQ_HEAD_CHANGE,
                                         pNVMeCmd->CDW0.CID,
                                         (PVOID)&pSrbExtension);
-			        continue;
-		        }
+                    continue;
+                }
 
 #ifdef HISTORY
                 TraceEvent(DETECTED_PENDING_CMD,
@@ -754,7 +754,7 @@ BOOLEAN NVMeDetectPendingCmds(
                             (ULONGLONG)pSrbExtension->pNvmeCompletionRoutine,
                             0);
 #endif
-						pSrbExtension->pSrb->SrbStatus = SrbStatus;
+                        pSrbExtension->pSrb->SrbStatus = SrbStatus;
                         IO_StorPortNotification(RequestComplete,
                                                 pAE,
                                                 pSrbExtension->pSrb);

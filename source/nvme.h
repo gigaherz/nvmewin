@@ -973,8 +973,8 @@ typedef struct _ADMIN_IDENTIFY_COMMAND_DW10
      * then the Identify Namespace data structure is returned to the host for
      * the namespace specified in the command header.
      */
-    ULONG   CNS      :1;
-    ULONG   Reserved :31;
+    ULONG   CNS      :2;
+    ULONG   Reserved :30;
 } ADMIN_IDENTIFY_COMMAND_DW10, *PADMIN_IDENTIFY_COMMAND_DW10;
 
 /* Identify - Power State Descriptor Data Structure, Section 5.11, Figure 66 */
@@ -1104,7 +1104,27 @@ typedef struct _ADMIN_IDENTIFY_CONTROLLER
     */
     UCHAR MDTS;
 
-    UCHAR Reserved1[178];
+    /*
+    * Controller ID 
+    */
+    USHORT CNTLID;
+
+    /*
+    * Version
+    */
+    struct 
+    {
+        UCHAR Reserved;
+        UCHAR MNR;
+        USHORT MJR;
+    } VER;
+
+#define MAJOR_VER_1 0x01
+#define MINOR_VER_0 0
+#define MINOR_VER_1 0x01
+#define MINOR_VER_2 0x02
+
+    UCHAR Reserved1[172];
 
     /* Admin Command Set Attributes */
 
@@ -1304,7 +1324,29 @@ typedef struct _ADMIN_IDENTIFY_CONTROLLER
          * support the Dataset Management command.
          */
         USHORT  SupportsDataSetManagement               :1;
-        USHORT  Reserved                                :13;
+
+        /* 
+        * Bit 3 if st to '1' then the controller support the Write Zeroes command.
+        * If cleared to '0' then the controller does not support the Write Zeroes command.
+        */
+        USHORT SupportsWriteZeroes                      : 1;
+
+        /* Bit 4 if set to '1' then the controller supports the Save field in the Set
+        * Features command and the Select field in the Get Features command. If cleared 
+        * to '0' then the controller does not support the Save field in the Set Features 
+        * command and the Select field in the Get Features command 
+        */
+        USHORT SupportSetFeaturesSave                   : 1;
+
+        /* Bit 5 if set to '1' then the controller supports reservations. If 
+        * cleared to '0' then the controller does not support reservations. If the
+        * controller supports reservations, then it shall support the following commands 
+        * associated with reservations: Reservation Report, Reservation Register, 
+        * Reservation Acquire, and Reservation Release. 
+        */
+        USHORT SupportsReservations                     : 1;
+
+        USHORT  Reserved                                :10;
     } ONCS;
 
     /*
@@ -1662,91 +1704,113 @@ typedef struct _ADMIN_IDENTIFY_NAMESPACE
         UCHAR   Reserved                    :4;
     } DPS;
 
-	/*
-	* [Namespace Multi-path I/O and Namespace Sharing Capabilities (NMIC)]
-	* This field specifies multi-path I/O and namespace sharing capabilities
-	* of the namespace.
-	*/
-	struct
-	{
-		/*
-		* Bits 0, if set to 1, indicate whether the NVM namespace may be
-		* accessible by two or more controllers in the NVM subsystem
-		* (i.e., may be a shared namespace). If cleared to '0', then the
-		* NVM namespace is a private namespace and may only be accessed by
-		* the controller that returned this namespace data structure.
-		*/
-		UCHAR   NamespaceSharing : 1;
-		UCHAR   Reserved : 7;
-	} NMIC;
+    /*
+    * [Namespace Multi-path I/O and Namespace Sharing Capabilities (NMIC)]
+    * This field specifies multi-path I/O and namespace sharing capabilities
+    * of the namespace.
+    */
+    struct
+    {
+        /*
+        * Bits 0, if set to 1, indicate whether the NVM namespace may be
+        * accessible by two or more controllers in the NVM subsystem
+        * (i.e., may be a shared namespace). If cleared to '0', then the
+        * NVM namespace is a private namespace and may only be accessed by
+        * the controller that returned this namespace data structure.
+        */
+        UCHAR   NamespaceSharing : 1;
+        UCHAR   Reserved : 7;
+    } NMIC;
 
-	/*
-	* [Reservation Capabilities (RESCAP)]
-	* This field indicates the reservation capabilities of the namespace.
-	* A value of 00h in this field indicates that reservations are not
-	* supported by this namespace.
-	*/
-	struct
-	{
-		/*
-		* if set to ‘1’ indicates that the namespace supports the Persist
-		* Through Power Loss capability. If this bit is cleared to ‘0’,
-		* then the namespace does not support the Persist Through Power
-		* Loss Capability.
-		*/
-		UCHAR   PTPLC : 1;
-		/*
-		* Bit 1 if set to ‘1’ indicates that the namespace supports the
-		* Write Exclusive reservation type. If this bit is cleared to ‘0’,
-		* then the namespace does not support the reservation type.
-		*/
-		UCHAR   WrEx : 1;
-		/*
-		* Bit 2 if set to ‘1’ indicates that the namespace supports the
-		* Exclusive Access reservation type. If this bit is cleared to ‘0’,
-		* then the namespace does not support the reservation type.
-		*/
-		UCHAR   ExAccess : 1;
-		/*
-		* Bit 3 if set to ‘1’ indicates that the namespace supports the
-		* Write Exclusive-Registrants Only reservation type. If this bit
-		* is cleared to ‘0’, then the namespace does not support the
-		* reservation type.
-		*/
-		UCHAR   WrExReg : 1;
-		/*
-		* Bit 4 if set to ‘1’ indicates that the namespace supports the
-		* Exclusive Access-Registrants Only reservation type. If this bit
-		* is cleared to ‘0’, then the namespace does not support the
-		* reservation type.
-		*/
-		UCHAR   ExAccessReg : 1;
-		/*
-		* Bit 5 if set to ‘1’ indicates that the namespace supports the
-		* Write Exclusive-All Registrants reservation type. If this bit
-		* is cleared to ‘0’, then the namespace does not support the
-		* reservation type.
-		*/
-		UCHAR   WrExAllReg : 1;
-		/*
-		* Bit 6 if set to ‘1’ indicates that the namespace supports the
-		* Exclusive Access-All Registrants reservation type. If this bit
-		* is cleared to ‘0’, then the namespace does not support the
-		* reservation type.
-		*/
-		UCHAR   ExAccessAllReg : 1;
-		UCHAR   Reserved : 1;
-	} RESCAP;
+    /*
+    * [Reservation Capabilities (RESCAP)]
+    * This field indicates the reservation capabilities of the namespace.
+    * A value of 00h in this field indicates that reservations are not
+    * supported by this namespace.
+    */
+    struct
+    {
+        /*
+        * if set to ‘1’ indicates that the namespace supports the Persist
+        * Through Power Loss capability. If this bit is cleared to ‘0’,
+        * then the namespace does not support the Persist Through Power
+        * Loss Capability.
+        */
+        UCHAR   PTPLC : 1;
+        /*
+        * Bit 1 if set to ‘1’ indicates that the namespace supports the
+        * Write Exclusive reservation type. If this bit is cleared to ‘0’,
+        * then the namespace does not support the reservation type.
+        */
+        UCHAR   WrEx : 1;
+        /*
+        * Bit 2 if set to ‘1’ indicates that the namespace supports the
+        * Exclusive Access reservation type. If this bit is cleared to ‘0’,
+        * then the namespace does not support the reservation type.
+        */
+        UCHAR   ExAccess : 1;
+        /*
+        * Bit 3 if set to ‘1’ indicates that the namespace supports the
+        * Write Exclusive-Registrants Only reservation type. If this bit
+        * is cleared to ‘0’, then the namespace does not support the
+        * reservation type.
+        */
+        UCHAR   WrExReg : 1;
+        /*
+        * Bit 4 if set to ‘1’ indicates that the namespace supports the
+        * Exclusive Access-Registrants Only reservation type. If this bit
+        * is cleared to ‘0’, then the namespace does not support the
+        * reservation type.
+        */
+        UCHAR   ExAccessReg : 1;
+        /*
+        * Bit 5 if set to ‘1’ indicates that the namespace supports the
+        * Write Exclusive-All Registrants reservation type. If this bit
+        * is cleared to ‘0’, then the namespace does not support the
+        * reservation type.
+        */
+        UCHAR   WrExAllReg : 1;
+        /*
+        * Bit 6 if set to ‘1’ indicates that the namespace supports the
+        * Exclusive Access-All Registrants reservation type. If this bit
+        * is cleared to ‘0’, then the namespace does not support the
+        * reservation type.
+        */
+        UCHAR   ExAccessAllReg : 1;
+        UCHAR   Reserved : 1;
+    } RESCAP;
 
-	UCHAR                       Reserved1[88];
-	/*
-	* This field contains a 64-bit IEEE Extended Unique Identifier (EUI-64) 
+    UCHAR                       Reserved1[72];
+
+    /* This field contains a 128-bit value that is globally unique and 
+    *  assigned to the namespace when the namespace is created. This 
+    *  field remains fixed throughout the life of the namespace and is 
+    *  preserved across namespace and controller operations (e.g., controller 
+    *  reset, namespace format, etc.).*/
+    union
+    {
+        struct 
+        {
+            ULONGLONG VendorSpecExtId;
+            UCHAR CompanyId[3];
+            UCHAR ExtensionId[5];
+        };
+        struct
+        {
+            ULONGLONG UpperBytes;
+            ULONGLONG LowerBytes;
+        };
+    } NGUID;
+    
+
+    /*
+    * This field contains a 64-bit IEEE Extended Unique Identifier (EUI-64) 
     * that is globally unique and assigned to the namespace when the namespace
     * is created. This field remains fixed throughout the life of the namespace
     * and is preserved across namespace and controller operations 
     * (e.g., controller reset, namespace format, etc.).
-	*/
-	UCHAR                       EUI64[8];
+    */
+    UCHAR                       EUI64[8];
 
     /*
      * [LBA Format x Support] This field indicates the LBA format x that is
@@ -1808,6 +1872,7 @@ typedef struct _ADMIN_GET_FEATURES_COMMAND_DW10
 #define WRITE_ATOMICITY                     0x0A
 #define ASYNCHRONOUS_EVENT_CONFIGURATION    0x0B
 #define SOFTWARE_PROGRESS_MARKER            0x80
+#define RESERVATION_PERSISTANCE             0x83
 
 /* Set Features Command, Section 5.12, Figure 71, Opcode 0x0A */
 typedef struct _ADMIN_SET_FEATURES_COMMAND_DW10
@@ -2136,6 +2201,24 @@ typedef struct _ADMIN_SET_FEATURES_COMMAND_SOFTWARE_PROGRESS_MARKER_DW11
 } ADMIN_SET_FEATURES_COMMAND_SOFTWARE_PROGRESS_MARKER_DW11,
   *PADMIN_SET_FEATURES_COMMAND_SOFTWARE_PROGRESS_MARKER_DW11;
 
+/*
+* Reservation Persistence
+*
+* Feature Identifier 83h
+*/
+typedef struct _ADMIN_SET_FEATURES_COMMAND_RESERVATION_PERSISTENCE_DW11
+{
+    /*
+    * [Persistence Through Power Loss] If set to '1', then
+    * reservations and registrants persist across a power
+    * loss. If cleared to '0', then reservations are released
+    * and registrants are cleared on a power loss
+    */
+    ULONG   PTPL : 1;
+    ULONG   Reserved : 31;
+} ADMIN_SET_FEATURES_COMMAND_RESERVATION_PERSISTENCE_DW11,
+*PADMIN_SET_FEATURES_COMMAND_RESERVATION_PERSISTENCE_DW11;
+
 /* Asynchronous Event Request Command, Section 5.2.1, Figure 29, Opcode 0x0C */
 typedef struct _ADMIN_ASYNCHRONOUS_EVENT_REQUEST_COMPLETION_DW0
 {
@@ -2398,6 +2481,10 @@ typedef struct _ADMIN_SECURITY_RECEIVE_COMMAND_DW11
 #define NVM_WRITE_UNCORRECTABLE             0x04
 #define NVM_COMPARE                         0x05
 #define NVM_DATASET_MANAGEMENT              0x09
+#define NVM_RESERVATION_REGISTER            0x0D
+#define NVM_RESERVATION_REPORT              0x0E
+#define NVM_RESERVATION_ACQUIRE             0x11
+#define NVM_RESERVATION_RELEASE             0x15
 
 #define NVM_VENDOR_SPECIFIC_START           0x80
 #define NVM_VENDOR_SPECIFIC_END             0xFF
@@ -2774,5 +2861,164 @@ typedef struct _NVM_DATASET_MANAGEMENT_RANGE
     ULONG                                       LengthInLogicalBlocks;
     ULONGLONG                                   StartingLBA;
 } NVM_DATASET_MANAGEMENT_RANGE, *PNVM_DATASET_MANAGEMENT_RANGE;
+
+
+
+#pragma pack(1)
+/* Reservation Report Command, NVMe 1.2, Section 6.13, Figure 189, Opcode 0x0E */
+typedef struct _NVM_RESERVATION_REPORT_COMMAND_DW10
+{
+    /*
+    * [Number of Dwords] This field specifies the number of Dwords of the
+    * Reservation Status data structure to transfer. This is a 0's based 
+    * value
+    */
+    ULONG   NUMD;
+} NVM_RESERVATION_REPORT_COMMAND_DW10,
+*PNVM_RESERVATION_REPORT_COMMAND_DW10;
+#pragma pack()
+
+typedef enum _NVME_RTYPE
+{
+    NVME_RTYPE_NO_RESERVATION       = 0,
+    NVME_RTYPE_WRITE_EXC            = 1,
+    NVME_RTYPE_EXCLUSIVE_ACC        = 2,
+    NVME_RTYPE_WRITE_EXC_REG_ONLY   = 3,
+    NVME_RTYPE_EXC_ACC_REG_ONLY     = 4,
+    NVME_RTYPE_WRITE_EXC_ALL        = 5,
+    NVME_RTYPE_EXC_ACC_ALL          = 6,
+    NVME_RTYPE_MAX_VALUE            = 6,
+    NVME_RTYPE_RESERVED             = 7
+} NVME_RTYPE;
+
+#define NVME_RCSTS_HOST_HOLDS_RES_MASK 0X01
+
+
+#pragma pack(1)
+/* Reservation Report Status Data Structure Header */
+typedef struct _NVM_RES_REPORT_HDR
+{
+    ULONG  GEN;
+    UCHAR  RTYPE;
+    USHORT REGCTL;
+    USHORT Reserved;
+    UCHAR  PTPLS;
+    UCHAR  Reserved2[14];
+} NVM_RES_REPORT_HDR, *PNVM_RES_REPORT_HDR;
+#pragma pack()
+
+
+#pragma pack(1)
+/* Registered Controller Data Structure */
+typedef struct _NVM_REGISTERED_CTRL_DATASTRUCT
+{
+    USHORT CNTLID;
+    UCHAR  RCSTS;
+    UCHAR  Reserved[5];
+    ULONGLONG HOSTID;
+    ULONGLONG RKEY;
+} NVM_REGISTERED_CTRL_DATASTRUCT, *PNVM_REGISTERED_CTRL_DATASTRUCT;
+#pragma pack()
+
+
+#pragma pack(1)
+/* Reservation Report Command, NVMe 1.2, , Section 6.11, Figure 183, Opcode 0x0D */
+typedef struct _NVM_RES_REGISTER_COMMAND_DW10
+{
+    ULONG RREGA     : 3;
+    ULONG IEKEY     : 1;
+    ULONG Reserved  : 26;
+    ULONG CPTPL     : 2;
+} NVM_RES_REGISTER_COMMAND_DW10,
+*PNVM_RES_REGISTER_COMMAND_DW10;
+#pragma pack()
+
+typedef enum _NVM_RESERVATION {
+    /* IEKEY settings */
+    NVM_REG_CHECK_EXISTING_KEY   = 0,
+    NVM_REG_IGNORE_EXISTING_KEY  = 1,
+    /* Register actions */
+    NVM_REG_ACTION_REG_KEY      = 0,
+    NVM_REG_ACTION_UNREG_KEY    = 1,
+    NVM_REG_ACTION_REPLACE_KEY  = 2,
+
+    /* Release Actions */
+    NVM_REL_ACTION_RELEASE      = 0,
+    NVM_REL_ACTION_CLEAR        = 1,
+
+    /* Register CPTPL commands */
+    NVM_REG_CPTPL_NO_CHANGE     = 0,
+    NVM_REG_CPTPL_RES_RELEASED  = 2,
+    NVM_REG_CPTPL_RES_PERSIST   = 3,
+
+    /* Acquire reservation types */
+    NVM_ACQ_RESTYPE_WRITE_EX    = 1,
+    NVM_ACQ_RESTYPE_EXC_ACC     = 2,
+    NVM_ACQ_RESTYPE_WRITE_EX_RO = 3,
+    NVM_ACQ_RESTYPE_EXC_ACC_RO  = 4,
+    NVM_ACQ_RESTYPE_WRITE_EX_A  = 5,
+    NVM_ACQ_RESTYPE_EXC_ACC_A   = 6,
+
+    /* Reservation Acquire Action */
+    NVM_RES_ACQ_ACTION_ACQUIRE  = 0,
+    NVM_RES_ACQ_ACTION_PREEMPT  = 1,
+    NVM_RES_ACQ_ACTION_PREEMPT_ABORT = 2
+
+} NVM_RESERVATION;
+
+#pragma pack(1)
+/* Reservation Register data structure, NVMe 1.2, Section 6.11, Figure 184, Opcode 0x0D */
+typedef struct _NVM_RES_REGISTER_DATASTRUCT
+{
+    ULONGLONG CRKEY;
+    ULONGLONG NRKEY;
+} NVM_RES_REGISTER_DATASTRUCT, *PNVM_RES_REGISTER_DATASTRUCT;
+
+#pragma pack(1)
+/* Reservation Acquire Command, NVMe 1.2, Section 6.10, Figure 179, Opcode 0x11 */
+typedef struct _NVM_RES_ACQUIRE_COMMAND_DW10
+{
+    ULONG RACQA      : 3;
+    ULONG IEKEY      : 1;
+    ULONG Reserved1  : 4;
+    ULONG RTYPE      : 8;
+    ULONG Reserved2  : 16;
+} NVM_RES_ACQUIRE_COMMAND_DW10,
+*PNVM_RES_ACQUIRE_COMMAND_DW10;
+#pragma pack()
+
+#pragma pack(1)
+/* Reservation Acquire data structure, NVMe 1.2, Section 6.10, Figure 180, Opcode 0x11 */
+typedef struct _NVM_RES_ACQUIRE_DATASTRUCT
+{
+    ULONGLONG CRKEY;
+    ULONGLONG PRKEY;
+} NVM_RES_ACQUIRE_DATASTRUCT, *PNVM_RES_ACQUIRE_DATASTRUCT;
+
+#pragma pack()
+
+#pragma pack(1)
+/* Reservation Release Command, NVMe 1.2, Section 6.12, Figure 186, Opcode 0x15 */
+typedef struct _NVM_RES_RELEASE_COMMAND_DW10
+{
+    ULONG RRELA     : 3;
+    ULONG IEKEY     : 1;
+    ULONG Reserved1 : 4;
+    ULONG RTYPE     : 8;
+    ULONG Reserved2 : 16;
+} NVM_RES_RELEASE_COMMAND_DW10,
+*PNVM_RES_RELEASE_COMMAND_DW10;
+#pragma pack()
+
+#pragma pack(1)
+/* Reservation Release data structure, NVMe 1.2, Section 6.12, Figure 187, Opcode 0x15 */
+typedef struct _NVM_RES_RELEASE_DATASTRUCT
+{
+    ULONGLONG CRKEY;
+} NVM_RES_RELEASE_DATASTRUCT, *PNVM_RES_RELEASE_DATASTRUCT;
+
+#pragma pack()
+
+
 
 #endif /* __NVME_H__ */

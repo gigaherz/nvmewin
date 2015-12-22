@@ -719,7 +719,7 @@ ULONG NVMeMapCore2Queue(
 {
     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
     PCORE_TBL pCT = NULL;
-	PPROC_GROUP_TBL pPGT = NULL;
+    PPROC_GROUP_TBL pPGT = NULL;
     ULONG coreNum;
 
     if (pAE->ntldrDump == TRUE) {
@@ -727,8 +727,8 @@ ULONG NVMeMapCore2Queue(
         return (STOR_STATUS_SUCCESS);
     }
 
-	pPGT = pRMT->pProcGroupTbl + pPN->Group;
-	coreNum = (ULONG)(pPN->Number + pPGT->BaseProcessor);
+    pPGT = pRMT->pProcGroupTbl + pPN->Group;
+    coreNum = (ULONG)(pPN->Number + pPGT->BaseProcessor);
     
     /* Ensure the core number is valid first */
     if (coreNum >= pRMT->NumActiveCores) {
@@ -874,10 +874,10 @@ ULONG NVMeAllocQueues (
      *           multiple(s) of system page size.
      *        2. Add one extra system page to allocation size
      */
-    SysPageSizeInSubEntries = PAGE_SIZE / sizeof (NVMe_COMMAND);
+    SysPageSizeInSubEntries = PAGE_SIZE / sizeof(NVMe_COMMAND);
     if ((QEntries % SysPageSizeInSubEntries) != 0)
         QEntries = (QEntries + SysPageSizeInSubEntries) &
-                  ~(SysPageSizeInSubEntries - 1);
+        ~(SysPageSizeInSubEntries - 1);
 
     /*
      * Determine the allocation size in bytes
@@ -992,7 +992,7 @@ ULONG NVMeInitSubQueue(
     /* Ensure the QueueID is valid via the number of active cores in system */
     if (QueueID > maxCore)
         return ( STOR_STATUS_INVALID_PARAMETER );
-		
+        
 /* Code Analysis fails on StoPortReadRegisterUlong64 */
 #if 0 // (NTDDI_VERSION > NTDDI_WIN7) && defined(_WIN64)
     CAP.AsUlonglong = StorPortReadRegisterUlong64(pAE,
@@ -1114,7 +1114,7 @@ ULONG NVMeInitCplQueue(
     /* Ensure the QueueID is valid via the number of active cores in system */
     if (QueueID > maxCore)
         return ( STOR_STATUS_INVALID_PARAMETER );
-		
+        
 /* Code Analysis fails on StoPortReadRegisterUlong64 */
 #if 0 // (NTDDI_VERSION > NTDDI_WIN7) && defined(_WIN64)
     CAP.AsUlonglong = StorPortReadRegisterUlong64(pAE,
@@ -1271,30 +1271,30 @@ BOOLEAN NVMeResetAdapter(
      */
     CC.AsUlong= StorPortReadRegisterUlong(pAE,
                                           (PULONG)(&pAE->pCtrlRegister->CC));
-	if (CC.EN == 1) {
+    if (CC.EN == 1) {
 
-		/*
+        /*
          * Before we transition to 0, make sure the ctrl is actually RDY        
          */
         if(FALSE == NVMeWaitForCtrlRDY(pAE, 1)) {
             return FALSE;
         }
-		
-		CC.EN = 0;
+        
+        CC.EN = 0;
 
-		StorPortWriteRegisterUlong(pAE,
-			(PULONG)(&pAE->pCtrlRegister->CC),
-			CC.AsUlong);
+        StorPortWriteRegisterUlong(pAE,
+            (PULONG)(&pAE->pCtrlRegister->CC),
+            CC.AsUlong);
 
 
-		if (NVMeWaitForCtrlRDY(pAE, 0) == FALSE) {
-			StorPortDebugPrint(INFO,
-				"NVMeResetAdapter: EN bit is not getting Cleared\n");
-			return (FALSE);
-		}
-	}
+        if (NVMeWaitForCtrlRDY(pAE, 0) == FALSE) {
+            StorPortDebugPrint(INFO,
+                "NVMeResetAdapter: EN bit is not getting Cleared\n");
+            return (FALSE);
+        }
+    }
 
- 	pAE->DriverState.NextDriverState = NVMeWaitOnRDY;
+    pAE->DriverState.NextDriverState = NVMeWaitOnRDY;
 
     return (TRUE);
 } /* NVMeResetAdapter */
@@ -1732,8 +1732,8 @@ BOOLEAN NVMeInitCallback(
     PNVMe_COMMAND pNVMeCmd = (PNVMe_COMMAND)(&pSrbExt->nvmeSqeUnit);
     PNVMe_COMPLETION_QUEUE_ENTRY pCplEntry = pSrbExt->pCplEntry;
     PQUEUE_INFO pQI = &pAE->QueueInfo;
-	ULONG totalQueuePairs;
-	PRES_MAPPING_TBL pRMT;
+    ULONG totalQueuePairs;
+    PRES_MAPPING_TBL pRMT;
 
     NVMe_CONTROLLER_CAPABILITIES CAP = {0};
     StorPortDebugPrint(INFO,"NVMeInitCallback: Driver state: %d\n", pAE->DriverState.NextDriverState);
@@ -1756,7 +1756,7 @@ BOOLEAN NVMeInitCallback(
                 StorPortCopyMemory(&pAE->controllerIdentifyData,
                                 pAE->DriverState.pDataBuffer,
                                 sizeof(ADMIN_IDENTIFY_CONTROLLER));
-								
+                                
 /* Code Analysis fails on StoPortReadRegisterUlong64 */
 #if 0 // (NTDDI_VERSION > NTDDI_WIN7) && defined(_WIN64)
                 CAP.AsUlonglong = StorPortReadRegisterUlong64(pAE,
@@ -1896,8 +1896,8 @@ BOOLEAN NVMeInitCallback(
             }
         break;
         case NVMeWaitOnLearnMapping:
-
-				pRMT = &pAE->ResMapTbl;
+        
+                pRMT = &pAE->ResMapTbl;
                 
 
                 /*

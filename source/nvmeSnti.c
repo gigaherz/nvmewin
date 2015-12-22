@@ -254,6 +254,20 @@ SNTI_RESPONSE_BLOCK commandSpecificStatusTable[] = {
         SCSISTAT_CHECK_CONDITION,
         SCSI_SENSE_ILLEGAL_REQUEST,
         SCSI_ADSENSE_INVALID_CDB,
+        SCSI_ADSENSE_NO_SENSE},
+
+    /* RESERVED  -0x81 (0xC) */
+    {SRB_STATUS_ERROR,
+        SCSISTAT_CHECK_CONDITION,
+        SCSI_SENSE_UNIT_ATTENTION,
+        SCSI_ADSENSE_INTERNAL_TARGET_FAILURE,
+        SCSI_ADSENSE_NO_SENSE},
+
+    /* WRITE TO READ ONLY RANGE - 0x82 (0xD) */
+    {SRB_STATUS_ERROR,
+        SCSISTAT_CHECK_CONDITION,
+        SCSI_SENSE_DATA_PROTECT,
+        SCSI_ADSENSE_WRITE_PROTECT,
         SCSI_ADSENSE_NO_SENSE}
 };
 
@@ -304,9 +318,9 @@ SNTI_RESPONSE_BLOCK mediaErrorTable[] = {
     /* ACCESS_DENIED - 0x86 */
     {SRB_STATUS_ERROR,
         SCSISTAT_CHECK_CONDITION,
-        SCSI_SENSE_ILLEGAL_REQUEST,
-        SCSI_ADSENSE_ACCESS_DENIED_INVALID_LUN_ID,
-        SCSI_SENSEQ_ACCESS_DENIED_INVALID_LUN_ID}
+        SCSI_SENSE_DATA_PROTECT,
+        SCSI_ADSENSE_ACCESS_DENIED,
+        SCSI_SENSEQ_NO_ACCESS_RIGHTS}
 };
 
 /******************************************************************************
@@ -367,6 +381,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateCommand(
 
         pSrb->SrbStatus |= SRB_STATUS_INVALID_REQUEST;
         returnStatus = SNTI_UNSUPPORTED_SCSI_REQUEST;
+        return returnStatus;
     }
 #endif
     /* DEBUG ONLY - Turn off for main I/O */
@@ -384,6 +399,12 @@ SNTI_TRANSLATION_STATUS SntiTranslateCommand(
                        pSrb->Lun);
 #endif
 #endif /* DBG */
+
+
+    returnStatus = SntiValidateNacaSetting(pAdapterExtension, pSrb);
+    if (returnStatus != SNTI_SUCCESS) {
+        return returnStatus;
+    }
 
     switch (GET_OPCODE(pSrb)) {
         case SCSIOP_READ6:
@@ -454,6 +475,33 @@ SNTI_TRANSLATION_STATUS SntiTranslateCommand(
         case SCSIOP_REPORT_LUNS:
             returnStatus = SntiTranslateReportLuns(pSrb);
         break;
+
+        case SCSIOP_PERSISTENT_RESERVE_IN:
+        case SCSIOP_PERSISTENT_RESERVE_OUT:
+            if (pAdapterExtension->controllerIdentifyData.ONCS.SupportsReservations == TRUE) {
+                if (GET_OPCODE(pSrb) == SCSIOP_PERSISTENT_RESERVE_IN) {
+                    returnStatus = SntiTranslatePersistentReserveIn(pSrb);
+                } else {
+                    returnStatus = SntiTranslatePersistentReserveOut(pSrb);
+                }
+            } else {
+                StorPortDebugPrint(INFO,
+                    "SntiTranslateCommand. SCSI Persistent Reserve In/Out unsupported - 0x%02x\n",
+                    GET_OPCODE(pSrb));
+
+                SntiSetScsiSenseData(pSrb,
+                    SCSISTAT_CHECK_CONDITION,
+                    SCSI_SENSE_ILLEGAL_REQUEST,
+                    SCSI_ADSENSE_ILLEGAL_COMMAND,
+                    SCSI_ADSENSE_NO_SENSE);
+
+                pSrb->SrbStatus |= SRB_STATUS_INVALID_REQUEST;
+                SET_DATA_LENGTH(pSrb, 0);
+
+                returnStatus = SNTI_UNSUPPORTED_SCSI_REQUEST;
+            }
+        break;
+
         case SCSIOP_REQUEST_SENSE:
             returnStatus = SntiTranslateRequestSense(pSrb);
         break;
@@ -609,7 +657,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateInquiry(
                 SntiTranslateSupportedVpdPages(pSrb);
             break;
             case VPD_SERIAL_NUMBER:
-                SntiTranslateUnitSerialPage(pSrb);
+                SntiTranslateUnitSerialPage(pSrb, pLunExt);
             break;
             case VPD_DEVICE_IDENTIFIERS:
                 SntiTranslateDeviceIdentificationPage(pSrb);
@@ -754,69 +802,148 @@ VOID SntiTranslateSupportedVpdPages(
  ******************************************************************************/
 VOID SntiTranslateUnitSerialPage(
 #if (NTDDI_VERSION > NTDDI_WIN7)
-    PSTORAGE_REQUEST_BLOCK pSrb
+    PSTORAGE_REQUEST_BLOCK pSrb,
 #else
-    PSCSI_REQUEST_BLOCK pSrb
+    PSCSI_REQUEST_BLOCK pSrb,
 #endif
+    PNVME_LUN_EXTENSION pLunExt
 )
 {
     PNVME_DEVICE_EXTENSION pDevExt = NULL;
     PVPD_SERIAL_NUMBER_PAGE pSerialNumberPage = NULL;
-#define VPD_SERIAL_NUMBER_PAGE_SIZE (FIELD_OFFSET(VPD_SERIAL_NUMBER_PAGE, SerialNumber) + INQ_SERIAL_NUMBER_LENGTH)
-    UCHAR tmpSerialNumberPage[VPD_SERIAL_NUMBER_PAGE_SIZE];
-    UINT16 allocLength;
-    UCHAR SN[INQ_SERIAL_NUMBER_LENGTH] = {0};
-    PUCHAR srcSN = NULL, dstSN = SN;
-    UCHAR i;
 
-    pDevExt = ((PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb))->pNvmeDevExt;
-    pSerialNumberPage = (PVPD_SERIAL_NUMBER_PAGE)GET_DATA_BUFFER(pSrb);
+    // Depending on the NVMe EUI64, NVMe NGUID fields or the NVMe standard implemented,
+    // This inquiry page will be constructed differently. 
+    // A local buffer is allocated here to build the inquiry data. At the end of the method
+    // this buffer will be copied to the caller's buffer. This local buffer
+    // is allocated as the largest possible required size. (The maximum size occurs
+    // when the NGUID is used to build the Serial number). The actual 
+    // size is calculated as the buffer is filled in.
+#define VPD_SERIAL_NUMBER_PAGE_SIZE (FIELD_OFFSET(VPD_SERIAL_NUMBER_PAGE, SerialNumber) + INQ_SN_FROM_NGUID_LENGTH)
+    UCHAR tmpSerialNumberPage[VPD_SERIAL_NUMBER_PAGE_SIZE] = { 0 };
+    UINT16 totalDataSize = 0;
+    UINT16 allocLength = 0;
+    UINT16 copyLength = 0;
+    PUCHAR dstSN = NULL;
+    USHORT count = 0;
+
+    ULONGLONG tempLLong = 0;
+    PNVME_SRB_EXTENSION  pSrbExt = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb);
+    pDevExt = pSrbExt->pNvmeDevExt;
     allocLength = GET_INQ_ALLOC_LENGTH(pSrb);
-    if (allocLength < VPD_SERIAL_NUMBER_PAGE_SIZE) {
-        pSerialNumberPage = (PVPD_SERIAL_NUMBER_PAGE)tmpSerialNumberPage;
-    }
+
+    // Always build the page in a local buffer
+    pSerialNumberPage = (PVPD_SERIAL_NUMBER_PAGE)tmpSerialNumberPage;
+
+    // Get a pointer to the SN portion of the page
+    dstSN = pSerialNumberPage->SerialNumber;
 
     if (allocLength > 0) {
-        memset(pSerialNumberPage, 0, allocLength);
-        pSerialNumberPage->DeviceType          = DIRECT_ACCESS_DEVICE;
+        pSerialNumberPage->DeviceType = DIRECT_ACCESS_DEVICE;
         pSerialNumberPage->DeviceTypeQualifier = DEVICE_CONNECTED;
-        pSerialNumberPage->PageCode            = VPD_SERIAL_NUMBER;
-        pSerialNumberPage->Reserved            = INQ_RESERVED;
-        pSerialNumberPage->PageLength          = INQ_SERIAL_NUMBER_LENGTH;
-        /*
-         * The serial number should be in the following format in order to pass
-         * SCSI Compliance test:
-         * "0123_4567_89AB_CDEF." for a number like "0123456789ABCDEF".
-         */
-        srcSN = pDevExt->controllerIdentifyData.SN;
-        for (i = 1; i < INQ_SERIAL_NUMBER_LENGTH / INQ_SN_SUB_LENGTH; i++) {
-            StorPortCopyMemory(dstSN, srcSN, INQ_SN_SUB_LENGTH);
-            srcSN += INQ_SN_SUB_LENGTH;
-            dstSN += INQ_SN_SUB_LENGTH;
+        pSerialNumberPage->PageCode = VPD_SERIAL_NUMBER;
+        pSerialNumberPage->Reserved = INQ_RESERVED;
+
+        // If there is an NGUID, use that to create the SN. 
+        if ((pLunExt->identifyData.NGUID.LowerBytes != 0) ||
+            (pLunExt->identifyData.NGUID.UpperBytes != 0)) {
+            /*
+            * The serial number should be in the following format
+            *  0x0123456789ABCDEF0123456789ABCDEF would be converted to
+            * “0123_4567_89AB_CDEF_0123_4567_89AB_CDEF.”
+            */
+
+            // Convert the NGUID upper bytes to little endian 
+            REVERSE_BYTES_QUAD(&tempLLong, &pLunExt->identifyData.NGUID.UpperBytes);
+
+            /* Convert the upper byte nibbles to ASCII */
+            count = SntiConvertULLongToA(
+                dstSN,
+                tempLLong,
+                NIBBLES_PER_LONGLONG,
+                TRUE,
+                FALSE
+                );
+
+            // Get a copy of the lower bytes of the NGUID
+            REVERSE_BYTES_QUAD(&tempLLong, &pLunExt->identifyData.NGUID.LowerBytes);
+
+            /* Convert the lower byte nibbles to ASCII */
+            SntiConvertULLongToA(
+                dstSN + count,
+                tempLLong,
+                NIBBLES_PER_LONGLONG,
+                TRUE,
+                TRUE
+                );
+
+
+            pSerialNumberPage->PageLength = INQ_SN_FROM_NGUID_LENGTH;
+        } else if (*((PULONGLONG)pLunExt->identifyData.EUI64) != 0) {
+            // If there is no NGUID, check to see if there is a valid EUI64. If
+            // so, use it to create the SN.
+
+            /*
+             * The serial number should be in the following format in order to pass
+             * SCSI Compliance test:
+             * "0123_4567_89AB_CDEF." for a number like "0123456789ABCDEF".
+             */
+            // Convert the EUI64 to little endian
+            REVERSE_BYTES_QUAD(&tempLLong, pLunExt->identifyData.EUI64);
+            SntiConvertULLongToA(
+                dstSN,
+                tempLLong,
+                NIBBLES_PER_LONGLONG,
+                TRUE,
+                TRUE
+                );
+
+            pSerialNumberPage->PageLength = INQ_SN_FROM_EUI64_LENGTH;
+        } else {
+            // If there is no NGUID or EUI64, use the Identify Controller SN
+            // (only valid for NVMe 1.0 devices)
+
+            // First part of the SN comes from the Identify Controller SN
+            memcpy(dstSN, pDevExt->controllerIdentifyData.SN, sizeof(pDevExt->controllerIdentifyData.SN));
+            dstSN = &pSerialNumberPage->SerialNumber[20];
             *dstSN = '_';
             dstSN++;
+
+            // Concatenate the NSID (converted to ASCII)
+            tempLLong = pLunExt->namespaceId;
+
+            /* move the NSID to the most significant bytes */
+            tempLLong = tempLLong << 32;
+
+            count = SntiConvertULLongToA(
+                dstSN,
+                tempLLong,
+                NIBBLES_PER_LONG,
+                FALSE,
+                FALSE
+                );
+
+            dstSN += count;
+            *dstSN = '.';
+
+            pSerialNumberPage->PageLength = INQ_V10_SN_LENGTH;
         }
-        // Replace the last '_' with '.'
-        dstSN--;
-        *dstSN = '.';
-
-        StorPortCopyMemory(pSerialNumberPage->SerialNumber,
-                           SN,
-                           INQ_SERIAL_NUMBER_LENGTH);
-    }
-    if (allocLength > 0 && allocLength < VPD_SERIAL_NUMBER_PAGE_SIZE) {
-        StorPortCopyMemory(GET_DATA_BUFFER(pSrb), pSerialNumberPage, allocLength);
     }
 
-    SET_DATA_LENGTH(pSrb,
-        min(allocLength, VPD_SERIAL_NUMBER_PAGE_SIZE));
+    // Calculate the actual size of the entire page
+    totalDataSize = FIELD_OFFSET(VPD_SERIAL_NUMBER_PAGE, SerialNumber) + pSerialNumberPage->PageLength;
+
+    // Calculate the size of the data to be copied
+    copyLength = min(allocLength, totalDataSize);
+
+    // Copy data from the local buffer to the caller's buffer
+    StorPortCopyMemory(GET_DATA_BUFFER(pSrb), pSerialNumberPage, copyLength);
+
+    SET_DATA_LENGTH(pSrb, copyLength);
 } /* SntiTranslateUnitSerialPage */
 
 
-/*
- * With HCK 8.100.26795, Type 8, SCSI NameString Descriptor is required in
- * order to pass NVMe SCSI Compliance Test
- */
+
 /******************************************************************************
 * SntiTranslateDeviceIdentificationPage
 *
@@ -837,33 +964,47 @@ VOID SntiTranslateUnitSerialPage(
 ******************************************************************************/
 VOID SntiTranslateDeviceIdentificationPage(
 #if (NTDDI_VERSION > NTDDI_WIN7)
-	PSTORAGE_REQUEST_BLOCK pSrb
+    PSTORAGE_REQUEST_BLOCK pSrb
 #else
-	PSCSI_REQUEST_BLOCK pSrb
+    PSCSI_REQUEST_BLOCK pSrb
 #endif
 )
 {
     PVPD_IDENTIFICATION_PAGE pDeviceIdPage = NULL;
-    PVPD_IDENTIFICATION_DESCRIPTOR pIdDescriptor = NULL;
     PNVME_LUN_EXTENSION pLunExt = NULL;
     PNVME_SRB_EXTENSION pSrbExt = NULL;
-    UINT16 allocLength = 0;
-    SNTI_STATUS status;
     PNVME_DEVICE_EXTENSION pDevExt = NULL;
-	UCHAR tempNSId[SCSI_NAME_NAMESPACE_ID_SIZE+1] = { 0 };
-	UCHAR tempVId[SCSI_NAME_PCI_VENDOR_ID_SIZE+1] = { 0 };
-	UCHAR tempSN[SCSI_NAME_SERIAL_NUM_SIZE] = { 0 };
-	UCHAR tempMN[SCSI_NAME_MODEL_NUM_SIZE] = { 0 };
-    UINT16 i = 0;
-    ULONGLONG Val = 0x00;
-	UCHAR tempEUI64[EUI64_ASCII_SIZE+1] = { 0 };
+    SNTI_STATUS status;
     NVMe_VERSION specVersion = { 0 };
+    BOOLEAN eui64Valid = FALSE;
+    BOOLEAN nguidValid = FALSE;
+    BOOLEAN version10 = FALSE;
+    BOOLEAN srbBufSpaceAvail = TRUE;
+    SNTI_VPD_DESCRIPTOR_FLAGS descFlags = { 0 };
+    PVOID pAlloc = NULL;
+    PUINT8 pNext = NULL;
+    UINT16 currentLength = 0;
+    UINT16 allocLength = 0;
+    UINT16 actualLength = 0;
+    PVOID pSrbBuffer = NULL;
+    UINT16 srbBufLength = 0;
 
-    pDevExt = ((PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb))->pNvmeDevExt;
+
+    // Build the device identification page according to the SNTL 1.5 section 6.1.4
+    // Attempt to build the following designators: NAA IEEE Registered Extended designator,
+    // T10 Vendor ID based designator, SCSI Name String Designator and the EUI-64 based 
+    // Designator. The value of these designators will depend on the NVMe EUI64, NVMe NGUID
+    // fields and the NVMe Version level. 
+    // 
+    // In the first steps, this method determines which designators using which values. 
+    // It also calculates the total amount of space required to build the response.
+    // Next, it allocates a buffer for building the response page followed by building 
+    // the response page in that buffer. 
+    // Finally, the response page is copied to the caller's buffer.
+
+    srbBufLength = GET_INQ_ALLOC_LENGTH(pSrb);
     pSrbExt = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb);
-
-    specVersion.AsUlong = StorPortReadRegisterUlong(pDevExt, 
-                              (PULONG)(&pDevExt->pCtrlRegister->VS));
+    pDevExt = pSrbExt->pNvmeDevExt;
 
     status = GetLunExtension(pSrbExt, &pLunExt);
     if (status != SNTI_SUCCESS) {
@@ -872,111 +1013,811 @@ VOID SntiTranslateDeviceIdentificationPage(
         return;
     }
 
+    /*******************   Set flags to track which descriptors should be built *************/
+    specVersion.AsUlong = StorPortReadRegisterUlong(pDevExt,
+        (PULONG)(&pDevExt->pCtrlRegister->VS));
+
+
     if ((specVersion.MJR == 1) && (specVersion.MNR == 0)) {
-        pDeviceIdPage = ((PVPD_IDENTIFICATION_PAGE)
-            (NVMeAllocatePool(pDevExt, DEVICE_IDENTIFICATION_PAGE_SIZE_SCSI_NAME_STRING_V1_0)));
-		if (pDeviceIdPage == NULL) {
-            /* Map the memory allocation failure to a SCSI error */
-            SntiMapInternalErrorStatus(pSrb, SNTI_NO_MEMORY);
-			return;
-		}
-		memset(pDeviceIdPage, 0, DEVICE_IDENTIFICATION_PAGE_SIZE_SCSI_NAME_STRING_V1_0);
-    } else {
-        pDeviceIdPage = ((PVPD_IDENTIFICATION_PAGE)
-            (NVMeAllocatePool(pDevExt, DEVICE_IDENTIFICATION_PAGE_SIZE_SCSI_NAME_STRING_V1_1)));
-		if (pDeviceIdPage == NULL) {
-			/* Map the memory allocation failure to a SCSI error */
-			SntiMapInternalErrorStatus(pSrb, SNTI_NO_MEMORY);
-			return;
-		}
-        memset(pDeviceIdPage, 0, DEVICE_IDENTIFICATION_PAGE_SIZE_SCSI_NAME_STRING_V1_1);
+        version10 = TRUE;
+    }
+    if (*((PULONGLONG)pLunExt->identifyData.EUI64) != 0) {
+        eui64Valid = TRUE;
+    }
+    if ((pLunExt->identifyData.NGUID.LowerBytes != 0) ||
+        (pLunExt->identifyData.NGUID.UpperBytes != 0)) {
+        nguidValid = TRUE;
     }
 
-    allocLength = GET_INQ_ALLOC_LENGTH(pSrb);
 
+    /*********** Calculate buffer size for header of VPD Identification page - used in all cases **************/
+
+    // Calculate the buffer size required to build the Identification data   
+    /* Include the size of the header for the vpd data page */
+    allocLength = sizeof(VPD_IDENTIFICATION_PAGE);
+
+
+    /**********Calculate space required for NAA IEEE Registerd Extended descriptor SNTL 1.5, Section 6.1.4.1***************/
+    /* Track whether we should build V1.0 or EUI64 descriptor */
+    if (eui64Valid) {
+        descFlags.NaaIeeEui64Des = TRUE;
+        /* Add in the size of the descriptor header and the descriptor data. */
+        allocLength += VPD_ID_DESCRIPTOR_HDR_LENGTH + sizeof(SNTI_NAA_IEEE_EXT_DESCRIPTOR);
+    } else if (version10 == TRUE) {
+        descFlags.NaaIeeV10Des = TRUE;
+        allocLength += VPD_ID_DESCRIPTOR_HDR_LENGTH + sizeof(SNTI_NAA_IEEE_EXT_DESCRIPTOR);
+    }
+
+    /**********Calculate space required for T10 Vendor ID descriptor SNTL 1.5, Section 6.1.4.3*****************************/
+    /* Add in the size of the T10 descriptor header and the VID portion of the descriptor */
+
+    // Calulate size of the Vendor Specific Identifier data
+    if (version10 == TRUE) {
+        descFlags.T10VidV10Des = TRUE;
+        /* Data is comprised of descriptor header, VID port of the descriptor, */
+        /* Product Identification field from the Inquiry data and the 100 bits */
+        /* derived from VID/SN/NSID */
+        allocLength += VPD_ID_DESCRIPTOR_HDR_LENGTH + T10_VID_DES_VID_FIELD_SIZE + PRODUCT_ID_ASCII_SIZE + 
+            VENDOR_ID_ASCII_SIZE + VENDOR_SPEC_V10_SN_ASCII_SIZE + VENDOR_SPEC_V10_NSID_ASCII_SIZE;
+
+    } else if (nguidValid == TRUE) {
+        descFlags.T10VidNguidDes = TRUE;
+        /* Data is comprised of descriptor header, VID port of the descriptor, */
+        /* translation of the Product Identification field from the Inquiry data */
+        /* and the NGUID field from Identify controller */
+        allocLength += VPD_ID_DESCRIPTOR_HDR_LENGTH + T10_VID_DES_VID_FIELD_SIZE + 
+            PRODUCT_ID_ASCII_SIZE + NGUID_ASCII_SIZE;
+
+    } else if (eui64Valid == TRUE) {
+        descFlags.T10VidEui64Des = TRUE;
+        /* Data is comprised of descriptor header, VID port of the descriptor, */
+        /* translation of the Product Identification field from the Inquiry data */
+        /* and the EUI64 field from Identify Namespace */
+        allocLength += VPD_ID_DESCRIPTOR_HDR_LENGTH + T10_VID_DES_VID_FIELD_SIZE + 
+            PRODUCT_ID_ASCII_SIZE + EUI64_ASCII_SIZE;
+    }
+
+
+    /**********Calculate space required for SCSI Name String descriptor SNTL 1.5, Section 6.1.4.4*****************************/
+    if (nguidValid == TRUE) {
+        // Using the NGUID for building the SCSI Name String descriptor - SNTL 1.5, Section 6.1.4.4.1.1
+        descFlags.ScsiNguidDes = TRUE;
+        /* Add in the size of the SCSI Name String Header, the string "EUI." */
+        /* and the translated NGUID value */
+        allocLength += VPD_ID_DESCRIPTOR_HDR_LENGTH + EUI_ASCII_SIZE + NGUID_ASCII_SIZE;
+
+    } else if (eui64Valid == TRUE) {
+        // Using the EUI64 for building the SCSI Name String descriptor - SNTL 1.5, Section 6.1.4.4.1.2
+        descFlags.ScsiEui64Des = TRUE;
+        /* Add in the size of the SCSI Name String Header, the string "EUI." */
+        /* and the translated EUI64 value */
+        allocLength += VPD_ID_DESCRIPTOR_HDR_LENGTH + EUI_ASCII_SIZE + EUI64_ASCII_SIZE;
+
+    } else if (version10 == TRUE) {
+        // Using the NGUID for building the SCSI Name String descriptor - SNTL 1.5, Section 6.1.4.4.1.3
+        descFlags.ScsiV10Des = TRUE;
+        /* Add in the size of the SCSI Name String Header, */
+        /* the V1.0 version of the string (68 bytes comprised of 4 bytes VID, */
+        /* 40 bytes Model Number, 4 bytes NSID, 20 bytes Serial Number) */
+        allocLength += VPD_ID_DESCRIPTOR_HDR_LENGTH +
+            SCSI_NAME_PCI_VENDOR_ID_SIZE + SCSI_NAME_MODEL_NUM_SIZE +
+            SCSI_NAME_NAMESPACE_ID_SIZE + SCSI_NAME_SERIAL_NUM_SIZE;
+    }
+
+
+    /**********Calculate space required for EUI-64 based descriptor SNTL 1.5, Section 6.1.4.5*****************************/
+    /* EUI-64 or NGUID value must be valid to create this descriptor */
+    if (nguidValid == TRUE) {
+        // Using the NGUID for building the EUI-64 based descriptor - SNTL 1.5, Section 6.1.4.5.1
+        descFlags.Eui64NguidDes = TRUE;
+        // Allow buffer space for descriptor header and the NGUID value
+        allocLength += VPD_ID_DESCRIPTOR_HDR_LENGTH + NGUID_DATA_SIZE;
+
+    } else if (eui64Valid == TRUE) {
+        // Using the EUI64 for building the EUI-64 based descriptor - SNTL 1.5, Section 6.1.4.5.1
+        descFlags.Eui64Des = TRUE;
+        // Allow buffer space for descriptor header and the NGUID value
+        allocLength += VPD_ID_DESCRIPTOR_HDR_LENGTH + EUI64_DATA_SIZE;
+
+    }
+
+    // Allocate buffer for building the descriptors
+    pAlloc = NVMeAllocatePool(pDevExt, allocLength);
+    if (pAlloc == NULL) {
+        /* Map the memory allocation failure to a SCSI error */
+        SntiMapInternalErrorStatus(pSrb, SNTI_NO_MEMORY);
+        return;
+    }
+    pDeviceIdPage = (PVPD_IDENTIFICATION_PAGE)pAlloc;
+    memset(pDeviceIdPage, 0, allocLength);
+
+
+
+    /*********************Build the VPD Identification Page header ****************/
     pDeviceIdPage->DeviceType = DIRECT_ACCESS_DEVICE;
     pDeviceIdPage->DeviceTypeQualifier = DEVICE_CONNECTED;
     pDeviceIdPage->PageCode = VPD_DEVICE_IDENTIFIERS;
-    pIdDescriptor = (PVPD_IDENTIFICATION_DESCRIPTOR)pDeviceIdPage->Descriptors;
 
-    memset(pIdDescriptor, 0, sizeof(VPD_IDENTIFICATION_DESCRIPTOR));
-    pIdDescriptor->CodeSet = VpdCodeSetUTF8;
+    // Keep a running total of the space used and a pointer to the
+    // next location to place descriptor data
+    currentLength = sizeof(VPD_IDENTIFICATION_PAGE);
+    pNext = pDeviceIdPage->Descriptors;
 
-    pIdDescriptor->Reserved = INQ_DEV_ID_DESCRIPTOR_RESERVED;
-    pIdDescriptor->Association = VpdAssocDevice;
-    pIdDescriptor->IdentifierType = VpdIdentifierTypeSCSINameString;
-    /*
-     * Program PageLength, IdentifierLength and others per NVMe Spec version
-     * based on the definitions in the translation spec.
-     */
-    if ((specVersion.MJR == 1) && (specVersion.MNR == 0)) {
-        pDeviceIdPage->PageLength = VPD_ID_DESCRIPTOR_LENGTH + 
-                                    SCSI_NAME_STRING_SIZE_V1_0;
-
-        pIdDescriptor->IdentifierLength = SCSI_NAME_STRING_SIZE_V1_0;
-
-        _ultoa_s(pLunExt->namespaceId, (char*)tempNSId, sizeof(tempNSId), 10);
-
-        for (i = 0; i < SCSI_NAME_NAMESPACE_ID_SIZE; i++) {
-            if (tempNSId[i] == 0x00)
-				tempNSId[i] = ASCII_SPACE_CHAR_VALUE;
-        }
-
-        for (i = 0; i < SCSI_NAME_MODEL_NUM_SIZE; i++) {
-            tempMN[i] = pDevExt->controllerIdentifyData.MN[i];
-            if (tempMN[i] == 0x00)
-				tempMN[i] = ASCII_SPACE_CHAR_VALUE;
-        }
-
-        for (i = 0; i < SCSI_NAME_SERIAL_NUM_SIZE; i++) {
-            tempSN[i] = pDevExt->controllerIdentifyData.SN[i];
-            if (tempSN[i] == 0x00)
-				tempSN[i] = ASCII_SPACE_CHAR_VALUE;
-        }
-
-        _ultoa_s(pDevExt->controllerIdentifyData.VID, (char*)tempVId, sizeof(tempVId), 16);
-
-        StorPortCopyMemory(pIdDescriptor->Identifier, 
-                           &tempVId, 
-                           SCSI_NAME_PCI_VENDOR_ID_SIZE);
-		StorPortCopyMemory(pIdDescriptor->Identifier + SCSI_NAME_MODEL_NUM_OFFSET,
-                           tempMN, 
-                           SCSI_NAME_MODEL_NUM_SIZE);
-		StorPortCopyMemory(pIdDescriptor->Identifier + SCSI_NAME_NAMESPACE_ID_OFFSET,
-                           tempNSId, 
-                           SCSI_NAME_NAMESPACE_ID_SIZE);
-		StorPortCopyMemory(pIdDescriptor->Identifier + SCSI_NAME_SERIAL_NUM_OFFSET,
-                           tempSN, 
-                           SCSI_NAME_SERIAL_NUM_SIZE);
-
-		pSrb->DataTransferLength = 
-            min(DEVICE_IDENTIFICATION_PAGE_SIZE_SCSI_NAME_STRING_V1_0, allocLength);
-	} else {
-        pDeviceIdPage->PageLength = VPD_ID_DESCRIPTOR_LENGTH + 
-                                    SCSI_NAME_STRING_SIZE_V1_1;
-        pIdDescriptor->IdentifierLength = SCSI_NAME_STRING_SIZE_V1_1;
-
-        StorPortCopyMemory(pIdDescriptor->Identifier, "EUI.", EUI64_ID_SIZE);
-
-        StorPortCopyMemory(&Val, 
-                           &pDevExt->pLunExtensionTable[0]->identifyData.EUI64[0], 
-                           sizeof(ULONGLONG));
-
-		_ui64toa_s(Val, (char*)tempEUI64, sizeof(tempEUI64), 16);
-
-        StorPortCopyMemory(pIdDescriptor->Identifier + EUI64_ID_SIZE, 
-                           tempEUI64,
-                           EUI64_ASCII_SIZE);
-
-        pSrb->DataTransferLength =
-            min(DEVICE_IDENTIFICATION_PAGE_SIZE_SCSI_NAME_STRING_V1_1, allocLength);
+    // Determine if the srb buffer has any space left for remaining descriptor data
+    // If not, don't bother to build those descriptors
+    if (currentLength >= srbBufLength) {
+        srbBufSpaceAvail = FALSE;
     }
 
-    StorPortCopyMemory(pSrb->DataBuffer, pDeviceIdPage, pSrb->DataTransferLength);
-    StorPortFreePool((PVOID)pDevExt, pDeviceIdPage);
+    if (srbBufSpaceAvail == TRUE) {
+
+        /* Build the NAA IEEE Registered Extended descriptor */
+        srbBufSpaceAvail = SntiBuildIeeeRegExtDesc(
+            &descFlags,
+            &currentLength,
+            srbBufLength,
+            &pNext,
+            pLunExt,
+            pDevExt);
+
+
+        if (srbBufSpaceAvail == TRUE) {
+            /* Build the T10 Vendor ID based Descriptor */
+            srbBufSpaceAvail = SntiBuildT10VidBasedDesc(
+                &descFlags,
+                &currentLength,
+                srbBufLength,
+                &pNext,
+                pLunExt,
+                pDevExt
+                );
+
+            if (srbBufSpaceAvail == TRUE) {
+                /* Build the SCSI Name string descriptor */
+                srbBufSpaceAvail = SntiBuildScsiNameStringDesc(
+                    &descFlags,
+                    &currentLength,
+                    srbBufLength,
+                    &pNext,
+                    pLunExt,
+                    pDevExt
+                    );
+
+                if (srbBufSpaceAvail == TRUE) {
+                    /* Build the EUI-64 based descriptor */
+                    SntiBuildEui64BasedDesc(
+                        &descFlags,
+                        &currentLength,
+                        srbBufLength,
+                        &pNext,
+                        pLunExt,
+                        pDevExt
+                        );
+                }
+            }
+
+        }
+    }
+
+    /* Get pointer to actual response buffer */
+    pSrbBuffer = GET_DATA_BUFFER(pSrb);
+
+    /* Calculate how much data to return */
+    actualLength = min(currentLength, srbBufLength);
+    SET_DATA_LENGTH(pSrb, actualLength);
+
+    /* Set the length to the amount of all the data, whether or not it is all returned. */
+    /* If the SRB buffer allocation is too small to transfer all of the data */
+    /* the PageLength field shall not be adjusted to reflect the truncation */
+    pDeviceIdPage->PageLength = (UCHAR)allocLength - sizeof(VPD_IDENTIFICATION_PAGE);
+
+
+    /* Copy the descriptor data into the SRB buffer */
+    if (actualLength > 0) {
+        StorPortCopyMemory(pSrbBuffer, pAlloc, actualLength);
+    }
+
+
+    StorPortFreePool((PVOID)pDevExt, pAlloc);
 
 } /* SntiTranslateDeviceIdentificationPage */
 
+
+/******************************************************************************
+* SntiBuildIeeeRegExtDesc
+*
+* @brief This method builds a NAA IEEE Registered Extended Descriptor
+*        to be returned in the Device Identification Data Page.
+*        Based on SNTL 1.5, section 6.1.4.1
+*
+* @param pDescFlags A Structure with flags indicating whether this method should
+*                    build a Version 1.0 or EUI64-based descriptor
+* @param pCurrentLength - Used to track the amount of all the data in the
+*                         Device Identification Data Page
+* @param ppNext - Point to the location of the next data in the Device Identification
+*                 Data Page
+* @param pLunExt - Pointer to the LUN extension
+* @param pDevExt - Pointer to the device extension
+*
+* @return srbSpaceAvailable - BOOLEAN indicating if there is additional SRB buffer space
+*                                     for any more descriptors
+******************************************************************************/
+BOOLEAN SntiBuildIeeeRegExtDesc(
+    PSNTI_VPD_DESCRIPTOR_FLAGS pDescFlags,
+    UINT16 *pCurrentLength,
+    UINT16 srbBufLength,
+    PUINT8 *ppNext,
+    PNVME_LUN_EXTENSION pLunExt,
+    PNVME_DEVICE_EXTENSION pDevExt
+    )
+{
+    PVPD_IDENTIFICATION_DESCRIPTOR pIdDescriptor = NULL;
+    PSNTI_NAA_IEEE_EXT_DESCRIPTOR pNaaData = NULL;
+    USHORT tempShort = 0;
+    ULONG tempLong = 0;
+    ULONGLONG tempLongLong = 0;
+
+    UINT64 eui64Id = 0;
+    BOOLEAN srbSpaceAvailable = TRUE;
+
+    if ((pDescFlags->NaaIeeEui64Des == FALSE) &&
+        (pDescFlags->NaaIeeV10Des == FALSE)) {
+        return srbSpaceAvailable;
+    }
+
+    /* Setup the descriptor header */
+    pIdDescriptor = (PVPD_IDENTIFICATION_DESCRIPTOR)*ppNext;
+
+    /* Build the descriptor header */
+    pIdDescriptor->CodeSet = VpdCodeSetBinary;
+    pIdDescriptor->IdentifierType = VpdIdentifierTypeFCPHName;
+    pIdDescriptor->Association = VpdAssocDevice;
+
+    /* Track size of the descriptor header */
+    *ppNext += VPD_ID_DESCRIPTOR_HDR_LENGTH;
+    *pCurrentLength += VPD_ID_DESCRIPTOR_HDR_LENGTH;
+
+    /* Build the descriptor*/
+    pNaaData = (PSNTI_NAA_IEEE_EXT_DESCRIPTOR)*ppNext;
+    pNaaData->Naa = NAA_IEEE_EX;
+    pNaaData->IeeeCompIdMSB = pDevExt->controllerIdentifyData.IEEE[0] >> 4;
+
+    tempShort = (pDevExt->controllerIdentifyData.IEEE[0] & 0x0F) << 12;
+    tempShort |= pDevExt->controllerIdentifyData.IEEE[1] << 4;
+    tempShort |= pDevExt->controllerIdentifyData.IEEE[2] >> 4;
+
+    /* Convert data to big endian when it's writing to the actual descriptor */
+    REVERSE_BYTES_SHORT(&pNaaData->IeeeCompId, &tempShort);
+    pNaaData->IeeeCompIdLSB = pDevExt->controllerIdentifyData.IEEE[2];
+
+    /* Build a EUI64 type descriptor? */
+    if (pDescFlags->NaaIeeEui64Des == TRUE) {
+        /* 100 bit field is created by concatenating EUI64 followed by 0's */
+
+        /* Setup the Naa Vendor Id data */
+        /*  Get a Little endian copy of the EUI64 */
+        REVERSE_BYTES_QUAD(&eui64Id, &pLunExt->identifyData.EUI64);
+        pNaaData->VendIdMSB = eui64Id >> 60;
+        tempLong = (ULONG)(eui64Id >> 28);
+        /* Write Big Endian Vendor Id */
+        REVERSE_BYTES(&pNaaData->VendId, &tempLong);
+
+        tempLongLong = eui64Id << 36;
+        /* Write big endian Vendor specific ext data */
+        REVERSE_BYTES_QUAD(&pNaaData->VenSpecIdExt, &tempLongLong);
+    } else {
+        /* Build the Version 1.0 descriptor */
+
+        /* Build descriptor based 100 bit value comprised of VID/SN and NSID */
+        tempLong = pDevExt->controllerIdentifyData.VID;
+        /* set bits 99:96 */
+        pNaaData->VendIdMSB = (UCHAR)(tempLong >> 12);
+
+        /* set bits 95:84 */
+        tempLong = tempLong << 20;
+
+        /* set bits 83:76 */
+        tempLong |= pDevExt->controllerIdentifyData.SN[0] << 12;
+
+        /* set bits 75:68 */
+        tempLong |= pDevExt->controllerIdentifyData.SN[1] << 4;
+
+        /* set bits 67:64 */
+        tempLong |= (pDevExt->controllerIdentifyData.SN[2] & UPPER_NIBBLE_MASK) >> 4;
+
+        /* write data into the descriptor as BE data */
+        REVERSE_BYTES(&pNaaData->VendId, &tempLong);
+
+
+        /* Set bits 63:32 */
+        REVERSE_BYTES_QUAD(&tempLongLong, &pDevExt->controllerIdentifyData.SN[2]);
+        tempLongLong = tempLongLong << NIBBLE_SHIFT;
+        tempLongLong &= 0xffffffff00000000;
+
+        /* Set bits 31:0 */
+        tempLongLong |= pLunExt->namespaceId;
+
+        /* write data into the descriptor as BE data */
+        REVERSE_BYTES_QUAD(&pNaaData->VenSpecIdExt, &tempLongLong);
+    }
+
+    /* Track size of the descriptor data */
+    *ppNext += sizeof(SNTI_NAA_IEEE_EXT_DESCRIPTOR);
+    *pCurrentLength += sizeof(SNTI_NAA_IEEE_EXT_DESCRIPTOR);
+    pIdDescriptor->IdentifierLength = sizeof(SNTI_NAA_IEEE_EXT_DESCRIPTOR);
+
+    if (*pCurrentLength >= srbBufLength) {
+        srbSpaceAvailable = FALSE;
+    }
+    return srbSpaceAvailable;
+}
+
+
+/******************************************************************************
+* SntiBuildT10VidBasedDesc
+*
+* @brief This method builds a T10 Vendor Id Based descriptor
+*        to be returned in the Device Identification Data Page.
+*        Based on SNTL 1.5, section 6.1.4.3
+*
+* @param pDescFlags A Structure with flags indicating whether this method should
+*                    build a Version 1.0 or EUI64-based descriptor
+* @param pCurrentLength - Used to track the amount of all the data in the
+*                         Device Identification Data Page
+* @param ppNext - Point to the location of the next data in the Device Identification
+*                 Data Page
+* @param pLunExt - Pointer to the LUN extension
+* @param pDevExt - Pointer to the device extension
+*
+* @return srbSpaceAvailable - BOOLEAN indicating if there is additional SRB buffer space
+*                                     for any more descriptors
+******************************************************************************/
+BOOLEAN SntiBuildT10VidBasedDesc(
+    PSNTI_VPD_DESCRIPTOR_FLAGS pDescFlags,
+    UINT16 *pCurrentLength,
+    UINT16 srbBufLength,
+    PUINT8 *ppNext,
+    PNVME_LUN_EXTENSION pLunExt,
+    PNVME_DEVICE_EXTENSION pDevExt
+    )
+{
+    PVPD_IDENTIFICATION_DESCRIPTOR pIdDescriptor = NULL;
+
+
+    /* Setup the descriptor header */
+    pIdDescriptor = (PVPD_IDENTIFICATION_DESCRIPTOR)*ppNext;
+    PSNTI_T10_VID_DESCRIPTOR pT10Data = NULL;
+    UINT16 i = 0;
+    UINT16 startIdx = 0;
+    ULONGLONG tempLongLong = 0;
+    BOOLEAN srbSpaceAvailable = TRUE;
+
+    if ((pDescFlags->T10VidEui64Des == FALSE) &&
+        (pDescFlags->T10VidNguidDes == FALSE) &&
+        (pDescFlags->T10VidV10Des == FALSE)) {
+        return srbSpaceAvailable;
+    }
+
+    /* Build the descriptor header */
+    pIdDescriptor->CodeSet = VpdCodeSetAscii;
+    pIdDescriptor->IdentifierType = VpdIdentifierTypeVendorId;
+    pIdDescriptor->Association = VpdAssocDevice;
+
+    /* Track size of the descriptor header */
+    *ppNext += VPD_ID_DESCRIPTOR_HDR_LENGTH;
+    *pCurrentLength += VPD_ID_DESCRIPTOR_HDR_LENGTH;
+
+    /* Build the descriptor*/
+    pT10Data = (PSNTI_T10_VID_DESCRIPTOR)*ppNext;
+
+    /* T10 Vendor ID */
+    UCHAR VendorId[9] = "NVMe    ";
+    memcpy(pT10Data->VendorId, VendorId, 8);
+
+    // Write the Product Identification data into Vendor specific identifier 
+    // Copy a byte at a time to enable checking for NULL character
+    for (i = 0; i < PRODUCT_ID_ASCII_SIZE; i++) {
+        if (pDevExt->controllerIdentifyData.MN[i] == 0x00) {
+            pT10Data->VendorSpecific[i] = ASCII_SPACE_CHAR_VALUE;
+        } else {
+            pT10Data->VendorSpecific[i] = pDevExt->controllerIdentifyData.MN[i];
+        }
+    }
+
+    *ppNext += T10_VID_DES_VID_FIELD_SIZE + PRODUCT_ID_ASCII_SIZE;
+    *pCurrentLength += T10_VID_DES_VID_FIELD_SIZE + PRODUCT_ID_ASCII_SIZE;
+    pIdDescriptor->IdentifierLength = T10_VID_DES_VID_FIELD_SIZE + PRODUCT_ID_ASCII_SIZE;
+
+    /* Build Version 1.0 based data? */
+    if (pDescFlags->T10VidV10Des) {
+        tempLongLong = pDevExt->controllerIdentifyData.VID;
+        tempLongLong = tempLongLong << 48;
+        startIdx = PRODUCT_ID_ASCII_SIZE;
+        SntiConvertULLongToA(
+            &pT10Data->VendorSpecific[startIdx],
+            tempLongLong,
+            VENDOR_ID_ASCII_SIZE,
+            FALSE,
+            FALSE
+            );
+
+        /* Convert 52 bits of SN (bytes 10:04 of Identify controller */
+        REVERSE_BYTES_QUAD(&tempLongLong, &pDevExt->controllerIdentifyData.SN[0]);
+        startIdx += VENDOR_ID_ASCII_SIZE;
+        SntiConvertULLongToA(
+            &pT10Data->VendorSpecific[startIdx],
+            tempLongLong,
+            VENDOR_SPEC_V10_SN_ASCII_SIZE,
+            FALSE,
+            FALSE
+            );
+
+        /* Convert NSID */
+        tempLongLong = pLunExt->namespaceId;
+        tempLongLong = tempLongLong << 32;
+        startIdx += VENDOR_SPEC_V10_SN_ASCII_SIZE;
+        SntiConvertULLongToA(
+            &pT10Data->VendorSpecific[startIdx],
+            tempLongLong,
+            VENDOR_SPEC_V10_NSID_ASCII_SIZE,
+            FALSE,
+            FALSE
+            );
+
+        *ppNext += VENDOR_ID_ASCII_SIZE + VENDOR_SPEC_V10_SN_ASCII_SIZE + VENDOR_SPEC_V10_NSID_ASCII_SIZE;
+        *pCurrentLength += VENDOR_ID_ASCII_SIZE + VENDOR_SPEC_V10_SN_ASCII_SIZE + VENDOR_SPEC_V10_NSID_ASCII_SIZE;
+        pIdDescriptor->IdentifierLength += VENDOR_ID_ASCII_SIZE + VENDOR_SPEC_V10_SN_ASCII_SIZE + VENDOR_SPEC_V10_NSID_ASCII_SIZE;
+
+    } else if (pDescFlags->T10VidNguidDes == TRUE) {
+
+        /* Convert the NGUID upper bytes */
+        REVERSE_BYTES_QUAD(&tempLongLong, &pLunExt->identifyData.NGUID.UpperBytes);
+        startIdx = PRODUCT_ID_ASCII_SIZE;
+        SntiConvertULLongToA(
+            &pT10Data->VendorSpecific[startIdx],
+            tempLongLong,
+            NGUID_ASCII_SIZE / 2,
+            FALSE,
+            FALSE
+            );
+
+        /* Convert the NGUID lower bytes */
+        REVERSE_BYTES_QUAD(&tempLongLong, &pLunExt->identifyData.NGUID.LowerBytes);
+        startIdx += NGUID_ASCII_SIZE / 2;
+        SntiConvertULLongToA(
+            &pT10Data->VendorSpecific[startIdx],
+            tempLongLong,
+            NGUID_ASCII_SIZE / 2,
+            FALSE,
+            FALSE
+            );
+
+        *ppNext += NGUID_ASCII_SIZE;
+        *pCurrentLength += NGUID_ASCII_SIZE;
+        pIdDescriptor->IdentifierLength += NGUID_ASCII_SIZE;
+    } else if (pDescFlags->T10VidEui64Des == TRUE) {
+        // Not using _ui64toa_s - it strips off leading 0's
+        REVERSE_BYTES_QUAD(&tempLongLong, (PULONGLONG)(&pLunExt->identifyData.EUI64[0]));
+
+        startIdx = PRODUCT_ID_ASCII_SIZE;
+        SntiConvertULLongToA(
+            &pT10Data->VendorSpecific[startIdx],
+            tempLongLong,
+            EUI64_ASCII_SIZE,
+            FALSE,
+            FALSE
+            );
+
+        /* Track size of the descriptor data */
+        *ppNext += EUI64_ASCII_SIZE;
+        *pCurrentLength += EUI64_ASCII_SIZE;
+        pIdDescriptor->IdentifierLength += EUI64_ASCII_SIZE;
+    }
+
+    if (*pCurrentLength >= srbBufLength) {
+        srbSpaceAvailable = FALSE;
+    }
+
+    return srbSpaceAvailable;
+}
+
+
+/******************************************************************************
+* SntiBuildScsiNameStringDesc
+*
+* @brief This method builds a T10 Vendor Id Based descriptor
+*        to be returned in the Device Identification Data Page.
+*        Based on SNTL 1.5, section 6.1.4.4
+*
+* @param pDescFlags A Structure with flags indicating whether this method should
+*                    build a Version 1.0 or EUI64-based descriptor
+* @param pCurrentLength - Used to track the amount of all the data in the
+*                         Device Identification Data Page
+* @param ppNext - Point to the location of the next data in the Device Identification
+*                 Data Page
+* @param pHtoAConversion - Array for converting Hex nibble to ASCII byte.
+* @param pLunExt - Pointer to the LUN extension
+* @param pDevExt - Pointer to the device extension
+*
+* @return srbSpaceAvailable - BOOLEAN indicating if there is additional SRB buffer space
+*                                     for any more descriptors
+******************************************************************************/
+BOOLEAN SntiBuildScsiNameStringDesc(
+    PSNTI_VPD_DESCRIPTOR_FLAGS pDescFlags,
+    UINT16 *pCurrentLength,
+    UINT16 srbBufLength,
+    PUINT8 *ppNext,
+    PNVME_LUN_EXTENSION pLunExt,
+    PNVME_DEVICE_EXTENSION pDevExt
+    )
+{
+    PVPD_IDENTIFICATION_DESCRIPTOR pIdDescriptor = NULL;
+    ULONGLONG tempLongLong = 0;
+    UINT16 startIdx = 0;
+    BOOLEAN srbSpaceAvailable = TRUE;
+
+    if ((pDescFlags->ScsiEui64Des == FALSE) &&
+        (pDescFlags->ScsiNguidDes == FALSE) &&
+        (pDescFlags->ScsiV10Des == FALSE)) {
+        return srbSpaceAvailable;
+    }
+
+
+    /* Setup the descriptor header */
+    pIdDescriptor = (PVPD_IDENTIFICATION_DESCRIPTOR)*ppNext;
+
+    /* Build the descriptor header */
+    pIdDescriptor->CodeSet = VpdCodeSetUTF8;
+    pIdDescriptor->IdentifierType = VpdIdentifierTypeSCSINameString;
+    pIdDescriptor->Association = VpdAssocDevice;
+
+    /* Track size of the descriptor data */
+    *ppNext += VPD_ID_DESCRIPTOR_HDR_LENGTH;
+    *pCurrentLength += VPD_ID_DESCRIPTOR_HDR_LENGTH;
+
+    /* Build the descriptor*/
+
+    /* Build NGUID based data? */
+    if (pDescFlags->ScsiNguidDes == TRUE) {
+        StorPortCopyMemory(pIdDescriptor->Identifier, "EUI.", EUI_ASCII_SIZE);
+
+        /* convert the NGUID upper bytes */
+        REVERSE_BYTES_QUAD(&tempLongLong, &pLunExt->identifyData.NGUID.UpperBytes);
+
+        startIdx = EUI_ASCII_SIZE;
+        SntiConvertULLongToA(
+            &pIdDescriptor->Identifier[startIdx],
+            tempLongLong,
+            NGUID_ASCII_SIZE / 2,
+            FALSE,
+            FALSE
+            );
+
+        /* convert the NGUID lower bytes */
+        REVERSE_BYTES_QUAD(&tempLongLong, &pLunExt->identifyData.NGUID.LowerBytes);
+
+        startIdx += NGUID_ASCII_SIZE / 2;
+        SntiConvertULLongToA(
+            &pIdDescriptor->Identifier[startIdx],
+            tempLongLong,
+            NGUID_ASCII_SIZE / 2,
+            FALSE,
+            FALSE
+            );
+
+        /* Track size of the descriptor data */
+        *ppNext += EUI_ASCII_SIZE + NGUID_ASCII_SIZE;
+        *pCurrentLength += EUI_ASCII_SIZE + NGUID_ASCII_SIZE;
+        pIdDescriptor->IdentifierLength = EUI_ASCII_SIZE + NGUID_ASCII_SIZE;
+
+    } else if (pDescFlags->ScsiEui64Des == TRUE) {
+        StorPortCopyMemory(&pIdDescriptor->Identifier[0], "EUI.", EUI_ASCII_SIZE);
+
+        REVERSE_BYTES_QUAD(&tempLongLong, &pLunExt->identifyData.EUI64);
+
+        startIdx = EUI_ASCII_SIZE;
+        SntiConvertULLongToA(
+            &pIdDescriptor->Identifier[startIdx],
+            tempLongLong,
+            EUI64_ASCII_SIZE,
+            FALSE,
+            FALSE
+            );
+
+        /* Track size of the descriptor data */
+        *ppNext += EUI_ASCII_SIZE + EUI64_ASCII_SIZE;
+        *pCurrentLength += EUI_ASCII_SIZE + EUI64_ASCII_SIZE;
+        pIdDescriptor->IdentifierLength = EUI_ASCII_SIZE + EUI64_ASCII_SIZE;
+    } else if (pDescFlags->ScsiV10Des == TRUE) {
+        /* V1.0 descriptor */
+        /* Build bytes 67:48 - Copy bytes 23:04 of SN*/
+        memcpy(&pIdDescriptor->Identifier[0], &pDevExt->controllerIdentifyData.SN[0], SCSI_NAME_SERIAL_NUM_SIZE);
+
+        /* Build bytes 47:44 - Convert the namespace id */
+        tempLongLong = pLunExt->namespaceId;
+        tempLongLong = tempLongLong << 48;
+
+
+        startIdx = SCSI_NAME_SERIAL_NUM_SIZE;
+        SntiConvertULLongToA(
+            &pIdDescriptor->Identifier[startIdx],
+            tempLongLong,
+            SCSI_NAME_NAMESPACE_ID_SIZE,
+            FALSE,
+            FALSE
+            );
+
+        /* Build bytes 43:04 - Copy MN, bytes 63:24 of Identify controller */
+        startIdx += SCSI_NAME_NAMESPACE_ID_SIZE;
+        memcpy(&pIdDescriptor->Identifier[startIdx], &pDevExt->controllerIdentifyData.MN[0], SCSI_NAME_MODEL_NUM_SIZE);
+
+        /* Build bytes 03:00 - Convert the PCI Vendor ID */
+        tempLongLong = pDevExt->controllerIdentifyData.VID;
+        tempLongLong = tempLongLong << 48;
+
+
+        startIdx += SCSI_NAME_MODEL_NUM_SIZE;
+        SntiConvertULLongToA(
+            &pIdDescriptor->Identifier[startIdx],
+            tempLongLong,
+            SCSI_NAME_PCI_VENDOR_ID_SIZE,
+            FALSE,
+            FALSE
+            );
+
+        *ppNext += SCSI_NAME_NAMESPACE_ID_SIZE + SCSI_NAME_SERIAL_NUM_SIZE + SCSI_NAME_MODEL_NUM_SIZE + SCSI_NAME_PCI_VENDOR_ID_SIZE;
+        *pCurrentLength += SCSI_NAME_NAMESPACE_ID_SIZE + SCSI_NAME_SERIAL_NUM_SIZE + SCSI_NAME_MODEL_NUM_SIZE + SCSI_NAME_PCI_VENDOR_ID_SIZE;
+        pIdDescriptor->IdentifierLength = SCSI_NAME_NAMESPACE_ID_SIZE + SCSI_NAME_SERIAL_NUM_SIZE + SCSI_NAME_MODEL_NUM_SIZE + SCSI_NAME_PCI_VENDOR_ID_SIZE;
+    }
+
+
+    if (*pCurrentLength >= srbBufLength) {
+        srbSpaceAvailable = FALSE;
+    }
+
+    return srbSpaceAvailable;
+}
+
+
+
+/******************************************************************************
+* SntiBuildEui64BasedDesc
+*
+* @brief This method builds a T10 Vendor Id Based descriptor
+*        to be returned in the Device Identification Data Page.
+*        Based on SNTL 1.5, section 6.1.4.5
+*
+* @param pDescFlags A Structure with flags indicating whether this method should
+*                    build a Version 1.0 or EUI64-based descriptor
+* @param pCurrentLength - Used to track the amount of all the data in the
+*                         Device Identification Data Page
+* @param ppNext - Point to the location of the next data in the Device Identification
+*                 Data Page
+* @param pLunExt - Pointer to the LUN extension
+* @param pDevExt - Pointer to the device extension
+*
+* @return VOID
+******************************************************************************/
+VOID SntiBuildEui64BasedDesc(
+    PSNTI_VPD_DESCRIPTOR_FLAGS pDescFlags,
+    UINT16 *pCurrentLength,
+    UINT16 srbBufLength,
+    PUINT8 *ppNext,
+    PNVME_LUN_EXTENSION pLunExt,
+    PNVME_DEVICE_EXTENSION pDevExt
+    )
+{
+    PVPD_IDENTIFICATION_DESCRIPTOR pIdDescriptor = NULL;
+    PUINT8 pDescData = NULL;
+
+    if ((pDescFlags->Eui64Des == FALSE) &&
+        (pDescFlags->Eui64NguidDes == FALSE)) {
+        return;
+    }
+
+
+    /* Setup the descriptor header */
+    pIdDescriptor = (PVPD_IDENTIFICATION_DESCRIPTOR)*ppNext;
+
+    /* Build the descriptor header */
+    pIdDescriptor->CodeSet = VpdCodeSetBinary;
+    pIdDescriptor->IdentifierType = VpdIdentifierTypeEUI64;
+    pIdDescriptor->Association = VpdAssocDevice;
+
+    /* Track size of the descriptor header */
+    *ppNext += VPD_ID_DESCRIPTOR_HDR_LENGTH;
+    *pCurrentLength += VPD_ID_DESCRIPTOR_HDR_LENGTH;
+
+    /* Build the descriptor*/
+    pDescData = *ppNext;
+
+
+    if (pDescFlags->Eui64NguidDes == TRUE) {
+        memcpy(pDescData, &pLunExt->identifyData.NGUID.UpperBytes, NGUID_DATA_SIZE);
+
+        /* Track size of the descriptor data */
+        *ppNext += NGUID_DATA_SIZE;
+        *pCurrentLength += NGUID_DATA_SIZE;
+        pIdDescriptor->IdentifierLength = NGUID_DATA_SIZE;
+    } else if (pDescFlags->Eui64Des == TRUE) {
+        memcpy(pDescData, pLunExt->identifyData.EUI64, EUI64_DATA_SIZE);
+
+        /* Track size of the descriptor data */
+        *ppNext += EUI64_DATA_SIZE;
+        *pCurrentLength += EUI64_DATA_SIZE;
+        pIdDescriptor->IdentifierLength = EUI64_DATA_SIZE;
+    }
+}
+
+/******************************************************************************
+* SnitConvertULLongToA
+*
+* @brief Take a ULongLong variable and convert each nibble to ascii.
+*        Caller provides destination pointer and number of nibbles to convert.
+*        The method can optionally insert an underscore every fourth character
+*        (terminating the result with a '.')
+*
+* @param pDest - Pointer to destination buffer for conversion.
+* @param data  - ULONGLONG value to be converted to ASCII
+* @param size -  Number of nibbles to be converted. Max value is 16
+* @param underscore - Boolean indicating whether or not the method should
+*                     insert underscores. If this is TRUE, an underscore will
+*                     be inserted after every fourth character.
+* @param termPeriod - Boolean indicating whether or not the conversion should
+*                     be terminated with a period.
+* @p
+*
+* @return Number of characters written to the destination
+******************************************************************************/
+USHORT SntiConvertULLongToA(
+    PUCHAR pDest,
+    ULONGLONG data,
+    ULONG size,
+    BOOLEAN underscore,
+    BOOLEAN termPeriod
+    )
+{
+    UCHAR HtoAConversion[16] = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F' };
+    PUCHAR pCurrent = NULL;
+    UCHAR tempChar = 0;
+    USHORT idx = 0;
+    USHORT count = 0;
+
+    size = size > NIBBLES_PER_LONGLONG ? NIBBLES_PER_LONGLONG : size;
+    for (idx = 0, pCurrent = pDest; idx < size; idx++) {
+        /* Convert Most Significant nibble to ASCII */
+        tempChar = (UCHAR)(data >> 60);
+        *pCurrent = HtoAConversion[tempChar];
+        pCurrent++;
+        count++;
+        data = data << NIBBLE_SHIFT;
+
+        if (underscore == TRUE) {
+            // Every 4th nibble, insert a "_"
+            if (((idx + 1) % INQ_SN_SUB_LENGTH) == 0) {
+                *pCurrent = '_';
+                pCurrent++;
+                count++;
+            }
+        }
+    }
+
+    /* Add a terminating period if requested */
+    if ((termPeriod == TRUE) &&
+        (size != 0)) {
+        pCurrent--;
+        if (*pCurrent == '_') {
+            *pCurrent = '.';
+        } else {
+            pCurrent++;
+            count++;
+            *pCurrent = '.';
+        }
+        pCurrent++;
+    }
+
+    return count;
+}
 
 
 #if (NTDDI_VERSION > NTDDI_WIN7)
@@ -1116,8 +1957,7 @@ VOID SntiTranslateBlockDeviceCharacteristicsPage(
  *               internal error handling code and set the status info/data and
  *               pass the pSrb pointer as a parameter.
  *
- * @return SNTI_TRANSLATION_STATUS
- *     Indicates translation status
+ * @return VOID
  ******************************************************************************/
 VOID SntiTranslateLogicalBlockProvisioningPage(
     PSTORAGE_REQUEST_BLOCK pSrb,
@@ -1199,7 +2039,8 @@ VOID SntiTranslateLogicalBlockProvisioningPage(
  *               internal error handling code and set the status info/data and
  *               pass the pSrb pointer as a parameter.
  *
- * @return VOID
+ * @return SNTI_TRANSLATION_STATUS
+ *     Indicates translation status
  ******************************************************************************/
 SNTI_TRANSLATION_STATUS SntiTranslateExtendedInquiryDataPage(
 #if (NTDDI_VERSION > NTDDI_WIN7)
@@ -1346,7 +2187,10 @@ VOID SntiTranslateStandardInquiryPage(
     PINQUIRYDATA pStdInquiry = NULL;
     INQUIRYDATA tmpInquiry;
     UINT16 allocLength;
- 
+    UINT8 lastChar = 0;
+    UINT8 copyIdx = 0;
+
+
     pStdInquiry = (PINQUIRYDATA)GET_DATA_BUFFER(pSrb);
     allocLength = GET_INQ_ALLOC_LENGTH(pSrb);
     if (allocLength < STANDARD_INQUIRY_LENGTH) {
@@ -1371,6 +2215,8 @@ VOID SntiTranslateStandardInquiryPage(
         pStdInquiry->Wide16Bit           = WIDE_16_BIT_XFERS_UNSUPPORTED;
         pStdInquiry->Addr16              = WIDE_16_BIT_ADDRESES_UNSUPPORTED;
         pStdInquiry->Synchronous         = SYNCHRONOUS_DATA_XFERS_UNSUPPORTED;
+        pStdInquiry->Reserved3[0]        = RESERVED_FIELD;
+
         /*
          *  Fields not defined in Standard Inquiry page from storport.h
          *
@@ -1397,10 +2243,19 @@ VOID SntiTranslateStandardInquiryPage(
                            pDevExt->controllerIdentifyData.MN,
                            PRODUCT_ID_SIZE);
 
-        /* Product Revision Level */
-        StorPortCopyMemory(pStdInquiry->ProductRevisionLevel,
-                           pDevExt->controllerIdentifyData.FR,
-                           PRODUCT_REVISION_LEVEL_SIZE);
+    /* Find the last valid character in the revision string */
+    for (lastChar = 4; lastChar < sizeof(pDevExt->controllerIdentifyData.FR); lastChar++) {
+        if ((pDevExt->controllerIdentifyData.FR[lastChar] < 0x21) ||
+            (pDevExt->controllerIdentifyData.FR[lastChar] > 0x7e)) {
+            break;
+        }
+    }
+    copyIdx = lastChar - 4;
+
+    /* Product Revision Level */
+    StorPortCopyMemory(pStdInquiry->ProductRevisionLevel,
+        &(pDevExt->controllerIdentifyData.FR[copyIdx]),
+        PRODUCT_REVISION_LEVEL_SIZE);
     }
 
     if (allocLength > 0 && allocLength < STANDARD_INQUIRY_LENGTH) {
@@ -1448,7 +2303,12 @@ SNTI_TRANSLATION_STATUS SntiTranslateReportLuns(
     UINT8 selectReport = 0;
     UCHAR lunExtIdx = 0;
     PNVME_LUN_EXTENSION pLunExt = NULL;
-	UINT8 flbas = 0;
+    UINT8 flbas = 0;
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    UINT32 lunValue = SrbGetLun((void*)pSrb);
+#else
+    UINT32 lunValue = pSrb->Lun;
+#endif
 
     /* Default to a successful command completion */
     SNTI_TRANSLATION_STATUS returnStatus = SNTI_COMMAND_COMPLETED;
@@ -1471,7 +2331,10 @@ SNTI_TRANSLATION_STATUS SntiTranslateReportLuns(
     /* Set the completion routine - no translation necessary on completion */
     pSrbExt->pNvmeCompletionRoutine = NULL;
 
-    if ((selectReport != ALL_LUNS_RETURNED)            &&
+    if ((selectReport != LOGICAL_AND_SUBS_LUNS_RET) &&
+        (selectReport != ADMIN_AND_LOGICAL_LUNS_RET) &&
+        (selectReport != ADMIN_LUNS_RETURNED) &&
+        (selectReport != ALL_LUNS_RETURNED) &&
         (selectReport != ALL_WELL_KNOWN_LUNS_RETURNED) &&
         (selectReport != RESTRICTED_LUNS_RETURNED)) {
         SntiSetScsiSenseData(pSrb,
@@ -1485,17 +2348,27 @@ SNTI_TRANSLATION_STATUS SntiTranslateReportLuns(
 
         returnStatus = SNTI_FAILURE_CHECK_RESPONSE_DATA;
     } else {
+        if (((lunValue != 0) &&
+            (selectReport == ADMIN_AND_LOGICAL_LUNS_RET)) ||
+            (selectReport == LOGICAL_AND_SUBS_LUNS_RET) ||
+            (selectReport == ADMIN_LUNS_RETURNED) ||
+            (selectReport == ALL_WELL_KNOWN_LUNS_RETURNED)) {
+            numberOfLuns = 0;
+        } else {
         /*
          * Per the NVM Express spec, namespaces ids shall be allocated in order
          * (starting with 0) and packed sequentially.
          */
         numberOfLuns = pDevExt->visibleLuns;
+        }
+
 
         lunListLength = numberOfLuns * LUN_ENTRY_SIZE;
 
         memset(pResponseBuffer, 0, allocLength);
         lunIdDataOffset = REPORT_LUNS_FIRST_LUN_OFFSET;
 
+        if (numberOfLuns != 0) {
         /* The first LUN Id will always be 0 per the SAM spec */
         for (lunExtIdx = 0; lunExtIdx < MAX_NAMESPACES; lunExtIdx++) {
              pLunExt = pDevExt->pLunExtensionTable[lunExtIdx];
@@ -1504,8 +2377,8 @@ SNTI_TRANSLATION_STATUS SntiTranslateReportLuns(
               * (1) with zero size in capacity, or
               * (2) is formatted using metadata, which is not supported now.
               */
-			 flbas = pLunExt->identifyData.FLBAS.SupportedCombination;
-			 if ((pLunExt->identifyData.NSZE == 0) || (pLunExt->identifyData.LBAFx[flbas].MS != 0))
+             flbas = pLunExt->identifyData.FLBAS.SupportedCombination;
+             if ((pLunExt->identifyData.NSZE == 0) || (pLunExt->identifyData.LBAFx[flbas].MS != 0))
                 continue;
              if ((pLunExt->slotStatus == ONLINE) &&
                  (++numberOfLunsFound <= numberOfLuns)) {
@@ -1520,6 +2393,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateReportLuns(
                  }
                  pResponseBuffer[lunIdDataOffset + SINGLE_LVL_LUN_OFFSET] = lunExtIdx;
                  lunIdDataOffset += LUN_ENTRY_SIZE;
+                }
             }
         }
 
@@ -1792,7 +2666,6 @@ SNTI_TRANSLATION_STATUS SntiTranslateReadCapacity16(
     UINT64 lastLba;
     UINT32 lbaLength;
     UINT32 allocLength;
-    UINT32 copyLength;
     UINT32 lbaLengthPower;
     UINT8  flbas;
     UINT8  dps;
@@ -1801,7 +2674,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateReadCapacity16(
 #if (NTDDI_VERSION > NTDDI_WIN7)
     PUCHAR pCdb = (PUCHAR)SrbGetCdb((void*)pSrb);
 #else
-	PUCHAR pCdb = (PUCHAR)pSrb->Cdb;
+    PUCHAR pCdb = (PUCHAR)pSrb->Cdb;
 #endif
     /* Default to a successful command completion */
     SNTI_TRANSLATION_STATUS returnStatus = SNTI_COMMAND_COMPLETED;
@@ -1888,7 +2761,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateReadCapacity16(
                 ONE_OR_MORE_PHYSICAL_BLOCKS;
 
             pReadCapacityData->LogicalBlockProvisioningMgmtEnabled = UNSPECIFIED;
-            pReadCapacityData->LogicalBlockProvisioningReadZeros = UNSPECIFIED;
+            pReadCapacityData->LogicalBlockProvisioningReadZeros = SPECIFIED;
             pReadCapacityData->LowestAlignedLbaMsb = LBA_0;
             pReadCapacityData->LowestAlignedLbaLsb = LBA_0;
         }
@@ -2792,6 +3665,908 @@ SNTI_TRANSLATION_STATUS SntiTranslateSecurityProtocol(
 
     return returnStatus;
 } /* SntiTranslateSecurityProtocol */
+
+
+/******************************************************************************
+* SntiTranslatePersistentReserveIn
+*
+* @brief Translates the SCSI Persistent Reserve In command based on the NVMe
+*        Translation spec to an NVMe Reservation command.
+*
+* @param pSrb - This parameter specifies the SCSI I/O request. SNTI expects
+*               that the user can access the SCSI CDB, response, and data from
+*               this pointer. For example, if there is a failure in translation
+*               resulting in sense data, then SNTI will call the appropriate
+*               internal error handling code and set the status info/data and
+*               pass the pSrb pointer as a parameter.
+*
+* @return SNTI_TRANSLATION_STATUS
+*     Indicate translation status
+******************************************************************************/
+SNTI_TRANSLATION_STATUS SntiTranslatePersistentReserveIn(
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSTORAGE_REQUEST_BLOCK pSrb
+#else
+    PSCSI_REQUEST_BLOCK pSrb
+#endif
+    )
+{
+    PNVME_SRB_EXTENSION pSrbExt = NULL;
+    PNVME_DEVICE_EXTENSION pDevExt = NULL;
+    PNVME_LUN_EXTENSION pLunExt = NULL;
+    UCHAR serviceAction = 0;
+    USHORT allocLength = 0;
+    SNTI_STATUS status = SNTI_SUCCESS;
+
+    /* Default to successful translation */
+    SNTI_TRANSLATION_STATUS returnStatus = SNTI_TRANSLATION_SUCCESS;
+    pSrbExt = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb);
+    pDevExt = pSrbExt->pNvmeDevExt;
+
+    status = GetLunExtension(pSrbExt, &pLunExt);
+    if (status != SNTI_SUCCESS) {
+        SntiMapInternalErrorStatus(pSrb, status);
+        SET_DATA_LENGTH(pSrb, 0);
+        returnStatus = SNTI_FAILURE_CHECK_RESPONSE_DATA;
+    } else {
+
+        /* Set SRB status to pending - controller communication necessary */
+        pSrb->SrbStatus = SRB_STATUS_PENDING;
+
+        /* Set completion routine for translating the response */
+        pSrbExt->pNvmeCompletionRoutine = SntiCompletionCallbackRoutine;
+
+        /* Get service action and length */
+        serviceAction = GET_U8_FROM_CDB(pSrb, PERSISTENT_RES_CDB_SER_ACTION_OFFSET);
+        allocLength = GET_U16_FROM_CDB(pSrb, PERSISTENT_RESIN_CDB_ALLOC_LEN_OFFSET);
+
+        StorPortDebugPrint(INFO,
+            "SntiTranslatePersistentReserveIn: Service Action = 0x%02x\n",
+            serviceAction);
+
+        switch (serviceAction) {
+        case RESERVATION_ACTION_READ_KEYS:
+        case RESERVATION_ACTION_READ_RESERVATIONS:
+        case RESERVATION_ACTION_READ_FULL_STATUS:
+        {
+            PUCHAR pNvmeResStatusBuf = NULL;
+            PUCHAR pNvmeResStatusBufAligned = NULL;
+            PUCHAR pNvmeNextPageBoundary = NULL;
+            ULONG bufSize = 0;
+            PHYSICAL_ADDRESS physicalAddress = { 0 };
+
+            PNVM_RESERVATION_REPORT_COMMAND_DW10 pCdw10 =
+                (PNVM_RESERVATION_REPORT_COMMAND_DW10)&pSrbExt->nvmeSqeUnit.CDW10;
+
+            /* Chose which queue to use */
+            pSrbExt->forAdminQueue = FALSE;
+
+            /* Calculate address of the reservation status buffer */
+            pNvmeResStatusBuf = &pSrbExt->resReportStruct[0];
+
+            /* ensure it is aligned on a 4-byte boundary */
+            pNvmeResStatusBufAligned = (PUCHAR)(((UINT64)pNvmeResStatusBuf + sizeof(ULONG) - 1) &
+                ~(sizeof(ULONG) - 1));
+            bufSize = sizeof(NVME_RES_REPORT_STRUCT);
+            /* Zero out the buffer */
+            memset(pNvmeResStatusBufAligned, 0, bufSize);
+
+            /* Zero out the command entry */
+            memset(&pSrbExt->nvmeSqeUnit, 0, sizeof(NVMe_COMMAND));
+
+            pSrbExt->nvmeSqeUnit.CDW0.OPC = NVM_RESERVATION_REPORT;
+            pSrbExt->nvmeSqeUnit.CDW0.CID = 0;
+            pSrbExt->nvmeSqeUnit.CDW0.FUSE = FUSE_NORMAL_OPERATION;
+
+            pSrbExt->nvmeSqeUnit.NSID = pLunExt->namespaceId;
+
+            NVMePreparePRPs(pDevExt, pSrbExt, pNvmeResStatusBufAligned, bufSize);
+
+            /* DWORD 10 - Size of the buffer for Reservation Status data struct, in DWORDS. */
+            /* Size of the buffer minus the size of the header */
+            pCdw10->NUMD = (bufSize / sizeof(ULONG)) - 1;
+        }
+        break;
+        case RESERVATION_ACTION_REPORT_CAPABILITIES:
+            /* Report Capabiliites */
+
+            /* Issue the GET FEATURES command (Reservation Persistance) */
+            SntiBuildGetFeaturesCmd(pSrbExt, RESERVATION_PERSISTANCE);
+            break;
+        default:
+            StorPortDebugPrint(INFO,
+                "SntiTranslatePersistentReserveIn: Invalid Service Action = 0x%02x\n",
+                serviceAction);
+
+            /* reject command. Invalid service action */
+            SntiMapInternalErrorStatus(pSrb, SNTI_INVALID_PARAMETER);
+            SET_DATA_LENGTH(pSrb, 0);
+            returnStatus = SNTI_FAILURE_CHECK_RESPONSE_DATA;
+            break;
+        }
+    }
+
+    return returnStatus;
+
+} /* SntiTranslatePersistentReserveIn */
+
+
+/******************************************************************************
+* SntiTranslatePersistentReserveOut
+*
+* @brief Translates the SCSI Persistent Reserve Out command based on the NVMe
+*        Translation spec to an NVMe Reservation command.
+*
+* @param pSrb - This parameter specifies the SCSI I/O request. SNTI expects
+*               that the user can access the SCSI CDB, response, and data from
+*               this pointer. For example, if there is a failure in translation
+*               resulting in sense data, then SNTI will call the appropriate
+*               internal error handling code and set the status info/data and
+*               pass the pSrb pointer as a parameter.
+*
+* @return SNTI_TRANSLATION_STATUS
+*     Indicate translation status
+******************************************************************************/
+SNTI_TRANSLATION_STATUS SntiTranslatePersistentReserveOut(
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSTORAGE_REQUEST_BLOCK pSrb
+#else
+    PSCSI_REQUEST_BLOCK pSrb
+#endif
+    )
+{
+    PNVME_SRB_EXTENSION pSrbExt = NULL;
+    PNVME_LUN_EXTENSION pLunExt = NULL;
+    PNVME_DEVICE_EXTENSION pDevExt = NULL;
+    UCHAR serviceAction = 0;
+    UCHAR scsiRType = 0;
+    UCHAR nvmeRType = 0;
+    UCHAR scope = 0;
+    ULONG allocLength = 0;
+    PPERSIST_RES_OUT_PARMS pScsiResOutParms = NULL;
+    STOR_PHYSICAL_ADDRESS physAddr = { 0 };
+    PUCHAR pNvmeNextPageBoundary = NULL;
+    USHORT dataStructSize = 0;
+    PUCHAR pParmBuffer = NULL;
+    SNTI_STATUS status = SNTI_SUCCESS;
+    SNTI_TRANSLATION_STATUS returnStatus = SNTI_TRANSLATION_SUCCESS;
+    pSrbExt = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb);
+    pDevExt = pSrbExt->pNvmeDevExt;
+
+    /* Sntl 1.5, table 4-14 */
+    UCHAR ScsiToNVMeRTypeConv[RESERVATION_TYPE_MAX_VALUE + 1] = {
+        NVME_RTYPE_NO_RESERVATION,          // Scsi Reservation Type 0: No Reservation 
+        NVME_RTYPE_WRITE_EXC,               // Scsi Reservation Type 1: Write exclusive
+        NVME_RTYPE_RESERVED,                // Invalid Scsi Reservation Type 2
+        NVME_RTYPE_EXCLUSIVE_ACC,           // Scsi Reservation Type 3: Exclusive access
+        NVME_RTYPE_RESERVED,                // Invalid Scsi Reservation Type 4
+        NVME_RTYPE_WRITE_EXC_REG_ONLY,      // Scsi Reservation Type 5: Write exclusive - registrants only
+        NVME_RTYPE_EXC_ACC_REG_ONLY,        // Scsi Reservation Type 6: Exclusive Access - registrants only
+        NVME_RTYPE_WRITE_EXC_ALL,           // Scsi Reservation Type 7: Write exclusive - all registrants
+        NVME_RTYPE_EXC_ACC_ALL              // Scsi Reservation Type 8: Exclusive Access - all registrants
+    };
+
+    status = GetLunExtension(pSrbExt, &pLunExt);
+    if (status != SNTI_SUCCESS) {
+        SntiMapInternalErrorStatus(pSrb, status);
+        returnStatus = SNTI_FAILURE_CHECK_RESPONSE_DATA;
+    } else {
+        pScsiResOutParms = (PPERSIST_RES_OUT_PARMS)GET_DATA_BUFFER(pSrb);
+
+        /* Get service action, scope and length */
+        serviceAction = GET_U8_FROM_CDB(pSrb, PERSISTENT_RES_CDB_SER_ACTION_OFFSET);
+
+        StorPortDebugPrint(INFO,
+            "SntiTranslatePersistentReserveOut: Service Action = 0x%02x\n",
+            serviceAction);
+
+        scope = GET_U8_FROM_CDB(pSrb, PERSISTENT_RES_CDB_SCOPE_OFFSET);
+        scope = (scope & PERSISTENT_RES_CDB_SCOPE_MASK) >> NIBBLE_SHIFT;
+
+        allocLength = GET_U32_FROM_CDB(pSrb, PERSISTENT_RESOUT_CDB_ALLOC_LEN_OFFSET);
+
+        if ((scope != PERSISTENT_RESOUT_LU_SCOPE) ||
+            (allocLength < sizeof(PERSIST_RES_OUT_PARMS))) {
+            /* reject command. Buffer is not large enough for the paramaters */
+            SntiMapInternalErrorStatus(pSrb, SNTI_INVALID_PARAMETER);
+            SET_DATA_LENGTH(pSrb, 0);
+            returnStatus = SNTI_FAILURE_CHECK_RESPONSE_DATA;
+            return returnStatus;
+        }
+
+        /* Ensure reservations are requested for the NVMe subsystem */
+        /* SNTL 1.5, table 6-35, Parm = SPEC_I_PT 
+        /* SPEC_I_PT not valid for REGISTER AND MOVE - SPC 5, 6.15.4 */
+        if ((pScsiResOutParms->SPEC_I_PT == 0) ||
+            (serviceAction == RESERVATION_ACTION_REGISTER_AND_MOVE)) {
+            /* Set SRB status to pending - controller communication necessary */
+            pSrb->SrbStatus = SRB_STATUS_PENDING;
+
+            /* No translation required on completion */
+            pSrbExt->pNvmeCompletionRoutine = NULL;
+
+            /* Zero out the command entry */
+            memset(&pSrbExt->nvmeSqeUnit, 0, sizeof(NVMe_COMMAND));
+
+            switch (serviceAction) {
+            case RESERVATION_ACTION_REGISTER:
+            case RESERVATION_ACTION_REGISTER_IGNORE_EXISTING:
+            case RESERVATION_ACTION_REGISTER_AND_MOVE:
+            {
+                ADMIN_SET_FEATURES_COMMAND_RESERVATION_PERSISTENCE_DW11 nvmeResPersistDW11 = { 0 };
+                /* determine if we need to check PTPL before proceeding */
+                if ((serviceAction != RESERVATION_ACTION_REGISTER_AND_MOVE) &&
+                    (pScsiResOutParms->APTPL == 1)) {
+
+                    /* Ensure persistence across power loss is supported */
+                    if (pLunExt->identifyData.RESCAP.PTPLC == 0) {
+                        /* reject command. Buffer is not large enough for the paramaters */
+                        SntiMapInternalErrorStatus(pSrb, SNTI_INVALID_PARAMETER);
+                        SET_DATA_LENGTH(pSrb, 0);
+                        returnStatus = SNTI_FAILURE_CHECK_RESPONSE_DATA;
+                        return returnStatus;
+                    }
+
+                    /* SNTL 1.5, table 6-35, Parm = APTPL=1, SA = Register or
+                    *  Register and Ignore.  */
+
+                    /* All namespaces that support reservations will support PTPL.    */
+                    /* Instead of issuing a Get Features (FID = 0x83), to see if PTPL */
+                    /* is active, just issue the Set Features to ensure it is active. */
+                    /* When handling the Set Features response, we'll create and issue */
+                    /* the NVMe Reservation Register command */
+                    nvmeResPersistDW11.PTPL = 1;
+                    SntiBuildSetFeaturesCmd(pSrbExt, RESERVATION_PERSISTANCE, *(PULONG)&nvmeResPersistDW11);
+
+                    /* Callback is required to complete the command */
+                    pSrbExt->pNvmeCompletionRoutine = SntiCompletionCallbackRoutine;
+                    returnStatus = SNTI_TRANSLATION_SUCCESS;
+                } else {
+                    /* APTPL is not requested, so proceed with building the NVMe Reservation Register command */
+                    returnStatus = SntiBuildPersReserveRegisterCmd(pSrb, pSrbExt, pLunExt, pDevExt, serviceAction, pScsiResOutParms);
+                }
+                return returnStatus;
+            }
+            break;
+            case RESERVATION_ACTION_RESERVE:
+            case RESERVATION_ACTION_PREEMPT:
+            case RESERVATION_ACTION_PREEMPT_ABORT:
+            case RESERVATION_ACTION_RELEASE:
+            case RESERVATION_ACTION_CLEAR:
+            {
+                scsiRType = GET_U8_FROM_CDB(pSrb, PERSISTENT_RES_CDB_RTYPE_OFFSET);
+                scsiRType &= PERSISTENT_RES_CDB_RTYPE_MASK;
+
+                if (scsiRType > RESERVATION_TYPE_MAX_VALUE) {
+                    nvmeRType = NVME_RTYPE_RESERVED;
+                } else {
+                    nvmeRType = ScsiToNVMeRTypeConv[scsiRType];
+                }
+
+                if (nvmeRType == NVME_RTYPE_RESERVED) {
+                    /* reject command. Buffer is not large enough for the paramaters */
+                    SntiMapInternalErrorStatus(pSrb, SNTI_INVALID_PARAMETER);
+                    SET_DATA_LENGTH(pSrb, 0);
+                    returnStatus = SNTI_FAILURE_CHECK_RESPONSE_DATA;
+                    return returnStatus;
+                }
+
+                switch (serviceAction) {
+                case RESERVATION_ACTION_RESERVE:
+                case RESERVATION_ACTION_PREEMPT:
+                case RESERVATION_ACTION_PREEMPT_ABORT:
+                {
+                    PNVM_RES_ACQUIRE_DATASTRUCT pNvmeAcqDataStruct = (PNVM_RES_ACQUIRE_DATASTRUCT)&pSrbExt->resAcquireData;
+                    PNVM_RES_ACQUIRE_COMMAND_DW10 pNvmeResRegCmdDW10 = (PNVM_RES_ACQUIRE_COMMAND_DW10)&pSrbExt->nvmeSqeUnit.CDW10;
+
+                    pSrbExt->nvmeSqeUnit.CDW0.OPC = NVM_RESERVATION_ACQUIRE;
+
+                    /* SNTL 1.5, tables 4-14 (RTYPE) and 4-16 (IEKEY, RQCQA) */
+                    pNvmeResRegCmdDW10->RTYPE = nvmeRType;
+                    pNvmeResRegCmdDW10->IEKEY = NVM_REG_CHECK_EXISTING_KEY;
+
+                    if (serviceAction == RESERVATION_ACTION_RESERVE) {
+                        pNvmeResRegCmdDW10->RACQA = NVM_RES_ACQ_ACTION_ACQUIRE;
+                    } else if (serviceAction == RESERVATION_ACTION_PREEMPT) {
+                        pNvmeResRegCmdDW10->RACQA = NVM_RES_ACQ_ACTION_PREEMPT;
+                    } else if (serviceAction == RESERVATION_ACTION_PREEMPT_ABORT) {
+                        pNvmeResRegCmdDW10->RACQA = NVM_RES_ACQ_ACTION_PREEMPT_ABORT;
+                    }
+
+                    /* Get a 4-byte aligned pointer to the Nvme acquire data structure */
+                    pNvmeAcqDataStruct = (PNVM_RES_ACQUIRE_DATASTRUCT)(((UINT64)pNvmeAcqDataStruct + sizeof(ULONG) - 1) &
+                        ~(sizeof(ULONG) - 1));
+                    pParmBuffer = (PUCHAR)pNvmeAcqDataStruct;
+                    dataStructSize = sizeof(NVM_RES_ACQUIRE_DATASTRUCT);
+
+                    /* SNTL 1.5, table 6-35, Parm = Reservation Key, SA = Reserve,
+                    *  Preempt or Preempt and abort */
+                    REVERSE_BYTES_QUAD(&pNvmeAcqDataStruct->CRKEY, &pScsiResOutParms->ReservationKey);
+
+                    /* SNTL 1.5, table 6-35, Parm = Service Action Res Key, SA = Preempt or
+                    *  Preempt and abort */
+                    if ((pScsiResOutParms->ServiceActionRKey != 0) &&
+                        (serviceAction != RESERVATION_ACTION_RESERVE)) {
+                        REVERSE_BYTES_QUAD(&pNvmeAcqDataStruct->PRKEY, &pScsiResOutParms->ServiceActionRKey);
+                    }
+                }
+                break;
+                case RESERVATION_ACTION_RELEASE:
+                case RESERVATION_ACTION_CLEAR:
+                {
+                    PNVM_RES_RELEASE_DATASTRUCT pNvmeRelDataStruct = (PNVM_RES_RELEASE_DATASTRUCT)&pSrbExt->resReleaseData;
+                    PNVM_RES_RELEASE_COMMAND_DW10 pNvmeResRelCmdDW10 = (PNVM_RES_RELEASE_COMMAND_DW10)&pSrbExt->nvmeSqeUnit.CDW10;
+
+                    pSrbExt->nvmeSqeUnit.CDW0.OPC = NVM_RESERVATION_RELEASE;
+
+                    /* SNTL 1.5, tables 4-14 (RTYPE) and 4-16 (IEKEY, RRELA) */
+                    pNvmeResRelCmdDW10->RTYPE = nvmeRType;
+                    pNvmeResRelCmdDW10->IEKEY = NVM_REG_CHECK_EXISTING_KEY;
+
+                    if (serviceAction == RESERVATION_ACTION_RELEASE) {
+                        pNvmeResRelCmdDW10->RRELA = NVM_REL_ACTION_RELEASE;
+                    } else {
+                        pNvmeResRelCmdDW10->RRELA = NVM_REL_ACTION_CLEAR;
+                    }
+
+                    /* Get a 4-byte aligned pointer to the Nvme release data structure */
+                    pNvmeRelDataStruct = (PNVM_RES_RELEASE_DATASTRUCT)(((UINT64)pNvmeRelDataStruct + sizeof(ULONG) - 1) &
+                        ~(sizeof(ULONG) - 1));
+                    pParmBuffer = (PUCHAR)pNvmeRelDataStruct;
+                    dataStructSize = sizeof(NVM_RES_RELEASE_DATASTRUCT);
+
+                    /* Clear out the register data structure buffer */
+                    memset(pNvmeRelDataStruct, 0, sizeof(NVM_RES_ACQUIRE_DATASTRUCT));
+
+                    /* SNTL 1.5, table 6-35, Parm = Reservation Key, SA = Release
+                    *  or Clear */
+                    REVERSE_BYTES_QUAD(&pNvmeRelDataStruct->CRKEY, &pScsiResOutParms->ReservationKey);
+                }
+                break;
+                }
+            }
+            break;
+            default: 
+            {
+                StorPortDebugPrint(INFO,
+                    "SntiTranslatePersistentReserveOut: Invalid Service Action = 0x%02x\n",
+                    serviceAction);
+
+                /* reject command. Invalid service action  */
+                SntiMapInternalErrorStatus(pSrb, SNTI_INVALID_PARAMETER);
+                SET_DATA_LENGTH(pSrb, 0);
+                returnStatus = SNTI_FAILURE_CHECK_RESPONSE_DATA;
+                return returnStatus;
+            }
+            break;
+            }
+            /* Setup common parts of the command */
+            pSrbExt->nvmeSqeUnit.CDW0.CID = 0;
+            pSrbExt->nvmeSqeUnit.CDW0.FUSE = FUSE_NORMAL_OPERATION;
+            pSrbExt->nvmeSqeUnit.NSID = pLunExt->namespaceId;
+
+            NVMePreparePRPs(pDevExt, pSrbExt, pParmBuffer, dataStructSize);
+
+           
+            /* Process the ALL_TG_PT for all service actions */
+        } else {
+            /* reject command. Reservations cannot be applied per I_T_Nexus */
+            SntiMapInternalErrorStatus(pSrb, SNTI_INVALID_PARAMETER);
+            SET_DATA_LENGTH(pSrb, 0);
+            returnStatus = SNTI_FAILURE_CHECK_RESPONSE_DATA;
+        }
+    }
+
+    return returnStatus;
+
+} /* SntiTranslatePersistentReserveOut */
+
+
+/******************************************************************************
+* SntiBuildPersReserveRegisterCmd
+*
+* @brief Build an NVMe Reserve Register Command for SCSI PERSISTENT Reserve OUT
+* service actions of Register, Register and Ignore Existing Settings and
+* Register and Move.
+*
+* @param pSrbExt - Pointer to Srb Extension
+* @param pLunExt - Pointer to the Lun extension
+* @param pDevExt - Pointer the device extension
+* @param serviceAction - The Service action for this SCSI Persistent Reserve
+*                        Out command.
+* @param pScsiResOutParms - Pointer to the scsi parameter block passed with this
+*                           command.
+*
+* @return SNTI_TRANSLATION_STATUS
+*     Indicate translation status
+******************************************************************************/
+SNTI_TRANSLATION_STATUS SntiBuildPersReserveRegisterCmd(
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSTORAGE_REQUEST_BLOCK pSrb,
+#else
+    PSCSI_REQUEST_BLOCK pSrb,
+#endif
+    PNVME_SRB_EXTENSION pSrbExt,
+    PNVME_LUN_EXTENSION pLunExt,
+    PNVME_DEVICE_EXTENSION pDevExt,
+    UCHAR serviceAction,
+    PPERSIST_RES_OUT_PARMS pScsiResOutParms
+    )
+{
+    STOR_PHYSICAL_ADDRESS physAddr = { 0 };
+    PUCHAR pNvmeNextPageBoundary = NULL;
+    SNTI_STATUS status = SNTI_SUCCESS;
+
+    PNVM_RES_REGISTER_COMMAND_DW10 pNvmeResRegCmdDW10 = NULL;
+    PNVM_RES_REGISTER_DATASTRUCT pNvmeRegDataStruct = (PNVM_RES_REGISTER_DATASTRUCT)&pSrbExt->resRegisterData;
+
+    /* Get a pointer to the Nvme register data structure */
+    pNvmeRegDataStruct = (PNVM_RES_REGISTER_DATASTRUCT)(((UINT64)pNvmeRegDataStruct + sizeof(ULONG) - 1) &
+        ~(sizeof(ULONG) - 1));
+
+    /* Clear out the register data structure buffer */
+    memset(pNvmeRegDataStruct, 0, sizeof(NVM_RES_REGISTER_DATASTRUCT));
+    pNvmeResRegCmdDW10 = (PNVM_RES_REGISTER_COMMAND_DW10)&pSrbExt->nvmeSqeUnit.CDW10;
+
+    /* Zero out the command entry */
+    memset(&pSrbExt->nvmeSqeUnit, 0, sizeof(NVMe_COMMAND));
+
+    /* Set the NVMe opcode */
+    pSrbExt->nvmeSqeUnit.CDW0.OPC = NVM_RESERVATION_REGISTER;
+
+    /* Setup the NVMe command */
+    pSrbExt->nvmeSqeUnit.CDW0.CID = 0;
+    pSrbExt->nvmeSqeUnit.CDW0.FUSE = FUSE_NORMAL_OPERATION;
+    pSrbExt->nvmeSqeUnit.NSID = pLunExt->namespaceId;
+
+    NVMePreparePRPs(pDevExt, pSrbExt, pNvmeRegDataStruct, sizeof(NVM_RES_REGISTER_DATASTRUCT));    
+
+    if (serviceAction == RESERVATION_ACTION_REGISTER_AND_MOVE) {
+        /* SNTL 1.5, table 6-35, Parm = Reservation Key, SA = Register and
+        *  Move  */
+        REVERSE_BYTES_QUAD(&pNvmeRegDataStruct->CRKEY, &pScsiResOutParms->ReservationKey);
+        pNvmeResRegCmdDW10->IEKEY = NVM_REG_CHECK_EXISTING_KEY;
+        pNvmeResRegCmdDW10->RREGA = NVM_REG_ACTION_REPLACE_KEY;
+
+        /* SNTL 1.5, table 6-35, Parm = Service Action Reservation Key != 0,
+        * SA = Register and Move  */
+        if (pScsiResOutParms->ServiceActionRKey != 0) {
+            /* Process the parm list Service Action Reservation Key */
+            REVERSE_BYTES_QUAD(&pNvmeRegDataStruct->NRKEY, &pScsiResOutParms->ServiceActionRKey);
+        }
+    } else {
+        /* Register/Register & Ignore */
+        if (serviceAction == RESERVATION_ACTION_REGISTER) {
+            pNvmeResRegCmdDW10->IEKEY = NVM_REG_CHECK_EXISTING_KEY;
+        } else {
+            pNvmeResRegCmdDW10->IEKEY = NVM_REG_IGNORE_EXISTING_KEY;
+        }
+
+        /* SNTL 1.5, table 6-35, Parm = Reservation Key,
+        * SA = Register and Register & Ignore  */
+        if (pScsiResOutParms->ServiceActionRKey == 0) {
+            /* Process the parm list Reservation Key */
+            REVERSE_BYTES_QUAD(&pNvmeRegDataStruct->CRKEY, &pScsiResOutParms->ReservationKey);
+            pNvmeResRegCmdDW10->RREGA = NVM_REG_ACTION_UNREG_KEY;
+            /* APTL field is ignored */
+        } else {
+            pNvmeResRegCmdDW10->RREGA = NVM_REG_ACTION_REG_KEY;
+            /* Process the parm list Service Action Reservation Key */
+            REVERSE_BYTES_QUAD(&pNvmeRegDataStruct->NRKEY, &pScsiResOutParms->ServiceActionRKey);
+        }
+
+
+        /* SNTL 1.5, table 6-35, Parm = APTPL,
+        * SA = Register and Register & Ignore  */
+        if (pScsiResOutParms->APTPL == 1) {
+            pNvmeResRegCmdDW10->CPTPL = NVM_REG_CPTPL_RES_PERSIST;
+        } else {
+            pNvmeResRegCmdDW10->CPTPL = NVM_REG_CPTPL_RES_RELEASED;
+        }
+    }
+    return status;
+}
+
+
+/******************************************************************************
+* SntiTranslatePersReserveInResponse
+*
+* @brief Translates the SCSI Persistent Reserve In command based on the NVMe
+*        Translation spec. Depending on the specified service action, the response
+*        to the SCSI command will come from the response to NVM Reservation Report,
+*        NVM Identify or NVM Get Features command.
+*
+* @param pSrb - This parameter specifies the SCSI I/O request. SNTI expects
+*               that the user can access the SCSI CDB, response, and data from
+*               this pointer. For example, if there is a failure in translation
+*               resulting in sense data, then SNTI will call the appropriate
+*               internal error handling code and set the status info/data and
+*               pass the pSrb pointer as a parameter.
+*
+* @return SNTI_TRANSLATION_STATUS
+*     Indicate translation status
+******************************************************************************/
+SNTI_TRANSLATION_STATUS SntiTranslatePersReserveInResponse(
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSTORAGE_REQUEST_BLOCK pSrb
+#else
+    PSCSI_REQUEST_BLOCK pSrb
+#endif
+    )
+{
+    PNVME_SRB_EXTENSION pSrbExt = NULL;
+    PNVME_DEVICE_EXTENSION pDevExt = NULL;
+    PUCHAR pNvmeResStatusBuf = NULL;
+    PNVM_RES_REPORT_HDR pNvmeResStatusBufAligned = NULL;
+    PNVM_REGISTERED_CTRL_DATASTRUCT pNvmeRegCtlData = NULL;
+    ULONG nvmeRspBufSize = 0;
+    ULONG nvmeRspDataSize = 0;
+    ULONG scsiRspBufSize = 0;
+    ULONG scsiRemainingBufLen = 0;
+    ULONG copyLength = 0;
+    ULONG totalCopyLength = 0;
+    ULONG i = 0;
+    UCHAR serviceAction = 0;
+    UCHAR NVMeToScsiRTypeConversion[NVME_RTYPE_MAX_VALUE + 1] = { 
+        RESERVATION_TYPE_NONE, 
+        RESERVATION_TYPE_WRITE_EXCLUSIVE,
+        RESERVATION_TYPE_EXCLUSIVE,
+        RESERVATION_TYPE_WRITE_EXCLUSIVE_REGISTRANTS,
+        RESERVATION_TYPE_EXCLUSIVE_REGISTRANTS,
+        RESERVATION_TYPE_WRITE_EXCLUSIVE_ALL,
+        RESERVATION_TYPE_EXCLUSIVE_ACCESS_ALL };
+
+    /* Default to in-progress command sequence */
+    SNTI_TRANSLATION_STATUS returnStatus = SNTI_SEQUENCE_IN_PROGRESS;
+    pSrbExt = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb);
+    pDevExt = (PNVME_DEVICE_EXTENSION)pSrbExt->pNvmeDevExt;
+
+
+    // Get pointer to response data
+    /* Calculate address of the reservation status buffer */
+    pNvmeResStatusBuf = &pSrbExt->resReportStruct[0];
+
+    /* ensure it is aligned on the size of the report data structure */
+    pNvmeResStatusBufAligned = (PNVM_RES_REPORT_HDR)(((UINT64)pNvmeResStatusBuf + sizeof(ULONG) - 1) &
+        ~(sizeof(ULONG) - 1));
+
+    /* determine size of the data buffer */
+    nvmeRspBufSize = sizeof(NVME_RES_REPORT_STRUCT);
+    /* determine the amount of data returned */
+    nvmeRspDataSize = sizeof(NVM_RES_REPORT_HDR) + pNvmeResStatusBufAligned->REGCTL*sizeof(NVM_REGISTERED_CTRL_DATASTRUCT);
+
+    /* get pointer to first set of response data */
+    pNvmeRegCtlData = (PNVM_REGISTERED_CTRL_DATASTRUCT)((UINT64)pNvmeResStatusBufAligned + sizeof(NVM_RES_REPORT_HDR));
+
+
+    /* Get size of SCSI response buffer */
+    scsiRspBufSize = GET_DATA_LENGTH(pSrb);
+    scsiRemainingBufLen = scsiRspBufSize;
+
+    /* get the scsi reserve in service action */
+    serviceAction = GET_U8_FROM_CDB(pSrb, PERSISTENT_RES_CDB_SER_ACTION_OFFSET);
+
+    StorPortDebugPrint(INFO,
+        "SntiTranslatePersReserveInResponse: Service Action = 0x%02x\n",
+        serviceAction);
+
+
+    switch (serviceAction) {
+    case RESERVATION_ACTION_READ_KEYS:
+    {
+        PULONGLONG pScsiNextReservationKey = NULL;
+        PERSIST_RES_PARM_DATA_HDR localScsiRspHdr = { 0 };
+        PPERSIST_RES_PARM_DATA_HDR pScsiResParmData = NULL;
+        ULONG temp = 0;
+        ULONGLONG tempNvmeRKEY = 0;
+
+        /* Get pointer to SCSI response buffer */
+        pScsiResParmData = (PPERSIST_RES_PARM_DATA_HDR)GET_DATA_BUFFER(pSrb);
+
+        /* Create local SCSI response header */
+        REVERSE_BYTES(&localScsiRspHdr.PRGENERATION, &pNvmeResStatusBufAligned->GEN);
+        temp = pNvmeResStatusBufAligned->REGCTL*sizeof(pNvmeRegCtlData->RKEY);
+        REVERSE_BYTES(&localScsiRspHdr.AddlLength, &temp);
+
+        /* Copy SCSI response header */
+        copyLength = min(scsiRemainingBufLen, sizeof(localScsiRspHdr));
+        totalCopyLength = copyLength;
+        memcpy(pScsiResParmData, &localScsiRspHdr, copyLength);
+        scsiRemainingBufLen -= copyLength;
+
+        /* Loop through Reservation Keys - copying to SCSI response buffer */
+        for (i = 0, pScsiNextReservationKey = (PULONGLONG)((UINT64)pScsiResParmData + sizeof(PERSIST_RES_PARM_DATA_HDR));
+            (i < pNvmeResStatusBufAligned->REGCTL) && (scsiRemainingBufLen > 0);
+            i++,
+            scsiRemainingBufLen -= copyLength,
+            pNvmeRegCtlData += 1,
+            pScsiNextReservationKey += 1) {
+            /* Make a local big endian copy of the RKEY */
+            REVERSE_BYTES_QUAD(&tempNvmeRKEY, &pNvmeRegCtlData->RKEY);
+
+            /* Determine copy length based on the size of the RKEY and the remaining length in the scsi buffer */
+            copyLength = min(scsiRemainingBufLen, sizeof(pNvmeRegCtlData->RKEY));
+            totalCopyLength += copyLength;
+            /* copy RKEY to the scsi response buffer */
+            memcpy(pScsiNextReservationKey, &tempNvmeRKEY, copyLength);
+        }
+        returnStatus = SNTI_SEQUENCE_COMPLETED;
+        pSrb->SrbStatus = SRB_STATUS_SUCCESS;
+        SET_DATA_LENGTH(pSrb, totalCopyLength);
+    }
+    break;
+
+
+    case RESERVATION_ACTION_READ_RESERVATIONS:
+    {
+        PERSIST_RES_RD_RES_DATA localScsiRspData = { 0 };
+        BOOLEAN found = FALSE;
+        PPERSIST_RES_RD_RES_DATA pScsiResRdRes = NULL;
+        ULONG temp = 0;
+
+        /* Get pointer to SCSI response buffer */
+        pScsiResRdRes = (PPERSIST_RES_RD_RES_DATA)GET_DATA_BUFFER(pSrb);
+
+        /* Init the response header */
+        REVERSE_BYTES(&localScsiRspData.hdr.PRGENERATION, &pNvmeResStatusBufAligned->GEN);
+        localScsiRspData.hdr.AddlLength = 0;
+
+        found = FALSE;
+
+        /* Determine if there is a reservation */
+        if ((pNvmeResStatusBufAligned->RTYPE > NVME_RTYPE_NO_RESERVATION) &&
+            (pNvmeResStatusBufAligned->RTYPE <= NVME_RTYPE_MAX_VALUE)) {
+            /* Loop through Reservation Keys -  */
+            for (i = 0, copyLength = 0;
+                !found && (i < pNvmeResStatusBufAligned->REGCTL);
+                i++, scsiRemainingBufLen -= copyLength, pNvmeRegCtlData += 1) {
+                if ((pNvmeRegCtlData->RCSTS & NVME_RCSTS_HOST_HOLDS_RES_MASK) == NVME_RCSTS_HOST_HOLDS_RES_MASK) {
+                    REVERSE_BYTES_QUAD(&localScsiRspData.ReservationKey, &pNvmeRegCtlData->RKEY);
+                    localScsiRspData.Scope = 0;
+                    localScsiRspData.Type = NVMeToScsiRTypeConversion[pNvmeResStatusBufAligned->RTYPE];
+                    temp = sizeof(PERSIST_RES_RD_RES_DATA) - sizeof(PERSIST_RES_PARM_DATA_HDR);
+                    REVERSE_BYTES(&localScsiRspData.hdr.AddlLength, &temp);
+
+                    /* Copy SCSI response header */
+                    copyLength = min(scsiRemainingBufLen, sizeof(localScsiRspData));
+                    memcpy((PVOID)pScsiResRdRes, &localScsiRspData, copyLength);
+                    found = TRUE;
+                }
+            }
+        }
+
+        if (found != TRUE) {
+            /* Copy SCSI response header */
+            /* Only copy the header */
+            copyLength = min(scsiRemainingBufLen, sizeof(PERSIST_RES_PARM_DATA_HDR));
+            memcpy((PVOID)pScsiResRdRes, &localScsiRspData, copyLength);
+        }
+
+        returnStatus = SNTI_SEQUENCE_COMPLETED;
+        pSrb->SrbStatus = SRB_STATUS_SUCCESS;
+        SET_DATA_LENGTH(pSrb, copyLength);
+    }
+    break;
+
+    case RESERVATION_ACTION_READ_FULL_STATUS:
+    {
+        PPERSIST_RES_PARM_DATA_HDR pScsiResRspHdr = NULL;
+        PPERSIST_RES_FULL_STATUS_DESC pScsiFullStatDesc = NULL;
+        PERSIST_RES_PARM_DATA_HDR localScsiRspHdr = { 0 };
+        PERSIST_RES_FULL_STATUS_DESC localScsiFullStatDesc = { 0 };
+        ULONGLONG temp = 0;
+
+        /* Get pointer to SCSI response buffer */
+        pScsiResRspHdr = (PPERSIST_RES_PARM_DATA_HDR)GET_DATA_BUFFER(pSrb);
+
+
+        /* Create local SCSI response header */
+        REVERSE_BYTES(&localScsiRspHdr.PRGENERATION, &pNvmeResStatusBufAligned->GEN);
+        temp = pNvmeResStatusBufAligned->REGCTL*(sizeof(PERSIST_RES_FULL_STATUS_DESC));
+        REVERSE_BYTES(&localScsiRspHdr.AddlLength, &temp);
+
+        /* Copy SCSI response header */
+        copyLength = min(scsiRemainingBufLen, sizeof(localScsiRspHdr));
+        totalCopyLength = copyLength;
+        memcpy(pScsiResRspHdr, &localScsiRspHdr, copyLength);
+        scsiRemainingBufLen -= copyLength;
+
+        /* Loop through Reservation Keys - copying to SCSI response buffer */
+        for (i = 0, pScsiFullStatDesc = (PPERSIST_RES_FULL_STATUS_DESC)((UINT64)pScsiResRspHdr + sizeof(PERSIST_RES_PARM_DATA_HDR));
+            (i < pNvmeResStatusBufAligned->REGCTL) && (scsiRemainingBufLen > 0);
+            i++, scsiRemainingBufLen -= copyLength, pNvmeRegCtlData += 1, pScsiFullStatDesc += 1) {
+            /* Init the local full status descriptor */
+            memset(&localScsiFullStatDesc, 0, sizeof(localScsiFullStatDesc));
+
+            /* */
+            REVERSE_BYTES_QUAD(&localScsiFullStatDesc.ReservationKey, &pNvmeRegCtlData->RKEY);
+            localScsiFullStatDesc.R_HOLDER = ((pNvmeRegCtlData->RCSTS & NVME_RCSTS_HOST_HOLDS_RES_MASK) == 1) ? 1 : 0;
+            localScsiFullStatDesc.ALL_TG_PT = 1;
+            localScsiFullStatDesc.Scope = 0;
+            if (pNvmeResStatusBufAligned->RTYPE <= NVME_RTYPE_MAX_VALUE) {
+                localScsiFullStatDesc.Type = NVMeToScsiRTypeConversion[pNvmeResStatusBufAligned->RTYPE];
+            } else {
+                StorPortDebugPrint(INFO,
+                    "SntiTranslatePersReserveInResponse: Invalid RType from the device =  0x%x \n",
+                    pNvmeResStatusBufAligned->RTYPE);
+                SntiMapInternalErrorStatus(pSrb, SNTI_FAILURE);
+                SET_DATA_LENGTH(pSrb, 0);
+                returnStatus = SNTI_FAILURE_CHECK_RESPONSE_DATA;
+                return returnStatus;
+            }
+            REVERSE_BYTES_SHORT(&localScsiFullStatDesc.RelTgtPortId, &pNvmeRegCtlData->CNTLID);
+            temp = sizeof(localScsiFullStatDesc.TransportID);
+            REVERSE_BYTES(&localScsiFullStatDesc.AddlDescLenth, &temp);
+            REVERSE_BYTES_QUAD(&localScsiFullStatDesc.TransportID, &pNvmeRegCtlData->HOSTID);
+
+            /* Determine copy length based on the size of the RKEY and the remaining length in the scsi buffer */
+            copyLength = min(scsiRemainingBufLen, sizeof(localScsiFullStatDesc));
+            totalCopyLength += copyLength;
+            memcpy(pScsiFullStatDesc, &localScsiFullStatDesc, copyLength);
+        }
+        returnStatus = SNTI_SEQUENCE_COMPLETED;
+        pSrb->SrbStatus = SRB_STATUS_SUCCESS;
+        SET_DATA_LENGTH(pSrb, totalCopyLength);
+    }
+    break;
+
+    case RESERVATION_ACTION_REPORT_CAPABILITIES:
+    {
+        PERSIST_RES_REP_CAPABILIITES localScsiPersResRepCap = { 0 };
+        PPERSIST_RES_REP_CAPABILIITES pScsiResRspHdr = NULL;
+        PNVME_LUN_EXTENSION pLunExt;
+        SNTI_STATUS status = SNTI_SUCCESS;
+        PADMIN_SET_FEATURES_COMMAND_RESERVATION_PERSISTENCE_DW11 pResPersistData = NULL;
+        USHORT temp = 0;
+
+        /* Determine if the lun is active/valid */
+        status = GetLunExtension(pSrbExt, &pLunExt);
+        if (status != SNTI_SUCCESS) {
+            INT lun = 0xff;
+#if (NTDDI_VERSION > NTDDI_WIN7)
+            lun = SrbGetLun((void*)pSrb);
+#else
+            lun = pSrb->Lun;
+#endif
+            StorPortDebugPrint(INFO,
+                "SntiTranslatePersReserveInResponse: Invalid LUN specified - Lun: 0x%x \n",
+                lun);
+            SntiMapInternalErrorStatus(pSrb, status);
+            SET_DATA_LENGTH(pSrb, 0);
+            returnStatus = SNTI_FAILURE_CHECK_RESPONSE_DATA;
+            return returnStatus;
+        }
+
+        /* Get pointer response data from Get Features Reservation Persistance (FID 0x83) */
+        pResPersistData = (PADMIN_SET_FEATURES_COMMAND_RESERVATION_PERSISTENCE_DW11)&pSrbExt->pCplEntry->DW0;
+
+
+        /* Fill out local copy of SCSI response data */
+        /* Set according to SNTL 1.5, section 6.7.3*/
+        temp = sizeof(PERSIST_RES_REP_CAPABILIITES);
+        REVERSE_BYTES_SHORT(&localScsiPersResRepCap.Length, &temp);
+        localScsiPersResRepCap.CRH = 0;
+        localScsiPersResRepCap.SIP_C = 0;
+        localScsiPersResRepCap.ATP_C = 1;
+        localScsiPersResRepCap.PTPL_C = pLunExt->identifyData.RESCAP.PTPLC;
+        localScsiPersResRepCap.PTPL_A = (UCHAR)pResPersistData->PTPL;
+        localScsiPersResRepCap.AllowCmds = 0;
+        localScsiPersResRepCap.TMV = 1;
+        localScsiPersResRepCap.PersResTypeMask.WR_EX = pLunExt->identifyData.RESCAP.WrEx;
+        localScsiPersResRepCap.PersResTypeMask.EX_AC = pLunExt->identifyData.RESCAP.ExAccess;
+        localScsiPersResRepCap.PersResTypeMask.WR_EX_RO = pLunExt->identifyData.RESCAP.WrExReg;
+        localScsiPersResRepCap.PersResTypeMask.EX_AC_RO = pLunExt->identifyData.RESCAP.ExAccessReg;
+        localScsiPersResRepCap.PersResTypeMask.WR_EX_AR = pLunExt->identifyData.RESCAP.WrExAllReg;
+        localScsiPersResRepCap.PersResTypeMask.EX_AC_AR = pLunExt->identifyData.RESCAP.ExAccessAllReg;
+
+
+        /* Get pointer  to SCSI response buffer */
+        pScsiResRspHdr = (PPERSIST_RES_REP_CAPABILIITES)GET_DATA_BUFFER(pSrb);
+        /* Copy to actual response buffer */
+
+        copyLength = min(scsiRemainingBufLen, sizeof(localScsiPersResRepCap));
+        memcpy(pScsiResRspHdr, &localScsiPersResRepCap, copyLength);
+
+        returnStatus = SNTI_SEQUENCE_COMPLETED;
+        pSrb->SrbStatus = SRB_STATUS_SUCCESS;
+        SET_DATA_LENGTH(pSrb, copyLength);
+    }
+    break;
+
+    default:
+        StorPortDebugPrint(INFO,
+            "SntiTranslatePersReserveInResponse: Invalid Service Action =  0x%x \n",
+            serviceAction);
+        /* Map the translation error to a SCSI error */
+        SntiMapInternalErrorStatus(pSrb, SNTI_FAILURE);
+        returnStatus = SNTI_SEQUENCE_ERROR;
+        pSrb->SrbStatus |= SRB_STATUS_ERROR;
+        SET_DATA_LENGTH(pSrb, 0);
+
+        ASSERT(FALSE);
+        break;
+    }
+
+    return returnStatus;
+
+}
+
+/******************************************************************************
+* SntiTranslatePersReserveOutResponse
+*
+* @brief Processing SCSI Persistent Reserve Out command. This response processing
+*        will only be called if the first pass of processing issued an NVM Set
+*        Features command, this method will complete the processing by issuing
+*        an NVM Reservation Register command.
+*
+* @param pSrb - This parameter specifies the SCSI I/O request. SNTI expects
+*               that the user can access the SCSI CDB, response, and data from
+*               this pointer. For example, if there is a failure in translation
+*               resulting in sense data, then SNTI will call the appropriate
+*               internal error handling code and set the status info/data and
+*               pass the pSrb pointer as a parameter.
+*
+* @return SNTI_TRANSLATION_STATUS
+*     Indicate translation status
+******************************************************************************/
+SNTI_TRANSLATION_STATUS SntiTranslatePersReserveOutResponse(
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSTORAGE_REQUEST_BLOCK pSrb
+#else
+    PSCSI_REQUEST_BLOCK pSrb
+#endif
+    )
+{
+    PNVME_SRB_EXTENSION pSrbExt = NULL;
+    PNVME_LUN_EXTENSION pLunExt = NULL;
+    PNVME_DEVICE_EXTENSION pDevExt = NULL;
+    UCHAR serviceAction = 0;
+    PPERSIST_RES_OUT_PARMS pScsiResOutParms = NULL;
+    SNTI_STATUS status = SNTI_SUCCESS;
+
+    /* Default to successful translation */
+    SNTI_TRANSLATION_STATUS returnStatus = SNTI_TRANSLATION_SUCCESS;
+    pSrbExt = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb);
+    pDevExt = pSrbExt->pNvmeDevExt;
+
+    status = GetLunExtension(pSrbExt, &pLunExt);
+    if (status != SNTI_SUCCESS) {
+        SntiMapInternalErrorStatus(pSrb, status);
+        returnStatus = SNTI_FAILURE_CHECK_RESPONSE_DATA;
+    } else {
+
+        pScsiResOutParms = (PPERSIST_RES_OUT_PARMS)GET_DATA_BUFFER(pSrb);
+
+        /* Set SRB status to pending - controller communication necessary */
+        pSrb->SrbStatus = SRB_STATUS_PENDING;
+
+        /* No translation required on completion */
+        pSrbExt->pNvmeCompletionRoutine = NULL;
+
+        /* Get service action */
+        serviceAction = GET_U8_FROM_CDB(pSrb, PERSISTENT_RES_CDB_SER_ACTION_OFFSET);
+
+        StorPortDebugPrint(INFO,
+            "SntiTranslatePersReserveOutResponse:  Service Action = 0x%x \n",
+             serviceAction);
+
+        /* APTPL is not requested, so proceed with building the NVMe Reservation Register command */
+        returnStatus = SntiBuildPersReserveRegisterCmd(pSrb, pSrbExt, pLunExt, pDevExt, serviceAction, pScsiResOutParms);
+
+        if (returnStatus == SNTI_SUCCESS) {
+            /* Now issue the command via Admin Doorbell register */
+            if (ProcessIo(pSrbExt->pNvmeDevExt, pSrbExt, NVME_QUEUE_TYPE_ADMIN, FALSE) == FALSE) {
+                returnStatus = SNTI_SEQUENCE_ERROR;
+                pSrb->SrbStatus = SRB_STATUS_ERROR;
+            } else {
+                returnStatus = SNTI_SEQUENCE_IN_PROGRESS;
+                pSrb->SrbStatus = SRB_STATUS_PENDING;
+            }
+        }
+    }
+    return returnStatus;
+
+}
 
 /******************************************************************************
  * SntiTranslateStartStopUnit
@@ -4299,7 +6074,7 @@ VOID SntiCreateControlModePage(
     pControlModePage->RAC            = BUSY_RETURNS_ENABLED;
     pControlModePage->UA_INTLCK_CTRL = UA_CLEARED_AT_CC_STATUS;
     pControlModePage->SWP            = SW_WRITE_PROTECT_UNSUPPORTED;
-    pControlModePage->ATO            = LBAT_LBRT_MODIFIABLE;
+    pControlModePage->ATO            = LBAT_LBRT_NOT_MODIFIABLE;
     pControlModePage->TAS            = TASK_ABORTED_STATUS_FOR_ABORTED_CMDS;
     pControlModePage->AutoLodeMode   = MEDIUM_LOADED_FULL_ACCESS;
 
@@ -4704,7 +6479,7 @@ VOID SntiReturnAllModePages(
     pControlModePage->RAC            = BUSY_RETURNS_ENABLED;
     pControlModePage->UA_INTLCK_CTRL = UA_CLEARED_AT_CC_STATUS;
     pControlModePage->SWP            = SW_WRITE_PROTECT_UNSUPPORTED;
-    pControlModePage->ATO            = LBAT_LBRT_MODIFIABLE;
+    pControlModePage->ATO            = LBAT_LBRT_NOT_MODIFIABLE;
     pControlModePage->TAS            = TASK_ABORTED_STATUS_FOR_ABORTED_CMDS;
     pControlModePage->AutoLodeMode   = MEDIUM_LOADED_FULL_ACCESS;
     pControlModePage->BusyTimeoutPeriod[BYTE_0]   = UNLIMITED_BUSY_TIMEOUT_HIGH;
@@ -4909,7 +6684,7 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeData(
     BOOLEAN paramListValid = TRUE;
     UINT32 srbDataLength = GET_DATA_LENGTH(pSrb);
 
-    SNTI_TRANSLATION_STATUS returnStatus;
+    SNTI_TRANSLATION_STATUS returnStatus = SNTI_COMMAND_COMPLETED;
 
     if (isModeSelect10 == FALSE) {
         /* Mode Select 6 */
@@ -6047,6 +7822,16 @@ BOOLEAN SntiCompletionCallbackRoutine(
                     if (translationStatus == SNTI_SEQUENCE_IN_PROGRESS)
                         returnValue = FALSE;
                 break;
+                case SCSIOP_PERSISTENT_RESERVE_IN:
+                    translationStatus = SntiTranslatePersReserveInResponse(pSrb);
+                    if (translationStatus == SNTI_SEQUENCE_IN_PROGRESS)
+                        returnValue = FALSE;
+                    break;
+                case SCSIOP_PERSISTENT_RESERVE_OUT:
+                    translationStatus = SntiTranslatePersReserveOutResponse(pSrb);
+                    if (translationStatus == SNTI_SEQUENCE_IN_PROGRESS)
+                        returnValue = FALSE;
+                    break;
                 default:
                     /* Invalid Condition */
                     ASSERT(FALSE);
@@ -6237,7 +8022,8 @@ SNTI_TRANSLATION_STATUS SntiTranslateInformationalExceptionsResponse(
  * @param pCQEntry - Pointer to completion queue entry
  * @param allocLength - Allocation length from Log Sense CDB
  *
- * return: VOID
+ * @return SNTI_TRANSLATION_STATUS
+ *     Indicates translation status
  ******************************************************************************/
 SNTI_TRANSLATION_STATUS SntiTranslateTemperatureResponse(
 #if (NTDDI_VERSION > NTDDI_WIN7)
@@ -6836,8 +8622,7 @@ BOOLEAN SntiMapCompletionStatus(
                         pSrb->SrbStatus = SRB_STATUS_ERROR;
                 }
                 returnValue = TRUE;
-            }
-            else
+            } else
                 returnValue = FALSE;
         }
 
@@ -7165,3 +8950,110 @@ PVOID SntiAllocatePhysicallyContinguousBuffer(
 
     return pBuffer;
 } /* SntiAllocatePhysicallyContinguousBuffer */
+
+
+/******************************************************************************
+* SntiValidateNacaSetting
+*
+* @brief Ensure the cdb is not specifying NACA
+*
+* @param pDevExt - Pointer to the NVMe Device Extension block.
+* @param pSrb    - Pointer to the SRB
+*
+* @return SNTI_TRANSLATION_STATUS
+*     Indicate the completion status of this function.
+******************************************************************************/
+SNTI_TRANSLATION_STATUS SntiValidateNacaSetting(
+    PNVME_DEVICE_EXTENSION pDevExt,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSTORAGE_REQUEST_BLOCK pSrb
+#else
+    PSCSI_REQUEST_BLOCK pSrb
+#endif
+    )
+{
+
+    UINT8 control = 0;
+    UINT32 offset = 0;
+    SNTI_TRANSLATION_STATUS returnStatus = SNTI_TRANSLATION_SUCCESS;
+
+    switch (GET_OPCODE(pSrb)) {
+    case SCSIOP_READ6:
+    case SCSIOP_WRITE6:
+    case SCSIOP_INQUIRY:
+    case SCSIOP_MODE_SELECT:
+    case SCSIOP_MODE_SENSE:
+    case SCSIOP_REQUEST_SENSE:
+    case SCSIOP_START_STOP_UNIT:
+    case SCSIOP_FORMAT_UNIT:
+    case SCSIOP_TEST_UNIT_READY:
+        offset = CDB_6_CONTROL_OFFSET;
+        break;
+
+    case SCSIOP_READ:
+    case SCSIOP_WRITE:
+    case SCSIOP_LOG_SENSE:
+    case SCSIOP_MODE_SELECT10:
+    case SCSIOP_MODE_SENSE10:
+    case SCSIOP_READ_CAPACITY:
+    case SCSIOP_SYNCHRONIZE_CACHE:
+    case SCSIOP_WRITE_DATA_BUFF:
+    case SCSIOP_PERSISTENT_RESERVE_IN:
+    case SCSIOP_PERSISTENT_RESERVE_OUT:
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    case SCSIOP_UNMAP:
+#endif
+        offset = CDB_10_CONTROL_OFFSET;
+        break;
+
+    case SCSIOP_READ12:
+    case SCSIOP_WRITE12:
+    case SCSIOP_REPORT_LUNS:
+    case SCSIOP_SECURITY_PROTOCOL_IN:
+    case SCSIOP_SECURITY_PROTOCOL_OUT:
+        offset = CDB_12_CONTROL_OFFSET;
+        break;
+
+    case SCSIOP_READ16:
+    case SCSIOP_WRITE16:
+    case SCSIOP_READ_CAPACITY16:
+    case SCSIOP_SYNCHRONIZE_CACHE16:
+        offset = CDB_16_CONTROL_OFFSET;
+        break;
+
+    default:
+        StorPortDebugPrint(ERROR, "SntiValidateNacaSetting: Invalid SCSI Op code: 0x%x\n",
+            GET_OPCODE(pSrb));
+
+        SntiSetScsiSenseData(pSrb,
+            SCSISTAT_CHECK_CONDITION,
+            SCSI_SENSE_ILLEGAL_REQUEST,
+            SCSI_ADSENSE_ILLEGAL_COMMAND,
+            SCSI_ADSENSE_NO_SENSE);
+
+        pSrb->SrbStatus |= SRB_STATUS_INVALID_REQUEST;
+        SET_DATA_LENGTH(pSrb, 0);
+
+        returnStatus = SNTI_UNSUPPORTED_SCSI_REQUEST;
+        return returnStatus;
+    }
+
+    control = GET_U8_FROM_CDB(pSrb, offset);
+    if ((control & CONTROL_BYTE_NACA_MASK) == CONTROL_BYTE_NACA_MASK) {
+        StorPortDebugPrint(ERROR, "SntiValidateNacaSetting: Invalid CDB. Naca is set. OpCode: 0x%x    Control: 0x%x\n",
+            GET_OPCODE(pSrb),
+            control);
+
+        SntiSetScsiSenseData(pSrb,
+            SCSISTAT_CHECK_CONDITION,
+            SCSI_SENSE_ILLEGAL_REQUEST,
+            SCSI_ADSENSE_INVALID_CDB,
+            SCSI_ADSENSE_NO_SENSE);
+
+        pSrb->SrbStatus |= SRB_STATUS_INVALID_REQUEST;
+        returnStatus = SNTI_FAILURE_CHECK_RESPONSE_DATA;
+        SET_DATA_LENGTH(pSrb, 0);
+    }
+
+    return returnStatus;
+}

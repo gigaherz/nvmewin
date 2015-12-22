@@ -68,33 +68,41 @@ typedef struct _extended_inquiry_data
    UCHAR PageCode;
    UCHAR Reserved1;
    UCHAR PageLength;
-   UCHAR ActivateMicrocode               : 2;
-   UCHAR SupportedProtectionType         : 3;
-   UCHAR GuardCheck                      : 1;
+
+   UCHAR ReferenceTagCheck               : 1;
    UCHAR ApplicationTagCheck             : 1;
-   UCHAR ReferenceTagCheck               : 1; 
-   UCHAR Reserved2                       : 2;
-   UCHAR UACSKDataSupported              : 1;
-   UCHAR GroupingFunctionSupported       : 1;
-   UCHAR PrioritySupported               : 1; 
-   UCHAR HeadOfQueueSupported            : 1;
-   UCHAR OrderedSupported                : 1;
+   UCHAR GuardCheck                      : 1;
+   UCHAR SupportedProtectionType         : 3;
+   UCHAR ActivateMicrocode               : 2;
+
+
    UCHAR SimpleSupported                 : 1;
-   UCHAR Reserved3                       : 4;
-   UCHAR WriteUncorrectableSupported     : 1;
-   UCHAR CorrectionDisableSupported      : 1;
-   UCHAR NonVolatileCacheSupported       : 1;
+   UCHAR OrderedSupported                : 1;
+   UCHAR HeadOfQueueSupported            : 1;
+   UCHAR PrioritySupported               : 1;
+   UCHAR GroupingFunctionSupported       : 1;
+   UCHAR UACSKDataSupported              : 1;
+   UCHAR Reserved2                       : 2;
+
    UCHAR VolatileCacheSupported          : 1;
-   UCHAR Reserved4                       : 3;
-   UCHAR ProtectionInfoIntervalSupported : 1; 
-   UCHAR Reserved5                       : 3;
+   UCHAR NonVolatileCacheSupported       : 1;
+   UCHAR CorrectionDisableSupported      : 1;
+   UCHAR WriteUncorrectableSupported     : 1;
+   UCHAR Reserved3                       : 4;
+
    UCHAR LogicalUnitITNexusClear         : 1;
-   UCHAR Reserved6                       : 3;
-   UCHAR ReferralsSupported              : 1;
-   UCHAR Reserved7                       : 3;
+   UCHAR Reserved5                       : 3;
+   UCHAR ProtectionInfoIntervalSupported : 1;
+   UCHAR Reserved4                       : 3;
+
    UCHAR CapabilityBasedCommandSecurity  : 1;
-   UCHAR Reserved8                       : 4;
+   UCHAR Reserved7                       : 3;
+   UCHAR ReferralsSupported              : 1;
+   UCHAR Reserved6                       : 3;
+
    UCHAR MultiITNexusMicrodeDownload     : 4;
+   UCHAR Reserved8                       : 4;
+
    UCHAR Reserved9[54];
 } EXTENDED_INQUIRY_DATA, *PEXTENDED_INQUIRY_DATA;
 
@@ -107,16 +115,20 @@ typedef struct _read_capacity_16_data
 {
     UINT64 LogicalBlockAddress;
     UINT32 BytesPerBlock;
-    UINT8  Reserved1                             : 4;
-    UINT8  ProtectionType                        : 3;
     UINT8  ProtectionEnable                      : 1;
-    UINT8  ProtectionInfoIntervals               : 4;
+    UINT8  ProtectionType                        : 3;
+    UINT8  Reserved1                             : 4;
+
     UINT8  LogicalBlocksPerPhysicalBlockExponent : 4;
-    UINT8  LogicalBlockProvisioningMgmtEnabled   : 1;
-    UINT8  LogicalBlockProvisioningReadZeros     : 1;
+    UINT8  ProtectionInfoIntervals               : 4;
+
     UINT8  LowestAlignedLbaMsb                   : 6;
+    UINT8  LogicalBlockProvisioningReadZeros     : 1;
+    UINT8  LogicalBlockProvisioningMgmtEnabled   : 1;
+
     UINT8  LowestAlignedLbaLsb;
     UINT8  Reserved2[16];
+
 } READ_CAPACITY_16_DATA, *PREAD_CAPACITY_16_DATA;
 
 /*******************************************************************************
@@ -354,6 +366,124 @@ typedef struct _info_exceptions_mode_page
     UINT8 ReportCount[4];
 } INFO_EXCEPTIONS_MODE_PAGE, *PINFO_EXCEPTIONS_MODE_PAGE;
 
+
+#pragma pack(1)
+/*******************************************************************************
+* PERSISTENT RESERVE IN parameter data header
+******************************************************************************/
+typedef struct _persist_res_parm_data_hdr
+{
+    ULONG PRGENERATION;
+    ULONG AddlLength;
+} PERSIST_RES_PARM_DATA_HDR, *PPERSIST_RES_PARM_DATA_HDR;
+#pragma pack()
+
+
+#pragma pack(1)
+/*******************************************************************************
+* PERSISTENT RESERVE IN parameter data for READ RESERVATION
+******************************************************************************/
+typedef struct _persist_res_rd_res_data
+{
+    PERSIST_RES_PARM_DATA_HDR hdr;
+    ULONGLONG ReservationKey;
+    ULONG Obsolete;
+    UCHAR Reserved;
+    UCHAR Type  : 4;
+    UCHAR Scope : 4;
+    USHORT Obsolete2;
+} PERSIST_RES_RD_RES_DATA, *PPERSIST_RES_RD_RES_DATA;
+#pragma pack()
+
+#pragma pack(1)
+/*******************************************************************************
+* PERSISTENT RESERVE IN response data - Persistent Reservation Type Mask
+******************************************************************************/
+typedef struct _persist_res_type_mask
+{
+    UCHAR Reserved1 : 1;
+    UCHAR WR_EX     : 1;
+    UCHAR Reserved2 : 1;
+    UCHAR EX_AC     : 1;
+    UCHAR Reserved3 : 1;
+    UCHAR WR_EX_RO  : 1;
+    UCHAR EX_AC_RO  : 1;
+    UCHAR WR_EX_AR  : 1;
+
+    UCHAR EX_AC_AR  : 1;
+    UCHAR Reserved4 : 7;
+} PERSIST_RES_TYPE_MASK, *PPERSIST_RES_TYPE_MASK;
+#pragma pack()
+
+#pragma pack(1)
+/*******************************************************************************
+* PERSISTENT RESERVE IN response data for REPORT CAPABILITIES
+******************************************************************************/
+typedef struct _persist_res_rep_capabilities
+{
+    USHORT Length;
+    UCHAR PTPL_C    : 1;
+    UCHAR Reserved1 : 1;
+    UCHAR ATP_C     : 1;
+    UCHAR SIP_C     : 1;
+    UCHAR CRH       : 1;
+    UCHAR Reserved2 : 2;
+    UCHAR RLR_C     : 1;
+
+    UCHAR PTPL_A    : 1;
+    UCHAR Reserved3 : 3;
+    UCHAR AllowCmds : 3;
+    UCHAR TMV       : 1;
+    PERSIST_RES_TYPE_MASK PersResTypeMask;
+    USHORT Reserved4;
+} PERSIST_RES_REP_CAPABILIITES, *PPERSIST_RES_REP_CAPABILIITES;
+#pragma pack()
+
+
+#pragma pack(1)
+/*******************************************************************************
+* PERSISTENT RESERVE IN full status descriptor 
+******************************************************************************/
+typedef struct _persist_res_full_status_desc
+{
+    ULONGLONG ReservationKey;
+    ULONG Reserved;
+    UCHAR R_HOLDER  : 1;
+    UCHAR ALL_TG_PT : 1;
+    UCHAR Reserved2 : 6;
+
+    UCHAR Type      : 4;
+    UCHAR Scope     : 4;
+
+    ULONG Reserved3;
+    USHORT RelTgtPortId;
+    ULONG AddlDescLenth;
+    ULONGLONG TransportID;
+} PERSIST_RES_FULL_STATUS_DESC, *PPERSIST_RES_FULL_STATUS_DESC;
+#pragma pack()
+
+#pragma pack(1)
+/*******************************************************************************
+* PERSISTENT RESERVE OUT parm list
+******************************************************************************/
+typedef struct _persist_res_out_parms
+{
+    ULONGLONG ReservationKey;
+    ULONGLONG ServiceActionRKey;
+    ULONG Obsolete1;
+
+    UCHAR APTPL     : 1;
+    UCHAR Reserved1 : 1;
+    UCHAR ALL_TG_PT : 1;
+    UCHAR SPEC_I_PT : 1;
+    UCHAR Reserved2 : 4;
+
+    UCHAR Reserved3;
+    USHORT Obsolete2;
+} PERSIST_RES_OUT_PARMS, *PPERSIST_RES_OUT_PARMS;
+#pragma pack()
+
+
 /*******************************************************************************
  * SNTI_TRANSLATION_STATUS
  *
@@ -411,6 +541,52 @@ typedef struct _snti_response_block
     UINT8 ASCQ;
 } SNTI_RESPONSE_BLOCK, *PSNTI_RESPONSE_BLOCK;
 
+#pragma pack(1)
+/********************************************************************************
+* SNTI_VPD_DESRIPTOR_FLAGS
+********************************************************************************/
+typedef struct _snti_vpd_descriptor_flags {
+    USHORT NaaIeeEui64Des : 1;
+    USHORT NaaIeeV10Des : 1;
+    USHORT T10VidEui64Des : 1;
+    USHORT T10VidNguidDes : 1;
+    USHORT T10VidV10Des : 1;
+    USHORT ScsiEui64Des : 1;
+    USHORT ScsiNguidDes : 1;
+    USHORT ScsiV10Des : 1;
+    USHORT Eui64Des : 1;
+    USHORT Eui64NguidDes : 1;
+    USHORT Reserved : 6;
+} SNTI_VPD_DESCRIPTOR_FLAGS, *PSNTI_VPD_DESCRIPTOR_FLAGS;
+#pragma pack()
+
+#pragma pack(1)
+/********************************************************************************
+* SNTI_NAA_IEEE_REG_DESCRIPTOR
+********************************************************************************/
+typedef struct _snti_naa_ieee_ext_descriptor
+{
+    UCHAR IeeeCompIdMSB : 4;
+    UCHAR Naa : 4;
+    USHORT IeeeCompId;
+    UCHAR VendIdMSB : 4;
+    UCHAR IeeeCompIdLSB : 4;
+    ULONG VendId;
+    UINT64 VenSpecIdExt;
+} SNTI_NAA_IEEE_EXT_DESCRIPTOR, *PSNTI_NAA_IEEE_EXT_DESCRIPTOR;
+#pragma pack()
+
+#pragma pack(1)
+/********************************************************************************
+* SNTI_T10_VID_DESCRIPTOR
+********************************************************************************/
+typedef struct _snti_t10_vid_descriptor
+{
+    UCHAR VendorId[8];
+    UCHAR VendorSpecific[1];
+} SNTI_T10_VID_DESCRIPTOR, *PSNTI_T10_VID_DESCRIPTOR;
+#pragma pack()
+
 
 /***  Public Interfaces  ***/
 
@@ -452,10 +628,11 @@ VOID SntiTranslateSupportedVpdPages(
 
 VOID SntiTranslateUnitSerialPage(
 #if (NTDDI_VERSION > NTDDI_WIN7)
-    PSTORAGE_REQUEST_BLOCK pSrb
+    PSTORAGE_REQUEST_BLOCK pSrb,
 #else
-    PSCSI_REQUEST_BLOCK pSrb
+    PSCSI_REQUEST_BLOCK pSrb,
 #endif
+    PNVME_LUN_EXTENSION pLunExt
 );
 
 VOID SntiTranslateDeviceIdentificationPage(
@@ -465,6 +642,51 @@ VOID SntiTranslateDeviceIdentificationPage(
     PSCSI_REQUEST_BLOCK pSrb
 #endif
 );
+
+BOOLEAN SntiBuildIeeeRegExtDesc(
+    PSNTI_VPD_DESCRIPTOR_FLAGS pDescFlags,
+    UINT16 *pCurrentLength,
+    UINT16 srbBufLength,
+    PUINT8 *ppNext,
+    PNVME_LUN_EXTENSION pLunExt,
+    PNVME_DEVICE_EXTENSION pDevExt
+   );
+
+BOOLEAN SntiBuildT10VidBasedDesc(
+    PSNTI_VPD_DESCRIPTOR_FLAGS pDescFlags,
+    UINT16 *pCurrentLength,
+    UINT16 srbBufLength,
+    PUINT8 *ppNext,
+    PNVME_LUN_EXTENSION pLunExt,
+    PNVME_DEVICE_EXTENSION pDevExt
+    );
+
+BOOLEAN SntiBuildScsiNameStringDesc(
+    PSNTI_VPD_DESCRIPTOR_FLAGS pDescFlags,
+    UINT16 *pCurrentLength,
+    UINT16 srbBufLength,
+    PUINT8 *ppNext,
+    PNVME_LUN_EXTENSION pLunExt,
+    PNVME_DEVICE_EXTENSION pDevExt
+    );
+
+VOID SntiBuildEui64BasedDesc(
+    PSNTI_VPD_DESCRIPTOR_FLAGS pDescFlags,
+    UINT16 *pCurrentLength,
+    UINT16 srbBufLength,
+    PUINT8 *ppNext,
+    PNVME_LUN_EXTENSION pLunExt,
+    PNVME_DEVICE_EXTENSION pDevExt
+    );
+
+USHORT SntiConvertULLongToA(
+    PUCHAR pDest,
+    ULONGLONG data,
+    ULONG size,
+    BOOLEAN underscore,
+    BOOLEAN termPeriod
+    );
+
 
 SNTI_TRANSLATION_STATUS SntiTranslateExtendedInquiryDataPage(
 #if (NTDDI_VERSION > NTDDI_WIN7)
@@ -534,7 +756,6 @@ SNTI_TRANSLATION_STATUS SntiTranslateReadCapacity16(
     PUCHAR pResponseBuffer,
     PNVME_LUN_EXTENSION pLunExtension
 );
-
 SNTI_TRANSLATION_STATUS SntiTranslateWrite(
 #if (NTDDI_VERSION > NTDDI_WIN7)
     PSTORAGE_REQUEST_BLOCK pSrb
@@ -606,6 +827,25 @@ SNTI_TRANSLATION_STATUS SntiTranslateSecurityProtocol(
     PSCSI_REQUEST_BLOCK pSrb
 #endif
 );
+
+SNTI_TRANSLATION_STATUS SntiTranslatePersistentReserveIn(
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSTORAGE_REQUEST_BLOCK pSrb
+#else
+    PSCSI_REQUEST_BLOCK pSrb
+#endif
+);
+
+
+SNTI_TRANSLATION_STATUS SntiTranslatePersistentReserveOut(
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSTORAGE_REQUEST_BLOCK pSrb
+#else
+    PSCSI_REQUEST_BLOCK pSrb
+#endif
+);
+
+
 
 SNTI_TRANSLATION_STATUS SntiTranslateStartStopUnit(
 #if (NTDDI_VERSION > NTDDI_WIN7)
@@ -906,6 +1146,36 @@ SNTI_TRANSLATION_STATUS SntiTranslateLogSenseResponse(
     PNVMe_COMPLETION_QUEUE_ENTRY pCQEntry
 );
 
+SNTI_TRANSLATION_STATUS SntiTranslatePersReserveInResponse(
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSTORAGE_REQUEST_BLOCK pSrb
+#else
+    PSCSI_REQUEST_BLOCK pSrb
+#endif
+    );
+
+SNTI_TRANSLATION_STATUS SntiTranslatePersReserveOutResponseOut(
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSTORAGE_REQUEST_BLOCK pSrb
+#else
+    PSCSI_REQUEST_BLOCK pSrb
+#endif
+    );
+
+SNTI_TRANSLATION_STATUS SntiBuildPersReserveRegisterCmd(
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSTORAGE_REQUEST_BLOCK pSrb,
+#else
+    PSCSI_REQUEST_BLOCK pSrb,
+#endif
+    PNVME_SRB_EXTENSION pSrbExt,
+    PNVME_LUN_EXTENSION pLunExt,
+    PNVME_DEVICE_EXTENSION pDevExt,
+    UCHAR serviceAction,
+    PPERSIST_RES_OUT_PARMS pScsiResOutParms
+);
+
+
 SNTI_TRANSLATION_STATUS SntiTranslateInformationalExceptionsResponse(
 #if (NTDDI_VERSION > NTDDI_WIN7)
     PSTORAGE_REQUEST_BLOCK pSrb,
@@ -977,5 +1247,14 @@ PVOID SntiAllocatePhysicallyContinguousBuffer(
     PNVME_SRB_EXTENSION pSrbExt,
     UINT32 bufferSize
 );
+
+SNTI_TRANSLATION_STATUS SntiValidateNacaSetting(
+    PNVME_DEVICE_EXTENSION pDevExt,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    PSTORAGE_REQUEST_BLOCK pSrb
+#else
+    PSCSI_REQUEST_BLOCK pSrb
+#endif
+    );
 
 #endif /* __NVME_SNTI_H__ */

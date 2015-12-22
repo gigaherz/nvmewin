@@ -64,6 +64,8 @@ HW_PASSIVE_INITIALIZE_ROUTINE NVMePassiveInitialize;
 
 #define STOR_ALL_REQUESTS (0xFFFFFFFF)
 
+
+#define MAX_REGISTERED_CONTROLLERS 128
 #define MAX_PCI_BAR                 8
 #define NUM_ENTRY_FOR_PAGE_ALIGN    64
 #define MAX_NUM_PHYSICAL_BREAKS     32
@@ -1012,19 +1014,33 @@ typedef struct _nvme_device_extension
     BOOLEAN                     MultipleCoresToSingleQueueFlag;
 
     /* Flag to indicate hardReset is in progress in polled mode */
-	BOOLEAN                     polledResetInProg;
+    BOOLEAN                     polledResetInProg;
 
 #if DBG
     /* part of debug code to sanity check learning */
     BOOLEAN                     LearningComplete;
 #endif
 
-
-    ULONG						originalVersion;
-	BOOLEAN						DeviceRemovedDuringIO;
+    union 
+    {
+        struct {
+            UCHAR  Reserved;
+            UCHAR  MNR;
+            USHORT MJR;
+        };
+        ULONG                       value;
+    } originalVersion;
+    BOOLEAN                         DeviceRemovedDuringIO;
 
 } NVME_DEVICE_EXTENSION, *PNVME_DEVICE_EXTENSION;
 
+#pragma pack(1)
+typedef struct _nvme_res_report_struct {
+    NVM_RES_REPORT_HDR reservationRepData;
+    // Add an extra element to allow for alignment
+    NVM_REGISTERED_CTRL_DATASTRUCT reservationRegCtlData[MAX_REGISTERED_CONTROLLERS];
+} NVME_RES_REPORT_STRUCT, *PNVME_RES_REPORT_STRUCT;
+#pragma pack()
 /* SRB Extension */
 typedef struct _nvme_srb_extension
 {
@@ -1072,9 +1088,26 @@ typedef struct _nvme_srb_extension
 
 #define PRP_LIST_SIZE            sizeof(UINT64) * (MAX_TX_SIZE / PAGE_SIZE)
 
-    // To allow for alignment of dsmBuffer on 16-byte boundary, add 1 extra element
-    UINT32                       dsmBuffer[(PAGE_SIZE_IN_DWORDS + 4) -
-                                         PRP_LIST_SIZE /sizeof(UINT32)];
+    union {
+        // To allow for alignment of dsmBuffer on 16-byte boundary, add 1 extra element
+        UINT32                       dsmBuffer[(PAGE_SIZE_IN_DWORDS + 4) -
+            PRP_LIST_SIZE / sizeof(UINT32)];
+
+        // Buffer may also be used for reservation commands. 
+        // Allocate an extra 4 bytes for buffer alignment
+
+        /* Reservation Report data */
+        UCHAR resReportStruct[sizeof(NVME_RES_REPORT_STRUCT) + sizeof(ULONG)];
+
+        /* Reservation Register data */
+        UCHAR resRegisterData[sizeof(NVM_RES_REGISTER_DATASTRUCT) + sizeof(ULONG)];
+
+        /* Reservation Acquire data */
+        UCHAR resAcquireData[sizeof(NVM_RES_ACQUIRE_DATASTRUCT) + sizeof(ULONG)];
+
+        /* Reservation Release data */
+        UCHAR resReleaseData[sizeof(NVM_RES_RELEASE_DATASTRUCT) + sizeof(ULONG)];
+    };
 
     /* Temp PRP List */
     UINT64                       prpList[MAX_TX_SIZE / PAGE_SIZE];
@@ -1087,12 +1120,12 @@ typedef struct _nvme_srb_extension
     /* Child/Parent pointers for child I/O's needed when holes in SGL's */
     PVOID                        pChildIo;
     PVOID                        pParentIo;
-
-    /* 
-	 * Temporary buffer to prepare the modesense data before copying into 
-	 * pSrb->DataBuffer
-	 */
-	UCHAR                        modeSenseBuf[MODE_SNS_MAX_BUF_SIZE];
+    
+   /*
+    * Temporary buffer to prepare the modesense data before copying into 
+    * pSrb->DataBuffer
+    */
+    UCHAR                        modeSenseBuf[MODE_SNS_MAX_BUF_SIZE];
     ULONG                        abortedCmdCount;
     ULONG                        issuedAbortCmdCnt;
     ULONG                        failedAbortCmdCnt;
@@ -1157,8 +1190,8 @@ BOOLEAN NVMeStrCompare(
 );
 
 BOOLEAN NVMeReInitializeController(
-	__in PNVME_DEVICE_EXTENSION pAE
-	);
+    __in PNVME_DEVICE_EXTENSION pAE
+    );
 
 BOOLEAN NVMeResetController(
     __in PNVME_DEVICE_EXTENSION pAdapterExtension,
@@ -1437,7 +1470,7 @@ BOOLEAN NVMeInitialize(
 );
 
 VOID IsDeviceRemoved(
-	__in PNVME_DEVICE_EXTENSION pAE
+    __in PNVME_DEVICE_EXTENSION pAE
 );
 
 BOOLEAN NVMeStartIo(

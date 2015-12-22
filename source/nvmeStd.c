@@ -276,7 +276,7 @@ NVMeFindAdapter(
             pAE->pCtrlRegister);
     }
 
-    pAE->originalVersion = StorPortReadRegisterUlong(pAE, (PULONG)(&pAE->pCtrlRegister->VS));
+    pAE->originalVersion.value = StorPortReadRegisterUlong(pAE, (PULONG)(&pAE->pCtrlRegister->VS));
 
     /*
      * Parse the ArgumentString to find out if it's a normal driver loading
@@ -617,7 +617,7 @@ BOOLEAN NVMePassiveInitialize(
         newVersion = StorPortReadRegisterUlong(pAE, (PULONG)(&pAE->pCtrlRegister->VS));
         /* increment 5000us (timer callback val */
         pAE->DriverState.TimeoutCounter += pAE->DriverState.CheckbackInterval;
-        if ((pAE->DriverState.TimeoutCounter > passiveTimeout) || (pAE->originalVersion != newVersion)) {
+        if ((pAE->DriverState.TimeoutCounter > passiveTimeout) || (pAE->originalVersion.value != newVersion)) {
             pAE->DriverState.NextDriverState = NVMeStartComplete;
             pAE->DeviceRemovedDuringIO = TRUE;
             StorPortDebugPrint(ERROR, "NVMePassiveInitialize: <Error> State machine timeout or device removed during \
@@ -2449,7 +2449,7 @@ VOID RecoveryDpcRoutine(
         /* Prepare for new commands */
         if (NVMeInitAdminQueues(pAE) == STOR_STATUS_SUCCESS) {
             /*
-             * Start the state mahcine, if all goes well we'll complete the
+             * Start the state machine, if all goes well we'll complete the
              * reset Srb when the machine is done.
              */
             NVMeRunningStartAttempt(pAE, TRUE, pSrb);
@@ -2497,7 +2497,7 @@ BOOLEAN NVMeResetController(
      * completion threads are in progress during reset
      */
     if (pAdapterExtension->RecoveryAttemptPossible == TRUE) {
-        /* We don't want any new stoport reqeusts during reset */
+        /* We don't want any new stoport requests during reset */
         StorPortPause(pAdapterExtension, STOR_ALL_REQUESTS);
         StorPortDebugPrint(INFO,
                        "NVMeResetController: Issue DPC.\n");
@@ -3041,8 +3041,11 @@ BOOLEAN NVMeIoctlIdentify(
 
     if (pIdentifyDW10->CNS == 0)
         DataBufferSize = sizeof(ADMIN_IDENTIFY_NAMESPACE);
-    else
+    else if (pIdentifyDW10->CNS == 1)
         DataBufferSize = sizeof(ADMIN_IDENTIFY_CONTROLLER);
+    else if (pIdentifyDW10->CNS == 2)
+        DataBufferSize = pNvmePtIoctl->ReturnBufferLen - IoctlHdrSize;
+
 
     /*
      * Ensure the size of return buffer is big enough to accommodate the header
@@ -3381,8 +3384,8 @@ BOOLEAN NVMeIoctlCompare(
  * @param pNvmePtIoctl - Pointer to pass through IOCTL
  *
  * @return BOOLEAN
- *     TRUE - If all resources are allocated and initialized properly
- *     FALSE - If anything goes wrong
+ *     TRUE (IOCTL_COMPLETED) - If anything goes wrong
+ *     FALSE (IOCTL_PENDING) -  If all resources are allocated and initialized properly
  ******************************************************************************/
 BOOLEAN NVMeIoctlDataSetManagement(
     PNVME_DEVICE_EXTENSION pDevExt,
