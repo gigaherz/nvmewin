@@ -80,10 +80,20 @@ HW_PASSIVE_INITIALIZE_ROUTINE NVMePassiveInitialize;
 #define RESOURCE_SHARED             0xFFFF
 #define DFT_ASYNC_EVENT_REQ_NUMBER  4
 #define NVME_ADMIN_MSG_ID           0
+#define IDENTIFY_LIST_SIZE          4096
 
 #define IDEN_CONTROLLER             0
 #define IDEN_NAMESPACE              1
 
+/* CNS defines for NVMe 1.0 and 1.2 */
+#define IDENTIFY_NAMESPACE			0x00
+#define IDENTIFY_CNTLR				0x01
+/* CNS defines for NVMe 1.2 */
+#define LIST_ATTACHED_NAMESPACES	0x02
+#define LIST_EXISTING_NAMESPACES	0x10
+#define IDEN_NS_FAIL_IF_INVALID		0x11
+#define LIST_CNTLRS_ATTACHED_TO_NS	0x12
+#define LIST_ALL_CNTLRS				0x13
 #define DUMP_POLL_CALLS             3
 #define STORPORT_TIMER_CB_us        5000 /* .005 seconds */
 #define MAX_STATE_STALL_us          STORPORT_TIMER_CB_us
@@ -312,6 +322,18 @@ typedef enum _NS_VISBILITY
     IGNORED
 } NS_VISBILITY;
 
+/* Status of namespace.
+ * invalid namespace = free LUN
+ * inactive namespace = free LUN
+ * Attached namespace = online LUN
+ */
+typedef enum _NS_STATUS
+{
+    INVALID = 0,    //Namespace ID does not exist (not known to controller).
+    INACTIVE,       //Namespace is created, but not attached to controller.
+    ATTACHED        //Namespace is created and attached to controller.
+} NS_STATUS;
+
 /*
  * Adapter Error Status; can occur during init state machine
  * or otherwise as the init state machine mechanism is used
@@ -333,6 +355,8 @@ enum
     START_STATE_SET_FEATURE_FAILURE,
     START_STATE_LBA_RANGE_CHK_FAILURE,
     START_STATE_IDENTIFY_CTRL_FAILURE,
+    START_STATE_LIST_ATTACHED_NS_FAILURE,
+    START_STATE_LIST_EXISTING_NS_FAILURE,
     START_STATE_IDENTIFY_NS_FAILURE,
     START_STATE_SUBQ_CREATE_FAILURE,
     START_STATE_CPLQ_CREATE_FAILURE,
@@ -351,6 +375,8 @@ enum
 {
     NVMeWaitOnRDY = 0x20,
     NVMeWaitOnIdentifyCtrl,
+    NVMeWaitOnListAttachedNs,
+    NVMeWaitOnListExistingNs,
     NVMeWaitOnIdentifyNS,
     NVMeWaitOnSetFeatures,
     NVMeWaitOnSetupQueues,
@@ -482,6 +508,8 @@ typedef struct _START_STATE
     /* The NSID of the current device for the init state */
     ULONG CurrentNsid;
 
+    /* Number of namespaces known to driver */
+    ULONG NumKnownNamespaces;
 } START_STATE, *PSTART_STATE;
 
 /*******************************************************************************
@@ -877,7 +905,9 @@ typedef enum _LUN_SLOT_STATUS
 typedef enum _LUN_OFFLINE_REASON
 {
     NOT_OFFLINE,
-    FORMAT_IN_PROGRESS
+    FORMAT_IN_PROGRESS,
+    DETACH_IN_PROGRESS,
+    DELETE_IN_PROGRESS
     // Add more as needed
 } LUN_OFFLINE_REASON;
 
@@ -885,6 +915,7 @@ typedef struct _nvme_lun_extension
 {
     ADMIN_IDENTIFY_NAMESPACE     identifyData;
     UINT32                       namespaceId;
+    NS_STATUS                    nsStatus;
     BOOLEAN                      ReadOnly;
     LUN_SLOT_STATUS              slotStatus;
     LUN_OFFLINE_REASON           offlineReason;
@@ -1014,7 +1045,7 @@ typedef struct _nvme_device_extension
     BOOLEAN                     MultipleCoresToSingleQueueFlag;
 
     /* Flag to indicate hardReset is in progress in polled mode */
-    BOOLEAN                     polledResetInProg;
+	BOOLEAN                     polledResetInProg;
 
 #if DBG
     /* part of debug code to sanity check learning */
@@ -1120,12 +1151,12 @@ typedef struct _nvme_srb_extension
     /* Child/Parent pointers for child I/O's needed when holes in SGL's */
     PVOID                        pChildIo;
     PVOID                        pParentIo;
-    
-   /*
-    * Temporary buffer to prepare the modesense data before copying into 
-    * pSrb->DataBuffer
-    */
-    UCHAR                        modeSenseBuf[MODE_SNS_MAX_BUF_SIZE];
+
+    /* 
+	 * Temporary buffer to prepare the modesense data before copying into 
+	 * pSrb->DataBuffer
+	 */
+	UCHAR                        modeSenseBuf[MODE_SNS_MAX_BUF_SIZE];
     ULONG                        abortedCmdCount;
     ULONG                        issuedAbortCmdCnt;
     ULONG                        failedAbortCmdCnt;
@@ -1190,8 +1221,8 @@ BOOLEAN NVMeStrCompare(
 );
 
 BOOLEAN NVMeReInitializeController(
-    __in PNVME_DEVICE_EXTENSION pAE
-    );
+	__in PNVME_DEVICE_EXTENSION pAE
+	);
 
 BOOLEAN NVMeResetController(
     __in PNVME_DEVICE_EXTENSION pAdapterExtension,
@@ -1287,8 +1318,10 @@ BOOLEAN NVMeAccessLbaRangeEntry(
 );
 
 BOOLEAN NVMeGetIdentifyStructures(
-    __in PNVME_DEVICE_EXTENSION pAE,
-    __in ULONG NamespaceID
+    PNVME_DEVICE_EXTENSION pAE,
+    ULONG NamespaceID,
+    USHORT CNS,
+    USHORT CNTID
 );
 
 BOOLEAN NVMeCreateCplQueue(
@@ -1405,6 +1438,14 @@ VOID NVMeRunningWaitOnIdentifyCtrl(
     PNVME_DEVICE_EXTENSION pAE
 );
 
+VOID NVMeRunningWaitOnListAttachedNs(
+    PNVME_DEVICE_EXTENSION pAE
+);
+
+VOID NVMeRunningWaitOnListExistingNs(
+    PNVME_DEVICE_EXTENSION pAE
+);
+
 VOID NVMeRunningWaitOnIdentifyNS(
     PNVME_DEVICE_EXTENSION pAE
 );
@@ -1470,7 +1511,7 @@ BOOLEAN NVMeInitialize(
 );
 
 VOID IsDeviceRemoved(
-    __in PNVME_DEVICE_EXTENSION pAE
+	__in PNVME_DEVICE_EXTENSION pAE
 );
 
 BOOLEAN NVMeStartIo(
@@ -1565,6 +1606,27 @@ BOOLEAN NVMeIoctlFormatNVM(
     PNVME_PASS_THROUGH_IOCTL pNvmePtIoctl
 );
 
+
+BOOLEAN NVMeIoctlNamespaceMgmt(
+    PNVME_DEVICE_EXTENSION pDevExt,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+	PSTORAGE_REQUEST_BLOCK pSrb,
+#else
+	PSCSI_REQUEST_BLOCK pSrb,
+#endif
+    PNVME_PASS_THROUGH_IOCTL pNvmePtIoctl
+);
+
+BOOLEAN NVMeIoctlNamespaceAttachment(
+    PNVME_DEVICE_EXTENSION pDevExt,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+	PSTORAGE_REQUEST_BLOCK pSrb,
+#else
+	PSCSI_REQUEST_BLOCK pSrb,
+#endif
+    PNVME_PASS_THROUGH_IOCTL pNvmePtIoctl
+);
+
 BOOLEAN NVMeProcessIoctl(
     PNVME_DEVICE_EXTENSION pDevExt,
 #if (NTDDI_VERSION > NTDDI_WIN7)
@@ -1612,6 +1674,16 @@ BOOLEAN NVMeHandleSmartThresholds(
     PNVME_SRB_EXTENSION pSrbExtension
 );
 
+BOOLEAN NVMeCompletionNsAttachment(
+    PVOID pNVMeDevExt,
+    PNVME_SRB_EXTENSION pSrbExt
+);
+ 
+BOOLEAN NVMeCompletionNsMgmt(
+    PVOID pNVMeDevExt,
+    PNVME_SRB_EXTENSION pSrbExt
+);
+
 VOID NVMeBuildIdentify(
     PSENDCMDOUTPARAMS pCmdOutParameters,
     PNVME_DEVICE_EXTENSION pSrbExt
@@ -1625,6 +1697,16 @@ BOOLEAN NVMeIsNamespaceVisible(
     __in PNVME_SRB_EXTENSION pSrbExt,
     __in ULONG targetNSID,
     __out PULONG pLunId
+);
+
+NS_STATUS NVMeGetNamespaceStatusAndSlot(
+    __in PNVME_DEVICE_EXTENSION pDevExt,
+    __in ULONG targetNSID,
+    __out PULONG pTableIndex
+);
+
+ULONG NVMeGetFreeLunSlot(
+    __in PNVME_DEVICE_EXTENSION pDevExt
 );
 
 VOID NVMeLogError(

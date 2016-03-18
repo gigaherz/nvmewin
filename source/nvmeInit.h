@@ -201,8 +201,10 @@ BOOLEAN NVMeEnableAdapter(
 
 BOOLEAN NVMeGetIdentifyStructures(
     PNVME_DEVICE_EXTENSION pAE,
-    ULONG InfoType
-);
+    ULONG NamespaceID,
+    USHORT CNS,
+    USHORT CNTID
+)
 
 BOOLEAN NVMeAllocQueueFromAdapter(
     PNVME_DEVICE_EXTENSION pAE

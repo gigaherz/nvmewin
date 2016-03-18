@@ -164,15 +164,15 @@ typedef union _NVMe_CONTROLLER_CAPABILITIES
 /* Table 3.1.2 */
 typedef union _NVMe_VERSION
 {
-    struct
-    {
-        /* [Minor Version Number] Indicates the minor version is “0”. */
-        USHORT MNR;
+	struct
+	{
+		/* [Minor Version Number] Indicates the minor version is “0”. */
+		USHORT MNR;
 
-        /* [Major Version Number] Indicates the major version is “1”. */
-        USHORT MJR;
-    };
-    ULONG AsUlong;
+		/* [Major Version Number] Indicates the major version is “1”. */
+		USHORT MJR;
+	};
+	ULONG AsUlong;
 } NVMe_VERSION, *PNVMe_VERSION;
 
 /* Table 3.1.5 */

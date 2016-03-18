@@ -2726,6 +2726,7 @@ BOOLEAN NVMeHandleNVMePassthrough(
 #else
     PSCSI_REQUEST_BLOCK pSrb = pSrbExtension->pSrb;
 #endif
+    PNVMe_COMMAND_DWORD_0 pNvmeCmdDW0 = NULL;
     
     PNVME_PASS_THROUGH_IOCTL pNvmePtIoctl = (PNVME_PASS_THROUGH_IOCTL)GET_DATA_BUFFER(pSrb);
 
@@ -2740,6 +2741,18 @@ BOOLEAN NVMeHandleNVMePassthrough(
     StorPortCopyMemory((PVOID)pNvmePtIoctl->CplEntry,
                         (PVOID)pSrbExtension->pCplEntry,
                        sizeof(NVMe_COMPLETION_QUEUE_ENTRY));
+    pNvmeCmdDW0 = (PNVMe_COMMAND_DWORD_0)&pNvmePtIoctl->NVMeCmd[0];
+
+    switch (pNvmeCmdDW0->OPC) {
+    case ADMIN_NAMESPACE_MANAGEMENT:
+        return NVMeCompletionNsMgmt(pNVMeDevExt, pSrbExtension);
+    break;
+    case ADMIN_NAMESPACE_ATTACHMENT:
+        return NVMeCompletionNsAttachment(pNVMeDevExt, pSrbExtension);
+    break;
+    default:
+    break;
+    } /* state switch */
 
     /*
      * Mark down the ReturnCode in SRB_IO_CONTROL as NVME_IOCTL_SUCCESS
@@ -3039,12 +3052,12 @@ BOOLEAN NVMeIoctlIdentify(
 
     pIdentifyDW10 = (PADMIN_IDENTIFY_COMMAND_DW10)&pNvmePtIoctl->NVMeCmd[10];
 
-    if (pIdentifyDW10->CNS == 0)
+    if (pIdentifyDW10->CNS == 0 || pIdentifyDW10->CNS == 0x11)
         DataBufferSize = sizeof(ADMIN_IDENTIFY_NAMESPACE);
     else if (pIdentifyDW10->CNS == 1)
         DataBufferSize = sizeof(ADMIN_IDENTIFY_CONTROLLER);
-    else if (pIdentifyDW10->CNS == 2)
-        DataBufferSize = pNvmePtIoctl->ReturnBufferLen - IoctlHdrSize;
+    else
+        DataBufferSize = IDENTIFY_LIST_SIZE;
 
 
     /*
@@ -3384,8 +3397,8 @@ BOOLEAN NVMeIoctlCompare(
  * @param pNvmePtIoctl - Pointer to pass through IOCTL
  *
  * @return BOOLEAN
- *     TRUE (IOCTL_COMPLETED) - If anything goes wrong
- *     FALSE (IOCTL_PENDING) -  If all resources are allocated and initialized properly
+ *     TRUE - If all resources are allocated and initialized properly
+ *     FALSE - If anything goes wrong
  ******************************************************************************/
 BOOLEAN NVMeIoctlDataSetManagement(
     PNVME_DEVICE_EXTENSION pDevExt,
@@ -3786,6 +3799,449 @@ VOID NVMeFormatNVMHotAddNamespace(
     StorPortNotification(BusChangeDetected, pDevExt);
 } /* NVMeFormatNVMHotAddNamespace */
 
+/******************************************************************************
+ * NVMeIoctlNamespaceAttachment
+ *
+ * @brief NVMeIoctlNamespaceAttachment handles the NAMESPACE ATTACHMENT Command
+ *
+ * @param pDevExt - Pointer to hardware device extension.
+ * @param pSrb - Pointer to SRB
+ * @param pNvmePtIoctl - Pointer to pass through IOCTL
+ *
+ * @return BOOLEAN
+ *     TRUE - If all resources are allocated and initialized properly
+ *     FALSE - If anything goes wrong
+ *****************************************************************************/
+BOOLEAN NVMeIoctlNamespaceAttachment(
+    PNVME_DEVICE_EXTENSION pDevExt,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+	PSTORAGE_REQUEST_BLOCK pSrb,
+#else
+	PSCSI_REQUEST_BLOCK pSrb,
+#endif
+    PNVME_PASS_THROUGH_IOCTL pNvmePtIoctl
+)
+{
+    PSRB_IO_CONTROL pSrbIoCtrl = (PSRB_IO_CONTROL)pNvmePtIoctl;
+    PNVME_SRB_EXTENSION pSrbExt = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb);
+    PNVMe_COMMAND pNvmeCmd = NULL;
+    PADMIN_NAMESPACE_ATTACHMENT_DW10 pNsAttachDW10 = NULL;
+    PNVMe_CONTROLLER_LIST pNsCtrlsList = NULL;
+    ULONG lunId = INVALID_LUN_EXTN;
+    PNVME_LUN_EXTENSION pLunExt = NULL;
+    ULONG currentNSID = 0;
+
+
+    pNsAttachDW10 =
+        (PADMIN_NAMESPACE_ATTACHMENT_DW10)&pNvmePtIoctl->NVMeCmd[10];
+    pNsCtrlsList = (PNVMe_CONTROLLER_LIST)&pNvmePtIoctl->DataBuffer;
+
+    pNvmeCmd = (PNVMe_COMMAND)pNvmePtIoctl->NVMeCmd; 
+    currentNSID = pNvmeCmd->NSID;
+    if (INVALID != NVMeGetNamespaceStatusAndSlot(pDevExt, currentNSID, &lunId)) {
+        StorPortDebugPrint(INFO, 
+            "NVMeIoctlNamespaceAttachment: Target lunID=%d.\n", lunId);
+    
+        /*
+         * Notify visbile LUN change when attach/detach 
+         * controller list having current controller
+         */ 
+        if(pNsCtrlsList->Identifers[0] == 
+            pDevExt->controllerIdentifyData.CNTLID) {
+            pLunExt = pDevExt->pLunExtensionTable[lunId];
+            if (pNsAttachDW10->SEL == NAMESPACE_DETACH) {
+                if (FREE != pLunExt->slotStatus) {
+                    if (ONLINE == pLunExt->slotStatus) {
+                        pLunExt->slotStatus = OFFLINE;
+                        pLunExt->offlineReason = DETACH_IN_PROGRESS;
+                    } else if (pLunExt->offlineReason == DETACH_IN_PROGRESS) {
+                        /* Wait for pending detach/attach to complete */
+                        pSrb->SrbStatus = SRB_STATUS_SUCCESS;
+                        pNvmePtIoctl->SrbIoCtrl.ReturnCode =
+                            NVME_IOCTL_ATTACH_NAMESPACE_FAILED;
+                        return IOCTL_COMPLETED;
+                    }
+
+                    /*
+                     * Notify Storport the device is busy and stop sending 
+                     * more requests down.
+                     */
+                    if (StorPortDeviceBusy(pDevExt,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+						SrbGetPathId((void*) pSrb),
+						SrbGetTargetId((void*) pSrb),
+						(UCHAR)lunId,
+#else
+						pSrb->PathId,
+						pSrb->TargetId,
+						(UCHAR)lunId,
+#endif
+					    ALL_NAMESPACES_APPLIED) != TRUE) {
+                        pSrb->SrbStatus = SRB_STATUS_SUCCESS;
+                        pNvmePtIoctl->SrbIoCtrl.ReturnCode =
+                            NVME_IOCTL_ATTACH_NAMESPACE_FAILED;
+                        return IOCTL_COMPLETED;
+                    }
+
+                    /*
+                     * Force bus re-enumeration,
+                     * then, Windows won't see the target namespace(s)
+                     */
+                    StorPortNotification(BusChangeDetected, pDevExt);
+                }
+            }
+        }
+    } else {
+        pSrbIoCtrl->ReturnCode = NVME_IOCTL_ATTACH_NAMESPACE_FAILED;
+        return IOCTL_COMPLETED;
+
+    }
+
+    /* Prepare the PRP entries for the transfer for create command */
+    if (NVMePreparePRPs(pDevExt,
+                        pSrbExt,
+                        pNvmePtIoctl->DataBuffer,
+                        pNvmePtIoctl->DataBufferLen) == FALSE) {
+        pSrbIoCtrl->ReturnCode = NVME_IOCTL_PRP_TRANSLATION_ERROR;
+        return IOCTL_COMPLETED;
+    }
+    
+    pSrbIoCtrl->ReturnCode = NVME_IOCTL_SUCCESS;
+
+    return IOCTL_PENDING;
+} /* NVMeIoctlNamespaceAttachment */
+
+/*******************************************************************************
+ * NVMeIoctlNamespaceMgmt
+ *
+ * @brief NVMeIoctlNamespaceMgmt handles the NAMESPACE MANAGEMENT Command
+ *
+ * @param pDevExt - Pointer to hardware device extension.
+ * @param pSrb - Pointer to SRB
+ * @param pNvmePtIoctl - Pointer to pass through IOCTL
+ *
+ * @return BOOLEAN
+ *     TRUE - If all resources are allocated and initialized properly
+ *     FALSE - If anything goes wrong
+ ******************************************************************************/
+BOOLEAN NVMeIoctlNamespaceMgmt(
+    PNVME_DEVICE_EXTENSION pDevExt,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+	PSTORAGE_REQUEST_BLOCK pSrb,
+#else
+	PSCSI_REQUEST_BLOCK pSrb,
+#endif
+    PNVME_PASS_THROUGH_IOCTL pNvmePtIoctl
+)
+{
+    PNVME_SRB_EXTENSION pSrbExt = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb);
+    PSRB_IO_CONTROL pSrbIoCtrl = (PSRB_IO_CONTROL)pNvmePtIoctl;
+    PADMIN_NAMESPACE_MANAGEMENT_DW10 pNsMgmtDW10 = NULL;
+    PADMIN_NAMESPACE_ATTACHMENT_DW10 pNsAttachDW10 = NULL;
+    ULONG lunId = INVALID_LUN_EXTN;
+    NS_STATUS nsStatus = INVALID;
+    PNVMe_COMMAND pNvmeCmd = NULL;
+    PNVME_LUN_EXTENSION pLunExt = NULL;
+    ULONG currentNSID = 0;
+    PNVMe_CONTROLLER_LIST pNsCtrlsList = NULL;
+
+
+    pNsMgmtDW10 =
+        (PADMIN_NAMESPACE_MANAGEMENT_DW10)&pNvmePtIoctl->NVMeCmd[10];
+    
+    if (pNsMgmtDW10->SEL == NAMESPACE_MANAGEMENT_CREATE && 
+        pNvmePtIoctl->DataBufferLen < sizeof(ADMIN_IDENTIFY_NAMESPACE)) {
+        pSrbIoCtrl->ReturnCode = NVME_IOCTL_INSUFFICIENT_IN_BUFFER;
+        return IOCTL_COMPLETED;
+    }
+    
+    pNvmeCmd = (PNVMe_COMMAND)pNvmePtIoctl->NVMeCmd; 
+
+    if (pNsMgmtDW10->SEL == NAMESPACE_MANAGEMENT_DELETE) {
+		currentNSID = pNvmeCmd->NSID;
+		nsStatus = NVMeGetNamespaceStatusAndSlot(pDevExt, currentNSID, &lunId);
+		StorPortDebugPrint(INFO,
+			"NVMeIoctlNamespaceMgmt: Target lunID=%d.\n", lunId);
+
+		/* If namespace is attached, detach before deleting */
+        if (ATTACHED == nsStatus) {
+            pLunExt = pDevExt->pLunExtensionTable[lunId];
+            if (ONLINE == pLunExt->slotStatus) {
+                pLunExt->slotStatus = OFFLINE;
+                pLunExt->offlineReason = DELETE_IN_PROGRESS;
+                pNvmeCmd->CDW0.OPC = ADMIN_NAMESPACE_ATTACHMENT;
+                pNsAttachDW10 = 
+                    (PADMIN_NAMESPACE_ATTACHMENT_DW10)&pNvmePtIoctl->NVMeCmd[10];
+                pNsAttachDW10->SEL = NAMESPACE_DETACH;
+				pSrbExt->pDataBuffer = 
+					NVMeAllocatePool(pDevExt, sizeof(NVMe_CONTROLLER_LIST));
+				memset(pSrbExt->pDataBuffer, 0, sizeof(NVMe_CONTROLLER_LIST));
+                pNsCtrlsList = (PNVMe_CONTROLLER_LIST)pSrbExt->pDataBuffer;
+                pNsCtrlsList->NumberOfIdentifiers = 1;
+                pNsCtrlsList->Identifers[0] = 
+                    pDevExt->controllerIdentifyData.CNTLID;
+                return NVMeIoctlNamespaceAttachment(pDevExt, pSrb, pNvmePtIoctl);
+            }
+        }
+    }
+
+    /* Prepare the PRP entries for the transfer for create command */
+    if (pNsMgmtDW10->SEL == NAMESPACE_MANAGEMENT_CREATE &&
+        NVMePreparePRPs(pDevExt,
+                        pSrbExt,
+                        pNvmePtIoctl->DataBuffer,
+                        pNvmePtIoctl->DataBufferLen) == FALSE) {
+        pSrbIoCtrl->ReturnCode = NVME_IOCTL_PRP_TRANSLATION_ERROR;
+        return IOCTL_COMPLETED;
+    }
+    
+    pSrbIoCtrl->ReturnCode = NVME_IOCTL_SUCCESS;
+
+    return IOCTL_PENDING;
+} /* NVMeIoctlNamespaceMgmt */
+
+/******************************************************************************
+ * NVMeCompletionNsAttachment
+ *
+ * @brief NVMeCompletionNsAttachment handles the NAMESPACE ATTACHMENT Command
+ *
+ * @param pDevExt - Pointer to hardware device extension.
+ * @param pSrbExt - Pointer to SRB extension
+ *
+ * @return BOOLEAN
+ *     TRUE - If all resources are allocated and initialized properly
+ *     FALSE - If anything goes wrong
+ *****************************************************************************/
+BOOLEAN NVMeCompletionNsAttachment(
+    PVOID pNVMeDevExt,
+    PNVME_SRB_EXTENSION pSrbExt
+)
+{
+    BOOLEAN returnStatus = TRUE;
+    PNVME_LUN_EXTENSION pLunExt = NULL;
+    PNVME_DEVICE_EXTENSION pDevExt = (PNVME_DEVICE_EXTENSION) pNVMeDevExt;
+    ULONG lunId = INVALID_LUN_EXTN;
+    PNVMe_COMMAND pNvmeCmd = NULL;
+    PNVMe_COMMAND pNsMgmtCmd = NULL;
+    PADMIN_NAMESPACE_ATTACHMENT_DW10 pNsAttachDW10 = NULL;
+    PADMIN_NAMESPACE_MANAGEMENT_DW10 pNsMgmtDW10 = NULL;
+
+    PNVME_PASS_THROUGH_IOCTL pNvmePtIoctl = NULL;
+    PNVMe_COMMAND pIdentifyCmd = NULL;
+    NS_STATUS nsStatus = INVALID;
+#if (NTDDI_VERSION > NTDDI_WIN7)
+	PSTORAGE_REQUEST_BLOCK pSrb = pSrbExt->pSrb;
+#else
+	PSCSI_REQUEST_BLOCK pSrb = pSrbExt->pSrb;
+#endif
+    pSrb->SrbStatus = SRB_STATUS_SUCCESS;
+
+    pNvmePtIoctl = (PNVME_PASS_THROUGH_IOCTL)GET_DATA_BUFFER(pSrb);
+    pNvmeCmd = (PNVMe_COMMAND)pNvmePtIoctl->NVMeCmd;       
+    pNsAttachDW10 =
+        (PADMIN_NAMESPACE_ATTACHMENT_DW10)&pNvmePtIoctl->NVMeCmd[10];
+    nsStatus = NVMeGetNamespaceStatusAndSlot(pDevExt, pNvmeCmd->NSID, &lunId);
+
+    if ((INVALID == nsStatus) || (INVALID_LUN_EXTN == lunId)) {
+        pNvmePtIoctl->SrbIoCtrl.ReturnCode = NVME_IOCTL_INVALID_PATH_TARGET_ID;
+        return TRUE;
+    } else {
+        pLunExt = pDevExt->pLunExtensionTable[lunId];
+    }
+
+    if ((pSrbExt->pCplEntry->DW3.SF.SC == SUCCESSFUL_COMPLETION) &&
+        (pSrbExt->pCplEntry->DW3.SF.SCT == GENERIC_COMMAND_STATUS)) {
+
+        if (pSrbExt->nvmeSqeUnit.CDW0.OPC == ADMIN_NAMESPACE_ATTACHMENT) {
+            if (pNsAttachDW10->SEL == NAMESPACE_ATTACH) {
+                if (INACTIVE == nsStatus) {
+                    //Attach (part 1): first get latest identify data for the NSID
+                    pIdentifyCmd = &pSrbExt->nvmeSqeUnit;
+                    pIdentifyCmd->CDW0.OPC = ADMIN_IDENTIFY;
+                    pIdentifyCmd->NSID = pNvmeCmd->NSID;
+                    if (NVMePreparePRPs(pDevExt, pSrbExt,
+                                        (PVOID)&pLunExt->identifyData,
+                                        sizeof(ADMIN_IDENTIFY_NAMESPACE)) == TRUE) {
+
+                        if (TRUE == ProcessIo(pDevExt, pSrbExt, 
+                            NVME_QUEUE_TYPE_ADMIN, TRUE)) {
+                                returnStatus = FALSE;
+                        }
+                    }
+                } else {
+                    //According to our record, this namespace was already attached!!
+                    pNvmePtIoctl->SrbIoCtrl.ReturnCode = NVME_IOCTL_INTERNAL_ERROR;
+                }
+            } else {
+                if (ATTACHED == nsStatus) {
+                    //Detach: Just set the correct status, and call StorPort 
+                    pLunExt->nsStatus = INACTIVE;
+                    pLunExt->slotStatus = FREE;
+                    pLunExt->ReadOnly = TRUE;
+                    if (pLunExt->offlineReason != DELETE_IN_PROGRESS)
+                        pLunExt->offlineReason = NOT_OFFLINE;
+
+                    pDevExt->visibleLuns--;
+#if (NTDDI_VERSION > NTDDI_WIN7)
+					StorPortDeviceReady(pDevExt, 
+						SrbGetPathId((void*) pSrb),
+						SrbGetTargetId((void*) pSrb),
+						(UCHAR) lunId);
+#else
+					StorPortDeviceReady(pDevExt, pSrb->PathId, pSrb->TargetId, (UCHAR) lunId);
+
+#endif
+                    //If this detach was part of delete in progress, now send delete cmd.
+                    if (pLunExt->offlineReason == DELETE_IN_PROGRESS) {
+                        pNsMgmtCmd = &pSrbExt->nvmeSqeUnit;
+                        pNsMgmtCmd->CDW0.OPC = ADMIN_NAMESPACE_MANAGEMENT;
+                        pNsMgmtCmd->NSID = pNvmeCmd->NSID;
+                        pNvmeCmd->CDW0.OPC = ADMIN_NAMESPACE_MANAGEMENT;
+						StorPortFreePool(pNVMeDevExt, pSrbExt->pDataBuffer);
+                        pNsMgmtDW10 = (PADMIN_NAMESPACE_MANAGEMENT_DW10)&pNvmePtIoctl->NVMeCmd[10];
+                        pNsMgmtDW10->SEL = NAMESPACE_MANAGEMENT_DELETE;
+                        if (IOCTL_PENDING == NVMeIoctlNamespaceMgmt(pDevExt, pSrb, pNvmePtIoctl)) {
+                            if (TRUE == ProcessIo(pDevExt, pSrbExt, 
+                                NVME_QUEUE_TYPE_ADMIN, TRUE)) {
+                                    returnStatus = FALSE;
+                            }
+                        }
+                    }
+                    pNvmePtIoctl->SrbIoCtrl.ReturnCode = NVME_IOCTL_SUCCESS;
+                } else {
+                    //According to our record, this namespace was already detached!!
+                    pNvmePtIoctl->SrbIoCtrl.ReturnCode = NVME_IOCTL_INTERNAL_ERROR;
+                }
+             }
+        } else if (pSrbExt->nvmeSqeUnit.CDW0.OPC == ADMIN_IDENTIFY) {
+            //Attach (part 2): Received identify data, now complete attachment
+            pLunExt->nsStatus = ATTACHED;
+            pLunExt->slotStatus = ONLINE;
+            pLunExt->ReadOnly = FALSE;
+
+            pDevExt->visibleLuns++;
+            StorPortNotification(BusChangeDetected, pDevExt);
+            pNvmePtIoctl->SrbIoCtrl.ReturnCode = NVME_IOCTL_SUCCESS;
+        }
+    } else {
+        if ((pLunExt->slotStatus == OFFLINE) &&
+            ((pLunExt->offlineReason == DELETE_IN_PROGRESS) ||
+            (pLunExt->offlineReason == DETACH_IN_PROGRESS))) {
+
+			//Free memory allocated during delete/detach path 
+			if (pLunExt->offlineReason == DELETE_IN_PROGRESS) {
+				StorPortFreePool(pNVMeDevExt, pSrbExt->pDataBuffer);
+			}
+
+#if (NTDDI_VERSION > NTDDI_WIN7)
+			StorPortDeviceReady(pDevExt,
+				SrbGetPathId((void*) pSrb),
+				SrbGetTargetId((void*) pSrb),
+				(UCHAR) lunId);
+#else
+			StorPortDeviceReady(pDevExt, pSrb->PathId, pSrb->TargetId, (UCHAR) lunId);
+
+#endif
+
+            //We were online and attached when we started. Restore status back.
+            pLunExt->slotStatus = ONLINE;
+            pLunExt->offlineReason = NOT_OFFLINE;
+            StorPortNotification(BusChangeDetected, pDevExt);
+        }
+        StorPortDebugPrint(INFO,
+            "NVMeCompletionNsAttachment: Command Failed!\n");
+        pNvmePtIoctl->SrbIoCtrl.ReturnCode = NVME_IOCTL_INTERNAL_ERROR;
+        returnStatus = TRUE;		
+    }
+    return returnStatus;
+} /* NVMeCompletionNsAttachment */
+
+/*******************************************************************************
+ * NVMeCompletionNsMgmt
+ *
+ * @brief NVMeCompletionNsMgmt handles the NAMESPACE MANAGEMENT Command
+ *
+ * @param pDevExt - Pointer to hardware device extension.
+ * @param pSrbExt - Pointer to SRB extension
+ *
+ * @return BOOLEAN
+ *     TRUE - If all resources are allocated and initialized properly
+ *     FALSE - If anything goes wrong
+ ******************************************************************************/
+BOOLEAN NVMeCompletionNsMgmt(
+    PVOID pNVMeDevExt,
+    PNVME_SRB_EXTENSION pSrbExt
+)
+{
+    PNVME_LUN_EXTENSION pLunExt = NULL;
+    PNVME_DEVICE_EXTENSION pDevExt = (PNVME_DEVICE_EXTENSION) pNVMeDevExt;
+    ULONG lunId = INVALID_LUN_EXTN;
+    PNVMe_COMMAND pNvmeCmd = NULL;
+    PADMIN_NAMESPACE_MANAGEMENT_DW10 pNsMgmtDW10 = NULL;
+    PNVME_PASS_THROUGH_IOCTL pNvmePtIoctl = NULL;
+    ULONG currentNSID = 0;
+    BOOLEAN notifyStorPort = FALSE;
+
+#if (NTDDI_VERSION > NTDDI_WIN7)
+	PSTORAGE_REQUEST_BLOCK pSrb = pSrbExt->pSrb;
+#else
+	PSCSI_REQUEST_BLOCK pSrb = pSrbExt->pSrb;
+#endif
+    pSrb->SrbStatus = SRB_STATUS_SUCCESS;
+
+    pNvmePtIoctl = (PNVME_PASS_THROUGH_IOCTL)GET_DATA_BUFFER(pSrb);
+    pNvmeCmd = (PNVMe_COMMAND)pNvmePtIoctl->NVMeCmd;       
+    pNsMgmtDW10 =
+        (PADMIN_NAMESPACE_MANAGEMENT_DW10)&pNvmePtIoctl->NVMeCmd[10];
+    
+    if ((pSrbExt->pCplEntry->DW3.SF.SC == SUCCESSFUL_COMPLETION) &&
+        (pSrbExt->pCplEntry->DW3.SF.SCT == GENERIC_COMMAND_STATUS)) {
+
+        if (pNsMgmtDW10->SEL == NAMESPACE_MANAGEMENT_CREATE) {
+            currentNSID = pSrbExt->pCplEntry->DW0;
+            if (INVALID == NVMeGetNamespaceStatusAndSlot(pDevExt, currentNSID, &lunId)) {
+                lunId = NVMeGetFreeLunSlot(pDevExt);
+                if (INVALID_LUN_EXTN == lunId) {
+                    pNvmePtIoctl->SrbIoCtrl.ReturnCode = 
+                        NVME_IOCTL_INVALID_PATH_TARGET_ID;
+                    return TRUE;
+                }
+				pDevExt->DriverState.NumKnownNamespaces++;
+                pLunExt = pDevExt->pLunExtensionTable[lunId];
+                pLunExt->namespaceId = currentNSID;
+                pLunExt->nsStatus = INACTIVE;
+                pLunExt->slotStatus = FREE;
+                pLunExt->offlineReason = NOT_OFFLINE;
+                memcpy_s(&pLunExt->identifyData,
+	                    sizeof(pLunExt->identifyData),
+                        pNvmePtIoctl->DataBuffer,
+                        sizeof(ADMIN_IDENTIFY_NAMESPACE));
+
+                pNvmePtIoctl->SrbIoCtrl.ReturnCode = NVME_IOCTL_SUCCESS;
+            } else {
+                //Namespace was already visible. Shouldn't have happened
+                pNvmePtIoctl->SrbIoCtrl.ReturnCode = NVME_IOCTL_INTERNAL_ERROR;
+            }
+        } else {
+            if (INVALID != NVMeGetNamespaceStatusAndSlot(pDevExt, pNvmeCmd->NSID, &lunId)) {
+                pLunExt = pDevExt->pLunExtensionTable[lunId];
+                if (FREE != pLunExt->slotStatus)
+					pDevExt->visibleLuns--;
+                memset(pLunExt, 0, sizeof(NVME_LUN_EXTENSION));
+				pDevExt->DriverState.NumKnownNamespaces--;
+                pNvmePtIoctl->SrbIoCtrl.ReturnCode = NVME_IOCTL_SUCCESS;
+            } else {
+                //Namespace is not visible. Should have been if we are about to delete it...
+                pNvmePtIoctl->SrbIoCtrl.ReturnCode = NVME_IOCTL_INTERNAL_ERROR;
+            }
+         }
+    } else {
+        // Command failed
+        pNvmePtIoctl->SrbIoCtrl.ReturnCode = NVME_IOCTL_INTERNAL_ERROR;
+    }
+    
+    return TRUE;
+} /* NVMeCompletionNsMgmt */
 
 /******************************************************************************
  * FormatNVMGetIdentify
@@ -3831,26 +4287,17 @@ BOOLEAN FormatNVMGetIdentify(
         if (pIdenCtrl == NULL) {
             Status = FALSE;
         } else {
-            /* Assign the destination buffer for retrieved structure */
-            if (FALSE == NVMeIsNamespaceVisible(pSrbExt, NamespaceID, &lunId)) {
-                /*
-                 * Not a visible namespace, so we can skip fetching identify
-                 * namespace structure. Return TRUE so we can complete the
-                 * request.
-                 */
-                Status = TRUE;
-            } else {
-                ASSERT(INVALID_LUN_EXTN != lunId);
-                pIdenNS = &pAE->pLunExtensionTable[lunId]->identifyData;
-                /* Namespace ID is 1-based. */
-                pIdentify->NSID = NamespaceID;
-                /* Prepare PRP entries, need at least one PRP entry */
-                if (NVMePreparePRPs(pAE, 
-                                    pSrbExt,
-                                    (PVOID)pIdenNS,
-                                    sizeof(ADMIN_IDENTIFY_CONTROLLER)) == FALSE)
-                Status = FALSE;
-            }
+            ASSERT(INVALID_LUN_EXTN != lunId);
+			/* Assign the destination buffer for retrieved structure */
+            pIdenNS = &pAE->pLunExtensionTable[lunId]->identifyData;
+            /* Namespace ID is 1-based. */
+            pIdentify->NSID = NamespaceID;
+            /* Prepare PRP entries, need at least one PRP entry */
+            if (NVMePreparePRPs(pAE, 
+                                pSrbExt,
+                                (PVOID)pIdenNS,
+                                sizeof(ADMIN_IDENTIFY_NAMESPACE)) == FALSE)
+            Status = FALSE;            
         }
     }
     /* Complete the request now if something goes wrong */
@@ -4267,6 +4714,65 @@ BOOLEAN NVMeIsNamespaceVisible(
     return (bNamespaceIsVisible);
 }
 
+/******************************************************************************
+ * NVMeGetNamespaceStatusAndSlot
+ *
+ * @brief This function returns status of a given NSID and the LUN Id it's assigned
+ *
+ * @param pDevExt - Pointer to device extension
+ *		  targetNSID - ID of namespace in question.
+ *
+ * @return NS_STATUS - Indicates the namespace: INVALID, INACTIVE, or ATTACHED.
+ *		   pTableIndex - index of namespace in the table.
+ ******************************************************************************/
+NS_STATUS NVMeGetNamespaceStatusAndSlot(
+    PNVME_DEVICE_EXTENSION pDevExt,
+    ULONG targetNSID,
+    PULONG pLunId
+)
+{
+    int i=0;
+    for (i = 0; i < MAX_NAMESPACES; i++) {
+        if (pDevExt->pLunExtensionTable[i]->namespaceId == targetNSID) {
+            if (NULL != pLunId) {
+                *pLunId = (ULONG)i;
+            }
+            return pDevExt->pLunExtensionTable[i]->nsStatus;
+        }
+    }
+
+    if (NULL != pLunId) {
+        *pLunId = (ULONG)INVALID_LUN_EXTN;
+    }
+    return INVALID;
+} /* NVMeGetNamespaceStatus */
+
+/******************************************************************************
+ * NVMeGetFreeLunSlot
+ *
+ * @brief This function returns status of a given NSID.
+ *
+ * @param pDevExt - Pointer to device extension
+ *		  targetNSID - ID of namespace in question.
+ *
+ * @return NS_STATUS - Indicates the namespace: INVALID, INACTIVE, or ATTACHED.
+ *		   pTableIndex - index of namespace in the table.
+ ******************************************************************************/
+ULONG NVMeGetFreeLunSlot(
+    PNVME_DEVICE_EXTENSION pDevExt
+)
+{
+    int i;
+    for (i = 0; i < MAX_NAMESPACES; i++) {
+        if ((0 == pDevExt->pLunExtensionTable[i]->namespaceId) &&
+            (FREE == pDevExt->pLunExtensionTable[i]->slotStatus) &&
+            (INVALID == pDevExt->pLunExtensionTable[i]->nsStatus)) {
+            return (ULONG)i;
+        }
+    }
+
+    return INVALID_LUN_EXTN;
+} /* NVMeGetFreeLunSlot */
 
 /*******************************************************************************
  * NVMeIoctlTxDataToHost
@@ -4806,6 +5312,36 @@ BOOLEAN NVMeProcessPrivateIoctl(
                         return IOCTL_COMPLETED;
                     }
                 break;
+            case ADMIN_NAMESPACE_MANAGEMENT:
+                
+                pCntrlIdData = &pDevExt->controllerIdentifyData;
+                
+                /* Ensure the command is supported first. */
+                if (pCntrlIdData->OACS.SupportsNamespaceMgmtAndAttachment) {
+                    if (NVMeIoctlNamespaceMgmt(pDevExt, pSrb, pNvmePtIoctl) ==
+                                        IOCTL_COMPLETED) {
+                        return IOCTL_COMPLETED;
+                    }
+                } else {
+                    pSrbIoCtrl->ReturnCode = NVME_IOCTL_UNSUPPORTED_ADMIN_CMD;
+                    return IOCTL_COMPLETED;
+                }
+            break;
+            case ADMIN_NAMESPACE_ATTACHMENT:
+                
+                pCntrlIdData = &pDevExt->controllerIdentifyData;
+                
+                /* Ensure the command is supported first. */
+                if (pCntrlIdData->OACS.SupportsNamespaceMgmtAndAttachment) {
+                    if (NVMeIoctlNamespaceAttachment(pDevExt, pSrb,
+                            pNvmePtIoctl) == IOCTL_COMPLETED) {
+                        return IOCTL_COMPLETED;
+                    }
+                } else {
+                    pSrbIoCtrl->ReturnCode = NVME_IOCTL_UNSUPPORTED_ADMIN_CMD;
+                    return IOCTL_COMPLETED;
+                }
+            break;
                 case ADMIN_GET_LOG_PAGE:
                     if (NVMeIoctlGetLogPage(pDevExt, pSrb, pNvmePtIoctl) ==
                                             IOCTL_COMPLETED) {

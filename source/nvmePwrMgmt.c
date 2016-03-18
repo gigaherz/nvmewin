@@ -106,7 +106,7 @@ BOOLEAN NVMeAdapterControlPowerDown(
         /* Shutdown */
         status = TRUE;
     } else {
-        pAE->ShutdownInProgress = TRUE; 
+		pAE->ShutdownInProgress = TRUE;
 
         /* Hibernate or Sleep - sanity check that there is no cmd pending */
         if (NVMeDetectPendingCmds(pAE, FALSE, SRB_STATUS_BUS_RESET) == TRUE)

@@ -64,16 +64,16 @@ VOID NVMeCallArbiter(
     PNVME_DEVICE_EXTENSION pAE
 )
 {
-    if ((pAE->ntldrDump == FALSE) && (pAE->polledResetInProg != TRUE)) {
+	if ((pAE->ntldrDump == FALSE) && (pAE->polledResetInProg != TRUE)) {
         StorPortNotification(RequestTimerCall,
                              pAE,
                              NVMeRunning,
                              pAE->DriverState.CheckbackInterval);
     } else {
-        /*
-         * NoOp in dump mode because NVMeRunningStartAttempt() steps through
-         * the initialization state machine in a while loop.
-         */
+		/*
+		 * NoOp in dump mode because NVMeRunningStartAttempt() steps through
+		 * the initialization state machine in a while loop.
+		 */
     }
 } /* NVMeCallArbiter */
 
@@ -159,6 +159,7 @@ BOOLEAN NVMeRunningStartAttempt(
     pAE->DriverState.resetDriven = resetDriven;
     pAE->DriverState.pResetSrb = pResetSrb;
     pAE->DriverState.VisibleNamespacesExamined = 0;
+    pAE->DriverState.NumKnownNamespaces = 0;
 #if DBG
     pAE->LearningComplete = FALSE;
 #endif
@@ -181,48 +182,48 @@ BOOLEAN NVMeRunningStartAttempt(
      * We won't accept IOs until the machine finishes and if it
      * fails to finish we'll never accept IOs and simply log an error
      */
-    if (pAE->ntldrDump == FALSE) {
-        if (pAE->polledResetInProg == FALSE) {
-            NVMeRunning(pAE);
-        } else {
-            /* 
-            * we poll if we're launching the reinit state machine from HwStorResetBus
-            * or HwStorAdapterControl->ScsiRestartAdapter path
-            */
-            NVMeRunning(pAE);
+	if (pAE->ntldrDump == FALSE) {
+		if (pAE->polledResetInProg == FALSE) {
+			NVMeRunning(pAE);
+		} else {
+			/* 
+			* we poll if we're launching the reinit state machine from HwStorResetBus
+			* or HwStorAdapterControl->ScsiRestartAdapter path
+			*/
+			NVMeRunning(pAE);
 
-            /* TO val is based on CAP register plus a few, 5, seconds to init post RDY */
-            passiveTimeout = pAE->uSecCrtlTimeout + (STORPORT_TIMER_CB_us * MICRO_TO_SEC);
+			/* TO val is based on CAP register plus a few, 5, seconds to init post RDY */
+			passiveTimeout = pAE->uSecCrtlTimeout + (STORPORT_TIMER_CB_us * MICRO_TO_SEC);
 
-            while ((pAE->DriverState.NextDriverState != NVMeStartComplete) &&
-                (pAE->DriverState.NextDriverState != NVMeStateFailed)){
+			while ((pAE->DriverState.NextDriverState != NVMeStartComplete) &&
+				(pAE->DriverState.NextDriverState != NVMeStateFailed)){
 
-                /* increment 5000us (timer callback val */
-                pAE->DriverState.TimeoutCounter += pAE->DriverState.CheckbackInterval;
-                if (pAE->DriverState.TimeoutCounter > passiveTimeout) {
-                    NVMeDriverFatalError(pAE,
-                        (1 << START_STATE_TIMEOUT_FAILURE));
-                    break;
-                }
+				/* increment 5000us (timer callback val */
+				pAE->DriverState.TimeoutCounter += pAE->DriverState.CheckbackInterval;
+				if (pAE->DriverState.TimeoutCounter > passiveTimeout) {
+					NVMeDriverFatalError(pAE,
+						(1 << START_STATE_TIMEOUT_FAILURE));
+					break;
+				}
 
-                NVMeRunning(pAE);
-                NVMeStallExecution(pAE, STORPORT_TIMER_CB_us);
-                IoCompletionRoutine(NULL, pAE, (PVOID)0, 0);
-            }
+				NVMeRunning(pAE);
+				NVMeStallExecution(pAE, STORPORT_TIMER_CB_us);
+				IoCompletionRoutine(NULL, pAE, (PVOID)0, 0);
+			}
 
-            return (pAE->DriverState.NextDriverState == NVMeStartComplete) ? TRUE : FALSE;
-        }
-    } else {
-        PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
-        pAE->LearningCores = pRMT->NumActiveCores; /* no need to learn cores in dump mode */
+			return (pAE->DriverState.NextDriverState == NVMeStartComplete) ? TRUE : FALSE;
+		}
+	} else {
+		PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
+		pAE->LearningCores = pRMT->NumActiveCores; /* no need to learn cores in dump mode */
 
-        /* In dump mode there is no timer. We have to poll for completion at each state. */
-        while (pAE->DriverState.NextDriverState != NVMeStateFailed &&
-            pAE->DriverState.NextDriverState != NVMeStartComplete) {
-            NVMeRunning(pAE);
-            NVMeCrashDelay(pAE->DriverState.CheckbackInterval, pAE->ntldrDump);
-        }
-    }
+		/* In dump mode there is no timer. We have to poll for completion at each state. */
+		while (pAE->DriverState.NextDriverState != NVMeStateFailed &&
+			pAE->DriverState.NextDriverState != NVMeStartComplete) {
+			NVMeRunning(pAE);
+			NVMeCrashDelay(pAE->DriverState.CheckbackInterval, pAE->ntldrDump);
+		}
+	}
 
     return (TRUE);
 } /* NVMeRunningStartAttempt */
@@ -285,6 +286,12 @@ VOID NVMeRunning(
         case NVMeWaitOnIdentifyCtrl:
             NVMeRunningWaitOnIdentifyCtrl(pAE);
         break;
+        case NVMeWaitOnListAttachedNs:
+            NVMeRunningWaitOnListAttachedNs(pAE);
+        break;
+        case NVMeWaitOnListExistingNs:
+            NVMeRunningWaitOnListExistingNs(pAE);
+        break;
         case NVMeWaitOnIdentifyNS:
             NVMeRunningWaitOnIdentifyNS(pAE);
         break;
@@ -308,9 +315,9 @@ VOID NVMeRunning(
         break;
         case NVMeStartComplete:
             pAE->RecoveryAttemptPossible = TRUE;
-            if (pAE->ntldrDump == FALSE) {
-                StorPortNotification(RequestTimerCall, pAE, IsDeviceRemoved, START_SURPRISE_REMOVAL_TIMER); //start after 1 seconds
-            }
+			if (pAE->ntldrDump == FALSE) {
+				StorPortNotification(RequestTimerCall, pAE, IsDeviceRemoved, START_SURPRISE_REMOVAL_TIMER); //start after 1 seconds
+			}
             /* Indicate learning is done with no unassigned cores */
             pAE->LearningCores = pAE->ResMapTbl.NumActiveCores;
 
@@ -405,13 +412,58 @@ VOID NVMeRunningWaitOnIdentifyCtrl(
      * Issue Identify command for the very first time If failed, fail the state
      * machine
      */
-    if (NVMeGetIdentifyStructures(pAE, IDEN_CONTROLLER) == FALSE) {
+    if (NVMeGetIdentifyStructures(pAE, 0, IDENTIFY_CNTLR, 
+        pAE->controllerIdentifyData.CNTLID) == FALSE) {
         NVMeDriverFatalError(pAE,
                             (1 << START_STATE_IDENTIFY_CTRL_FAILURE));
         NVMeCallArbiter(pAE);
         return;
     }
 } /* NVMeRunningWaitOnIdentifyCtrl */
+
+/*******************************************************************************
+ * NVMeRunningWaitOnListAttachedNs
+ *
+ * @brief NVMeRunningWaitOnListAttachedNs is called to issue Identify command to
+ *        list all the attached namespaces.
+ *
+ * @param pAE - Pointer to adapter device extension.
+ *
+ * @return VOID
+ ******************************************************************************/
+VOID NVMeRunningWaitOnListAttachedNs(
+    PNVME_DEVICE_EXTENSION pAE
+)
+{
+    if (NVMeGetIdentifyStructures(pAE, 0, LIST_ATTACHED_NAMESPACES, 
+        pAE->controllerIdentifyData.CNTLID) == FALSE) {
+        NVMeDriverFatalError(pAE,
+                            (1 << START_STATE_LIST_ATTACHED_NS_FAILURE));
+        NVMeCallArbiter(pAE);
+    }
+} /* NVMeRunningWaitOnListAttachedNs */
+
+/*******************************************************************************
+ * NVMeRunningWaitOnListExistingNs
+ *
+ * @brief NVMeRunningWaitOnListExistingNs is called to issue Identify command to
+ *        list all known namespaces, attached or not.
+ *
+ * @param pAE - Pointer to adapter device extension.
+ *
+ * @return VOID
+ ******************************************************************************/
+VOID NVMeRunningWaitOnListExistingNs(
+    PNVME_DEVICE_EXTENSION pAE
+)
+{
+    if (NVMeGetIdentifyStructures(pAE, 0, LIST_EXISTING_NAMESPACES, 
+        pAE->controllerIdentifyData.CNTLID) == FALSE) {
+        NVMeDriverFatalError(pAE,
+                            (1 << START_STATE_LIST_EXISTING_NS_FAILURE));
+        NVMeCallArbiter(pAE);
+    }
+} /* NVMeRunningWaitOnListExistingNs */
 
 /*******************************************************************************
  * NVMeRunningWaitOnIdentifyNS
@@ -427,7 +479,13 @@ VOID NVMeRunningWaitOnIdentifyNS(
     PNVME_DEVICE_EXTENSION pAE
 )
 {
-    ULONG nsid = pAE->DriverState.CurrentNsid + 1;
+    ULONG nsid = 0;
+
+    if (pAE->controllerIdentifyData.OACS.SupportsNamespaceMgmtAndAttachment &&
+        pAE->DriverState.NumKnownNamespaces > 0)
+        nsid = pAE->pLunExtensionTable[pAE->DriverState.IdentifyNamespaceFetched]->namespaceId;
+    else
+        nsid = pAE->DriverState.CurrentNsid + 1;
 
     /*
      * Issue an identify command.  The completion handler will keep us at this
@@ -437,7 +495,8 @@ VOID NVMeRunningWaitOnIdentifyNS(
      * Please note that NN of Controller structure is 1-based.
      */
 
-    if (NVMeGetIdentifyStructures(pAE, nsid) == FALSE) {
+    if (NVMeGetIdentifyStructures(pAE, nsid, IDENTIFY_NAMESPACE, 
+        pAE->controllerIdentifyData.CNTLID) == FALSE) {
         NVMeDriverFatalError(pAE,
                             (1 << START_STATE_IDENTIFY_NS_FAILURE));
         NVMeCallArbiter(pAE);

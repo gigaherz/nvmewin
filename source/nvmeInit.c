@@ -719,7 +719,7 @@ ULONG NVMeMapCore2Queue(
 {
     PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
     PCORE_TBL pCT = NULL;
-    PPROC_GROUP_TBL pPGT = NULL;
+	PPROC_GROUP_TBL pPGT = NULL;
     ULONG coreNum;
 
     if (pAE->ntldrDump == TRUE) {
@@ -727,8 +727,8 @@ ULONG NVMeMapCore2Queue(
         return (STOR_STATUS_SUCCESS);
     }
 
-    pPGT = pRMT->pProcGroupTbl + pPN->Group;
-    coreNum = (ULONG)(pPN->Number + pPGT->BaseProcessor);
+	pPGT = pRMT->pProcGroupTbl + pPN->Group;
+	coreNum = (ULONG)(pPN->Number + pPGT->BaseProcessor);
     
     /* Ensure the core number is valid first */
     if (coreNum >= pRMT->NumActiveCores) {
@@ -874,10 +874,10 @@ ULONG NVMeAllocQueues (
      *           multiple(s) of system page size.
      *        2. Add one extra system page to allocation size
      */
-    SysPageSizeInSubEntries = PAGE_SIZE / sizeof(NVMe_COMMAND);
+    SysPageSizeInSubEntries = PAGE_SIZE / sizeof (NVMe_COMMAND);
     if ((QEntries % SysPageSizeInSubEntries) != 0)
         QEntries = (QEntries + SysPageSizeInSubEntries) &
-        ~(SysPageSizeInSubEntries - 1);
+                  ~(SysPageSizeInSubEntries - 1);
 
     /*
      * Determine the allocation size in bytes
@@ -992,7 +992,7 @@ ULONG NVMeInitSubQueue(
     /* Ensure the QueueID is valid via the number of active cores in system */
     if (QueueID > maxCore)
         return ( STOR_STATUS_INVALID_PARAMETER );
-        
+		
 /* Code Analysis fails on StoPortReadRegisterUlong64 */
 #if 0 // (NTDDI_VERSION > NTDDI_WIN7) && defined(_WIN64)
     CAP.AsUlonglong = StorPortReadRegisterUlong64(pAE,
@@ -1114,7 +1114,7 @@ ULONG NVMeInitCplQueue(
     /* Ensure the QueueID is valid via the number of active cores in system */
     if (QueueID > maxCore)
         return ( STOR_STATUS_INVALID_PARAMETER );
-        
+		
 /* Code Analysis fails on StoPortReadRegisterUlong64 */
 #if 0 // (NTDDI_VERSION > NTDDI_WIN7) && defined(_WIN64)
     CAP.AsUlonglong = StorPortReadRegisterUlong64(pAE,
@@ -1271,30 +1271,30 @@ BOOLEAN NVMeResetAdapter(
      */
     CC.AsUlong= StorPortReadRegisterUlong(pAE,
                                           (PULONG)(&pAE->pCtrlRegister->CC));
-    if (CC.EN == 1) {
+	if (CC.EN == 1) {
 
-        /*
+		/*
          * Before we transition to 0, make sure the ctrl is actually RDY        
          */
         if(FALSE == NVMeWaitForCtrlRDY(pAE, 1)) {
             return FALSE;
         }
-        
-        CC.EN = 0;
+		
+		CC.EN = 0;
 
-        StorPortWriteRegisterUlong(pAE,
-            (PULONG)(&pAE->pCtrlRegister->CC),
-            CC.AsUlong);
+		StorPortWriteRegisterUlong(pAE,
+			(PULONG)(&pAE->pCtrlRegister->CC),
+			CC.AsUlong);
 
 
-        if (NVMeWaitForCtrlRDY(pAE, 0) == FALSE) {
-            StorPortDebugPrint(INFO,
-                "NVMeResetAdapter: EN bit is not getting Cleared\n");
-            return (FALSE);
-        }
-    }
+		if (NVMeWaitForCtrlRDY(pAE, 0) == FALSE) {
+			StorPortDebugPrint(INFO,
+				"NVMeResetAdapter: EN bit is not getting Cleared\n");
+			return (FALSE);
+		}
+	}
 
-    pAE->DriverState.NextDriverState = NVMeWaitOnRDY;
+ 	pAE->DriverState.NextDriverState = NVMeWaitOnRDY;
 
     return (TRUE);
 } /* NVMeResetAdapter */
@@ -1497,25 +1497,38 @@ VOID NVMeSetFeaturesCompletion(
            /* Support for LBA Range Type is optional,
             * handle the case that it's not supported 
             */
-            if ((pCplEntry->DW3.SF.SC == INVALID_FIELD_IN_COMMAND) &&
-                (pCplEntry->DW3.SF.SCT == GENERIC_COMMAND_STATUS)) {
+			if ((pCplEntry->DW3.SF.SCT == GENERIC_COMMAND_STATUS) &&
+				((pCplEntry->DW3.SF.SC == INVALID_FIELD_IN_COMMAND) ||
+				(pCplEntry->DW3.SF.SC == INVALID_NAMESPACE_OR_FORMAT))) {
                 /*
                  * The device doesn't support the optional LBA Range Type
                  * command so assume the slot is online/visible and writable
                  */
-                lunId = pAE->DriverState.VisibleNamespacesExamined;
+                if (pAE->controllerIdentifyData.OACS.SupportsNamespaceMgmtAndAttachment) 
+                    lunId = pAE->DriverState.IdentifyNamespaceFetched - 1;
+                else
+                    lunId = pAE->DriverState.VisibleNamespacesExamined;
 
                 pLunExt = pAE->pLunExtensionTable[lunId];
-                pLunExt->slotStatus = ONLINE;
-                pLunExt->ReadOnly = FALSE;
-                pAE->DriverState.VisibleNamespacesExamined++;
-                pAE->DriverState.ConfigLbaRangeNeeded = FALSE;
-                pAE->DriverState.TtlLbaRangeExamined++;
+                if (pLunExt->identifyData.NCAP != 0) {
+					if (!pAE->controllerIdentifyData.OACS.SupportsNamespaceMgmtAndAttachment) {
+						pLunExt->nsStatus = ATTACHED;
+					}
+                    pLunExt->slotStatus = ONLINE;
+                    pLunExt->ReadOnly = FALSE;
+                    pAE->DriverState.VisibleNamespacesExamined++;
+                    pAE->DriverState.ConfigLbaRangeNeeded = FALSE;
+                    pAE->DriverState.TtlLbaRangeExamined++;
+                } else if ((INACTIVE == pLunExt->nsStatus) || (INVALID == pLunExt->nsStatus)) {
+                    pAE->DriverState.ConfigLbaRangeNeeded = FALSE;
+                    pAE->DriverState.TtlLbaRangeExamined++;
+                }
 
                 /* Reset the counter and set next state accordingly */
                 pAE->DriverState.StateChkCount = 0;
-                if (pAE->DriverState.TtlLbaRangeExamined ==
-                    pAE->controllerIdentifyData.NN) {
+                if (pAE->DriverState.NumKnownNamespaces == 0 ||
+                    pAE->DriverState.TtlLbaRangeExamined ==
+                    pAE->DriverState.NumKnownNamespaces) {
                     /* We have called identify namespace as well as get/set
                      * features for each of the NN namespaces that exist.
                      * Move on to the next state in the state machine.
@@ -1619,8 +1632,9 @@ VOID NVMeSetFeaturesCompletion(
 
             /* Reset the counter and set next state accordingly */
             pAE->DriverState.StateChkCount = 0;
-            if (pAE->DriverState.TtlLbaRangeExamined ==
-                pAE->controllerIdentifyData.NN) {
+            if (pAE->DriverState.NumKnownNamespaces == 0 ||
+                pAE->DriverState.TtlLbaRangeExamined ==
+				pAE->DriverState.NumKnownNamespaces) {
                 /* We have called identify namespace as well as get/set
                  * features for each of the NN namespaces that exist.
                  * Move on to the next state in the state machine.
@@ -1732,8 +1746,13 @@ BOOLEAN NVMeInitCallback(
     PNVMe_COMMAND pNVMeCmd = (PNVMe_COMMAND)(&pSrbExt->nvmeSqeUnit);
     PNVMe_COMPLETION_QUEUE_ENTRY pCplEntry = pSrbExt->pCplEntry;
     PQUEUE_INFO pQI = &pAE->QueueInfo;
-    ULONG totalQueuePairs;
-    PRES_MAPPING_TBL pRMT;
+	ULONG totalQueuePairs;
+	PRES_MAPPING_TBL pRMT;
+    PULONG pNamespaceId = NULL;
+    ULONG currentNSID = 0;
+    ULONG lunId = INVALID_LUN_EXTN;
+    int i = 0;
+    UCHAR flbas;
 
     NVMe_CONTROLLER_CAPABILITIES CAP = {0};
     StorPortDebugPrint(INFO,"NVMeInitCallback: Driver state: %d\n", pAE->DriverState.NextDriverState);
@@ -1748,15 +1767,23 @@ BOOLEAN NVMeInitCallback(
                 (pCplEntry->DW3.SF.SCT == 0)) {
                 ULONG maxXferSize;
 
-                /* Reset the counter and set next state */
-                pAE->DriverState.NextDriverState = NVMeWaitOnIdentifyNS;
+                /* Reset the counter */
                 pAE->DriverState.StateChkCount = 0;
 
                 /* copy over the data from the init state machine temp buffer */
                 StorPortCopyMemory(&pAE->controllerIdentifyData,
                                 pAE->DriverState.pDataBuffer,
                                 sizeof(ADMIN_IDENTIFY_CONTROLLER));
-                                
+
+                /* Set next state */
+				if (pAE->controllerIdentifyData.OACS.SupportsNamespaceMgmtAndAttachment) {
+					pAE->DriverState.NextDriverState = NVMeWaitOnListAttachedNs;
+				}
+				else {
+					pAE->DriverState.NextDriverState = NVMeWaitOnIdentifyNS;
+					pAE->DriverState.NumKnownNamespaces = pAE->controllerIdentifyData.NN;
+				}
+
 /* Code Analysis fails on StoPortReadRegisterUlong64 */
 #if 0 // (NTDDI_VERSION > NTDDI_WIN7) && defined(_WIN64)
                 CAP.AsUlonglong = StorPortReadRegisterUlong64(pAE,
@@ -1784,9 +1811,86 @@ BOOLEAN NVMeInitCallback(
                                             (1 << START_MAX_XFER_MISMATCH_FAILURE));
                     }
                 }
+                if (pAE->controllerIdentifyData.NN == 0) {
+                    /* No namespaces so jump to Disabled.  An adapter object will
+                     * be created without any child LUNs.
+                     * In this state, IOCTLs can be processed, but no IO.
+                     */
+                    NVMeDriverFatalError(pAE, 
+                                      ( 1 << START_STATE_IDENTIFY_CTRL_FAILURE)); 
+                    pAE->visibleLuns = 0;
+                }
             } else {
                 NVMeDriverFatalError(pAE,
                                     (1 << START_STATE_IDENTIFY_CTRL_FAILURE));
+            }
+        break;
+        case NVMeWaitOnListAttachedNs:
+            /*
+             * Save list of attached namespaces if succeed.
+			 * If command fails because of unknown opcode, most
+			 * likely drive does not support namespace management.
+             * Otherwise, log the error bit in case of errors and
+             * fail the state machine
+             */
+            if ((pCplEntry->DW3.SF.SC == SUCCESSFUL_COMPLETION) &&
+                (pCplEntry->DW3.SF.SCT == GENERIC_COMMAND_STATUS)) {
+
+                pNamespaceId = (PULONG) pAE->DriverState.pDataBuffer;
+                for (i = 0; i < MAX_NAMESPACES; i++) {
+                    currentNSID = (ULONG)*pNamespaceId;
+
+                    /* A value of 0 NSID indicates end of list of namespaces */ 
+                    if (currentNSID == 0) {
+                        break;
+                    }
+
+                    /* found a new NSID */
+                    lunId = pAE->DriverState.NumKnownNamespaces;
+                    pAE->pLunExtensionTable[lunId]->namespaceId = currentNSID;
+                    pAE->pLunExtensionTable[lunId]->nsStatus = ATTACHED;
+                    pAE->DriverState.NumKnownNamespaces++;
+                    pNamespaceId++;
+                }
+                /* Move to the next state: list all existing namespace(s) */
+                pAE->DriverState.NextDriverState = NVMeWaitOnListExistingNs;
+            } else {
+                NVMeDriverFatalError(pAE,
+                                    (1 << START_STATE_LIST_ATTACHED_NS_FAILURE));
+            }
+        break;
+        case NVMeWaitOnListExistingNs:
+            /*
+             * Save list of unattached namespaces if succeed.
+             * Otherwise, log the error bit in case of errors and
+             * fail the state machine
+             */
+            if ((pCplEntry->DW3.SF.SC == SUCCESSFUL_COMPLETION) &&
+                (pCplEntry->DW3.SF.SCT == GENERIC_COMMAND_STATUS)) {
+
+                pNamespaceId = (PULONG) pAE->DriverState.pDataBuffer;
+                for (i = 0; i < MAX_NAMESPACES; i++) {
+                    currentNSID = (ULONG)*pNamespaceId;
+
+                    /* A value of 0 NSID indicates end of list of namespaces */ 
+                    if (currentNSID == 0) {
+                        break;
+                    }
+
+                    if (INVALID == NVMeGetNamespaceStatusAndSlot(pAE, currentNSID, &lunId)) {
+                        /* found a new NSID */
+                        lunId = pAE->DriverState.NumKnownNamespaces;
+                        pAE->pLunExtensionTable[lunId]->namespaceId = currentNSID;
+                        pAE->pLunExtensionTable[lunId]->nsStatus = INACTIVE;
+                        pAE->DriverState.NumKnownNamespaces++;
+                    }
+                    pNamespaceId++;
+                }
+                /* Move to the next state: identify namespace(s) */
+                pAE->DriverState.NextDriverState = NVMeWaitOnIdentifyNS;
+            } else {
+                NVMeDriverFatalError(pAE,
+                                    (1 << START_STATE_LIST_EXISTING_NS_FAILURE));
             }
         break;
         case NVMeWaitOnIdentifyNS:
@@ -1797,8 +1901,11 @@ BOOLEAN NVMeInitCallback(
              */
             if ((pCplEntry->DW3.SF.SC == 0) &&
                 (pCplEntry->DW3.SF.SCT == 0)) {
-                PNVME_LUN_EXTENSION pLunExt =
-                    pAE->pLunExtensionTable[pAE->DriverState.VisibleNamespacesExamined];
+                PNVME_LUN_EXTENSION pLunExt = NULL;
+				if (pAE->controllerIdentifyData.OACS.SupportsNamespaceMgmtAndAttachment)
+					pLunExt = pAE->pLunExtensionTable[pAE->DriverState.IdentifyNamespaceFetched];
+				else
+                    pLunExt = pAE->pLunExtensionTable[pAE->DriverState.VisibleNamespacesExamined];
 
                 pAE->DriverState.IdentifyNamespaceFetched++;
 
@@ -1813,11 +1920,17 @@ BOOLEAN NVMeInitCallback(
                                 pAE->DriverState.pDataBuffer,
                                 sizeof(ADMIN_IDENTIFY_NAMESPACE));
                 /* Mark down the Namespace ID */
-                pLunExt->namespaceId =
-                    pAE->DriverState.IdentifyNamespaceFetched;
+                /* 
+                 * If capable of namespace mgmt, we already should have saved NSID
+                 * Otherwise, mark down the Namespace ID here 
+                 */
+                if (!pAE->controllerIdentifyData.OACS.SupportsNamespaceMgmtAndAttachment)
+                    pLunExt->namespaceId =
+                        pAE->DriverState.IdentifyNamespaceFetched;
 
                 /* Note next Namespace ID to fetch Namespace structure */
-                pAE->DriverState.CurrentNsid++;
+                /* for use in the LBA range type commands we need this info */
+                pAE->DriverState.CurrentNsid = pLunExt->namespaceId;
 
             } else {
                 /*
@@ -1896,8 +2009,8 @@ BOOLEAN NVMeInitCallback(
             }
         break;
         case NVMeWaitOnLearnMapping:
-        
-                pRMT = &pAE->ResMapTbl;
+
+				pRMT = &pAE->ResMapTbl;
                 
 
                 /*
@@ -2213,8 +2326,12 @@ BOOLEAN NVMeAccessLbaRangeEntry(
     ULONG NSID = pAE->DriverState.CurrentNsid;
     BOOLEAN Query = pAE->DriverState.ConfigLbaRangeNeeded;
 
-    /* Fail here if Namespace ID is 0 or out of range */
-    if (NSID == 0 || NSID > pAE->controllerIdentifyData.NN)
+    /* 
+     * if not capable of namespace mgmt...
+     * Fail here if Namespace ID is 0 or out of range 
+     */
+    if ((!pAE->controllerIdentifyData.OACS.SupportsNamespaceMgmtAndAttachment) &&
+		(NSID == 0 || NSID > pAE->DriverState.NumKnownNamespaces))
         return FALSE;
 
     /* Zero out the extension first */
@@ -2279,7 +2396,9 @@ BOOLEAN NVMeAccessLbaRangeEntry(
  ******************************************************************************/
 BOOLEAN NVMeGetIdentifyStructures(
     PNVME_DEVICE_EXTENSION pAE,
-    ULONG NamespaceID
+    ULONG NamespaceID,
+    USHORT CNS,
+    USHORT CNTID
 )
 {
     PNVME_SRB_EXTENSION pNVMeSrbExt =
@@ -2287,6 +2406,7 @@ BOOLEAN NVMeGetIdentifyStructures(
     PNVMe_COMMAND pIdentify = NULL;
     PADMIN_IDENTIFY_CONTROLLER pIdenCtrl = &pAE->controllerIdentifyData;
     PADMIN_IDENTIFY_COMMAND_DW10 pIdentifyCDW10 = NULL;
+    ULONG lunId;
 
     /* Zero-out the entire SRB_EXTENSION */
     memset((PVOID)pNVMeSrbExt, 0, sizeof(NVME_SRB_EXTENSION));
@@ -2299,12 +2419,14 @@ BOOLEAN NVMeGetIdentifyStructures(
     pIdentify = &pNVMeSrbExt->nvmeSqeUnit;
     pIdentify->CDW0.OPC = ADMIN_IDENTIFY;
 
-    if (NamespaceID == IDEN_CONTROLLER) {
-        StorPortDebugPrint(INFO,"NVMeGetIdentifyStructures: IDEN_CONTROLLER\n");
-        /* Indicate it's for Controller structure */
-        pIdentifyCDW10 = (PADMIN_IDENTIFY_COMMAND_DW10) &pIdentify->CDW10;
-        pIdentifyCDW10->CNS = 1;
+    pIdentifyCDW10 = (PADMIN_IDENTIFY_COMMAND_DW10) &pIdentify->CDW10;
+    /* Set the type of identify command */
+    pIdentifyCDW10->CNS = CNS;
+    /* Select the controller to talk to */
+    pIdentifyCDW10->CNTID = CNTID;
 
+    switch (CNS) {
+    case IDENTIFY_CNTLR:
         /* Prepare PRP entries, need at least one PRP entry */
         if (NVMePreparePRPs(pAE,
                             pNVMeSrbExt,
@@ -2312,8 +2434,8 @@ BOOLEAN NVMeGetIdentifyStructures(
                             sizeof(ADMIN_IDENTIFY_CONTROLLER)) == FALSE) {
             return (FALSE);
         }
-    } else {
-        ULONG lunId;
+        break;
+     case IDENTIFY_NAMESPACE:
 
         if ( pIdenCtrl == NULL )
             return (FALSE);
@@ -2324,8 +2446,14 @@ BOOLEAN NVMeGetIdentifyStructures(
         pIdentifyCDW10->CNS = 0;
 
         /* NN of Controller structure is 1-based */
-        if (NamespaceID <= pIdenCtrl->NN) {
-            lunId = pAE->DriverState.VisibleNamespacesExamined;
+        if ((NamespaceID <= pIdenCtrl->NN) ||
+            (pAE->controllerIdentifyData.OACS.SupportsNamespaceMgmtAndAttachment)) {
+
+            if (pAE->controllerIdentifyData.OACS.SupportsNamespaceMgmtAndAttachment)
+                //Use NVMeGetNamespaceStatusAndSlot to get lunId
+                NVMeGetNamespaceStatusAndSlot(pAE, NamespaceID, &lunId);
+            else
+                lunId = pAE->DriverState.VisibleNamespacesExamined;
 
             /* Namespace ID is 1-based. */
             pIdentify->NSID = NamespaceID;
@@ -2351,6 +2479,19 @@ BOOLEAN NVMeGetIdentifyStructures(
             NVMeCallArbiter(pAE);
             return (TRUE);
         }
+        break;
+    case LIST_ATTACHED_NAMESPACES:
+    case LIST_EXISTING_NAMESPACES:
+        /* Prepare PRP entries, need at least one PRP entry */
+        if (NVMePreparePRPs(pAE,
+                            pNVMeSrbExt,
+                            (PVOID)pAE->DriverState.pDataBuffer,
+							sizeof(ULONG) * MAX_NUMBER_OF_NAMESPACES) == FALSE) {
+            return (FALSE);
+        }
+        break;
+    default:
+        break;
     }
 
     /* Now issue the command via Admin Doorbell register */

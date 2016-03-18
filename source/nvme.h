@@ -460,9 +460,11 @@ typedef struct _NVM_OPCODE
 #define ADMIN_GET_FEATURES                              0x0A
 
 #define ADMIN_ASYNCHRONOUS_EVENT_REQUEST                0x0C
+#define ADMIN_NAMESPACE_MANAGEMENT                      0x0D
 
 #define ADMIN_FIRMWARE_ACTIVATE                         0x10
 #define ADMIN_FIRMWARE_IMAGE_DOWNLOAD                   0x11
+#define ADMIN_NAMESPACE_ATTACHMENT                      0x15
 
 /*Opcodes for Admin Commands, NVM Command Set Specific, Section 5, Figure 25 */
 #define ADMIN_FORMAT_NVM                                0x80
@@ -972,9 +974,20 @@ typedef struct _ADMIN_IDENTIFY_COMMAND_DW10
      * Controller data structure is returned to the host. If cleared to ‘0’,
      * then the Identify Namespace data structure is returned to the host for
      * the namespace specified in the command header.
+     *
+     * NVMe Spec 1.2: This field specifies the information to be returned to
+     * the host.  Refer to Figure 86.
      */
-    ULONG   CNS      :2;
-    ULONG   Reserved :30;
+    ULONG   CNS      :8;
+    ULONG   Reserved :8;
+    /*
+     * Controller Identifier (CNTID):  This field specifies the controller
+     * identifier used as part of some Identify operations. If the field is
+     * not used as part of the Identify operation, then host software shall
+     * clear this field to 0h. Controllers that support Namespace Management
+     * shall support this field.
+     */
+    ULONG	CNTID	 :16;
 } ADMIN_IDENTIFY_COMMAND_DW10, *PADMIN_IDENTIFY_COMMAND_DW10;
 
 /* Identify - Power State Descriptor Data Structure, Section 5.11, Figure 66 */
@@ -1155,7 +1168,14 @@ typedef struct _ADMIN_IDENTIFY_CONTROLLER
          * Download commands.
          */
         USHORT  SupportsFirmwareActivateFirmwareDownload:1;
-        USHORT  Reserved                                :13;
+        /*
+         * Bit 3 if set to '1' then the controller supports the Namespace
+         * Management and Namespace Attachment commands. If cleared to '0' then
+         * then controller does not support the Namespace Management and
+         * Namespace Attachment commands.
+         */
+        USHORT  SupportsNamespaceMgmtAndAttachment      :1;
+        USHORT  Reserved                                :12;
     } OACS;
 
     /*
@@ -1809,8 +1829,8 @@ typedef struct _ADMIN_IDENTIFY_NAMESPACE
     * is created. This field remains fixed throughout the life of the namespace
     * and is preserved across namespace and controller operations 
     * (e.g., controller reset, namespace format, etc.).
-    */
-    UCHAR                       EUI64[8];
+	*/
+	UCHAR                       EUI64[8];
 
     /*
      * [LBA Format x Support] This field indicates the LBA format x that is
@@ -2863,7 +2883,6 @@ typedef struct _NVM_DATASET_MANAGEMENT_RANGE
 } NVM_DATASET_MANAGEMENT_RANGE, *PNVM_DATASET_MANAGEMENT_RANGE;
 
 
-
 #pragma pack(1)
 /* Reservation Report Command, NVMe 1.2, Section 6.13, Figure 189, Opcode 0x0E */
 typedef struct _NVM_RESERVATION_REPORT_COMMAND_DW10
@@ -3020,5 +3039,57 @@ typedef struct _NVM_RES_RELEASE_DATASTRUCT
 #pragma pack()
 
 
+/* NVME 1.2, Section 4.9, Figure 37 */
+typedef struct _NVMe_CONTROLLER_LIST
+{
+    /*
+     * This field contains the number of controller entries in the list. There
+     * may be up to 2047 identifiers in the list. A value of 0 indicates there
+     * are no controllers in the list.
+     */
+    USHORT     NumberOfIdentifiers;
+    /*
+     * This field contains the NVM subsystem unique controller identifer for
+     * the controllers in the list or 0h if the list is empty or fewer than
+     * N Entries.
+     */
+    USHORT     Identifers[1];
+} NVMe_CONTROLLER_LIST, *PNVMe_CONTROLLER_LIST;
+
+/* Namespace Management Command - NVME1.2, Section 5.12.2, Figure 101 */
+typedef struct _ADMIN_NAMESPACE_MANAGEMENT_DW10
+{
+    /*
+     * This field selects the type of the management operation to perform
+     *           Value                   Description
+     *            0h                     Create
+     *            1h                     Delete
+     *           2h-Fh                   Reserved
+     */
+    ULONG      SEL        :4;
+    ULONG      Reserved   :28;
+} ADMIN_NAMESPACE_MANAGEMENT_DW10, *PADMIN_NAMESPACE_MANAGEMENT_DW10;
+
+/* Admin Namespace Management DW10 Select Field */
+#define NAMESPACE_MANAGEMENT_CREATE                      0x0
+#define NAMESPACE_MANAGEMENT_DELETE                      0x1
+
+/* Namespace Attachment Command - NVME1.2, Section 5.12.1, Figure 96 */
+typedef struct _ADMIN_NAMESPACE_ATTACHMENT_DW10
+{
+    /* 
+     * This field selects the type of attachment to perform
+     *           Value                   Description
+     *            0h                     Controller attach
+     *            1h                     Controller detach
+     *           2h-Fh                   Reserved
+     */
+    ULONG     SEL          :4;
+    ULONG     Reserved     :28;
+} ADMIN_NAMESPACE_ATTACHMENT_DW10, *PADMIN_NAMESPACE_ATTACHMENT_DW10;
+
+/* Admin Namespace Attachement DW10 Select Field */
+#define NAMESPACE_ATTACH                      0x0
+#define NAMESPACE_DETACH                      0x1
 
 #endif /* __NVME_H__ */
