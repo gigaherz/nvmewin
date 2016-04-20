@@ -584,9 +584,14 @@ BOOLEAN NVMeEnumMsiMessages (
                 ASSERT(FALSE);
             }
         } else {
-            /* Use INTx when failing to retrieve any message information */
-            if (MsgID == 0)
-                pRMT->InterruptType = INT_TYPE_INTX;
+			/* Use INTx when failing to retrieve any message information */
+			if (MsgID == 0)
+				pRMT->InterruptType = INT_TYPE_INTX;
+			/* Number of MSI Granted will No of IO Queue + 1 Admin Queue 
+			Incase of Active Core more than Queues supported
+			Admin Queue MSGID should not be considered*/
+			else
+				MsgID--;
 
             break;
         }
@@ -629,44 +634,106 @@ BOOLEAN NVMeEnumMsiMessages (
  * @return VOID
  ******************************************************************************/
 VOID NVMeMsiMapCores(
-    PNVME_DEVICE_EXTENSION pAE
-)
+	PNVME_DEVICE_EXTENSION pAE
+	)
 {
-    UCHAR Core;
-    UCHAR MaxCore;
-    PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
-    PMSI_MESSAGE_TBL pMMT = NULL;
-    PCORE_TBL pCT = NULL;
+	UCHAR Core;
+	UCHAR MaxCore;
+	PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
+	PMSI_MESSAGE_TBL pMMT = NULL;
+	PCORE_TBL pCT = NULL;
+	PCPL_QUEUE_INFO pCQI = NULL;
+	USHORT MsgID;
+	PGROUP_AFFINITY pTempGrpAff = NULL;
+	GROUP_AFFINITY TempGrpAff;
+	PPROC_GROUP_TBL pProcGrpTbl = NULL;
+	PQUEUE_INFO pQI = &pAE->QueueInfo;
+#if DBG
+	ULONG CoreNo;
+#endif
 
-    MaxCore = (UCHAR)min(pAE->QueueInfo.NumSubIoQAllocFromAdapter,
-                         pAE->QueueInfo.NumCplIoQAllocFromAdapter);
+	MaxCore = (UCHAR)min(pAE->QueueInfo.NumSubIoQAllocFromAdapter,
+		pAE->QueueInfo.NumCplIoQAllocFromAdapter);
+	
+
+	/* if API is executed succesfully use the data obtained from API else fallback to learning cores */
+	if (pAE->IsMsiMappingComplete == TRUE)
+	{
+		/* Handle every msgid that is available..!! */
+		for (MsgID = 0; MsgID < pRMT->NumMsiMsgGranted; MsgID++)
+		{
+			pTempGrpAff = pAE->pArrGrpAff + MsgID;
+			memcpy(&TempGrpAff, pTempGrpAff, sizeof(GROUP_AFFINITY));
+			/* Check which bit is set in mask, this will be the corresponding coreno for current msgid */
+			for (Core = 0; Core < pRMT->NumActiveCores; Core++)
+			{
+				if (((TempGrpAff.Mask) & 1) == 1)
+					break;
+				else
+					TempGrpAff.Mask = TempGrpAff.Mask >> 1;
+			}
+
+			/* Update values in core table and msimsg table accordingly.. */
+			pProcGrpTbl = pRMT->pProcGroupTbl + TempGrpAff.Group;
+			pCT = pRMT->pCoreTbl + Core + pProcGrpTbl->BaseProcessor;
+			pCT->Group = TempGrpAff.Group;
+			/* assign new queue pair only if MsgGranted is less than Cores*/
+			if (pAE->ResMapTbl.NumMsiMsgGranted < pAE->ResMapTbl.NumActiveCores) {
+				pCT->CplQueue = pCT->SubQueue = (USHORT)pQI->NumIoQMapped;
+			}
+			pCT->MsiMsgID = MsgID;
+			pMMT = pRMT->pMsiMsgTbl + pCT->MsiMsgID;
+			pMMT->CplQueueNum = pCT->CplQueue;
+			pCQI = pQI->pCplQueueInfo + pCT->CplQueue;
+			pCQI->MsiMsgID = pCT->MsiMsgID;
+			pQI->NumIoQMapped++;
+
+		}
+
+#if DBG
+		StorPortDebugPrint(INFO, "NVMeMsimapcores: <Info> Learning Complete.  Core Table:\n");
+		for (CoreNo = 0; CoreNo < pRMT->NumActiveCores; CoreNo++) {
+			pCT = pRMT->pCoreTbl + CoreNo;
+			StorPortDebugPrint(INFO, "NVMeMsimapcores: <Info> \tCore(%d) MSID(%d) QueuePair(%d)\n",
+				CoreNo,
+				pCT->MsiMsgID,
+				pCT->SubQueue);
+		}
+		pAE->LearningComplete = TRUE;
+#endif
+		pAE->LearningCores = pRMT->NumActiveCores;
+
+	}
+	else
+	{
 
 
-    /*
-     * Loop thru the cores and assign granted messages in sequential manner.
-     * When requests completed, based on the messagID and look up the
-     * associated completion queue for just-completed entries
-     */
-    for (Core = 0; Core < pRMT->NumActiveCores; Core++) {
-        if (Core < MaxCore) {
-            /* Handle one Core Table at a time */
-            pCT = pRMT->pCoreTbl + Core;
+		/*
+		 * Loop thru the cores and assign granted messages in sequential manner.
+		 * When requests completed, based on the messagID and look up the
+		 * associated completion queue for just-completed entries
+		 */
+		for (Core = 0; Core < pRMT->NumActiveCores; Core++) {
+			if (Core < MaxCore) {
+				/* Handle one Core Table at a time */
+				pCT = pRMT->pCoreTbl + Core;
 
-            /* Mark down the initial associated message + SQ/CQ for this core */
-            pCT->MsiMsgID = pCT->CplQueue - 1;
+				/* Mark down the initial associated message + SQ/CQ for this core */
+				pCT->MsiMsgID = pCT->CplQueue - 1;
 
-            /*
-             * On the other side, mark down the associated core number
-             * for the message as well
-             */
-            pMMT = pRMT->pMsiMsgTbl + pCT->MsiMsgID;
-            pMMT->CplQueueNum = pCT->CplQueue;
+				/*
+				 * On the other side, mark down the associated core number
+				 * for the message as well
+				 */
+				pMMT = pRMT->pMsiMsgTbl + pCT->MsiMsgID;
+				pMMT->CplQueueNum = pCT->CplQueue;
 
-            StorPortDebugPrint(INFO,
-                               "NVMeMsiMapCores: Core(0x%x)Msg#(0x%x)\n",
-                               Core, pCT->MsiMsgID);        
-        }
-    }
+				StorPortDebugPrint(INFO,
+					"NVMeMsiMapCores: Core(0x%x)Msg#(0x%x)\n",
+					Core, pCT->MsiMsgID);
+			}
+		}
+	}
 } /* NVMeMsiMapCores */
 
 /*******************************************************************************
@@ -1998,7 +2065,13 @@ BOOLEAN NVMeInitCallback(
                     if (pAE->LearningCores < pRMT->NumActiveCores) {
                         pAE->DriverState.NextDriverState = NVMeWaitOnLearnMapping;
                     } else {
-                        pAE->DriverState.NextDriverState = NVMeStartComplete;
+						/*In crash/Hibernate mode, NVMeWaitOnNamespaceReady state is skipped*/
+						if ((pAE->ntldrDump == TRUE) ||
+							(pAE->DriverState.AllNamespacesAreReady)) {
+							pAE->DriverState.NextDriverState = NVMeStartComplete;							
+						} else {
+							pAE->DriverState.NextDriverState = NVMeWaitOnNamespaceReady;
+						}                        
                     }
                 } else {
                     pAE->DriverState.NextDriverState = NVMeWaitOnIoSQ;
@@ -2082,6 +2155,30 @@ BOOLEAN NVMeInitCallback(
                 }
             }
         break;
+		case NVMeWaitOnNamespaceReady:
+			if ((pCplEntry->DW3.SF.SC == NAMESPACE_NOT_READY) &&
+				(pCplEntry->DW3.SF.SCT == 0)) {
+				pAE->DriverState.NextDriverState = NVMeWaitOnNamespaceReady;
+			}
+			else {
+				/* The command has completed succesfully, namespace should be ready */
+				pAE->pLunExtensionTable[pAE->DriverState.NextNamespaceToCheckForReady]->nsReady = TRUE;
+				pAE->DriverState.NextNamespaceToCheckForReady++;
+				/* We need to ensure all namespaces are ready in case of multiple namespaces */
+				if (pAE->DriverState.NextNamespaceToCheckForReady < pAE->DriverState.NumKnownNamespaces) {
+					pAE->DriverState.NextDriverState = NVMeWaitOnNamespaceReady;
+				}
+				else {
+					pAE->DriverState.AllNamespacesAreReady = TRUE;
+					pAE->DriverState.NextDriverState = NVMeStartComplete;
+				}				
+			}
+			/* free the read buffer for namespaceready */
+			if ((pAE->ntldrDump == FALSE) && (NULL != pSrbExt->pDataBuffer)) {
+			        StorPortFreePool((PVOID)pAE, pSrbExt->pDataBuffer);
+					pSrbExt->pDataBuffer = NULL;
+				}
+			break;
         case NVMeStartComplete:
             ASSERT(pAE->ntldrDump);
         break;
@@ -2933,6 +3030,11 @@ VOID NVMeFreeNonContiguousBuffers (
         pAE->pDpcArray = NULL;
     }
 
+	/* Free the memory allocated for Group affinity */
+	if (pAE->pArrGrpAff != NULL) {
+		StorPortFreePool((PVOID)pAE, pAE->pArrGrpAff);
+		pAE->pArrGrpAff = NULL;
+	}
 
 } /* NVMeFreeNonContiguousBuffer */
 

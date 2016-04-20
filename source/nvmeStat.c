@@ -313,6 +313,9 @@ VOID NVMeRunning(
         case NVMeWaitOnReSetupQueues:
             NVMeRunningWaitOnReSetupQueues(pAE);
         break;
+		case NVMeWaitOnNamespaceReady:
+			NVMeRunningWaitOnNamespaceReady(pAE);
+		break;
         case NVMeStartComplete:
             pAE->RecoveryAttemptPossible = TRUE;
 			if (pAE->ntldrDump == FALSE) {
@@ -765,22 +768,23 @@ VOID NVMeRunningWaitOnLearnMapping(
 #ifdef DUMB_DRIVER
         {
 #else
-        if ((pRMT->pMsiMsgTbl->Shared == TRUE) ||
-            (pRMT->InterruptType == INT_TYPE_INTX) ||
-            (pRMT->InterruptType == INT_TYPE_MSI) ||
-            (pAE->DriverState.IdentifyNamespaceFetched == 0) ||
-            (pAE->visibleLuns == 0) ||
-            (pLunExt == NULL)) {
+		if ((pRMT->pMsiMsgTbl->Shared == TRUE) ||
+			(pRMT->InterruptType == INT_TYPE_INTX) ||
+			(pRMT->InterruptType == INT_TYPE_MSI)) {
 #endif
-            /*
-             * go ahead and complete the init state machine now
-             * but effectively disable learning as one of the above
-             * conditions makes it impossible or unneccessary to learn
-            */
-            pAE->LearningCores = pRMT->NumActiveCores;
-            pAE->DriverState.NextDriverState = NVMeStartComplete;
-            __leave;
-        }
+			pAE->LearningCores = pRMT->NumActiveCores;
+			pAE->DriverState.NextDriverState = NVMeWaitOnNamespaceReady;
+			__leave;
+		}
+
+		/* if there is zero namespace, we go to startcomplete*/
+		if ((pAE->DriverState.IdentifyNamespaceFetched == 0) ||
+			(pAE->visibleLuns == 0) ||
+			(pLunExt == NULL)) {
+			pAE->LearningCores = pRMT->NumActiveCores;
+			pAE->DriverState.NextDriverState = NVMeStartComplete;
+			__leave;
+		}
 
         /* Zero out the extension first */
         memset((PVOID)pNVMeSrbExt, 0, sizeof(NVME_SRB_EXTENSION));
@@ -821,7 +825,7 @@ VOID NVMeRunningWaitOnLearnMapping(
         if ((error == TRUE) && (NULL != pNVMeSrbExt->pDataBuffer)) {
             StorPortFreePool((PVOID)pAE, pNVMeSrbExt->pDataBuffer);
         }
-        if (pAE->DriverState.NextDriverState == NVMeStartComplete) {
+        if (pAE->DriverState.NextDriverState == NVMeStartComplete || pAE->DriverState.NextDriverState == NVMeWaitOnNamespaceReady) {
             NVMeCallArbiter(pAE);
         }
     }
@@ -866,4 +870,104 @@ VOID NVMeRunningWaitOnReSetupQueues(
     }
 
 } /* NVMeRunningWaitOnReSetupQueues */
+
+
+/*******************************************************************************
+* NVMeRunningWaitOnNamespaceReady
+*
+* @brief NVMeRunningWaitOnNamespaceReady gets called to test if the namespace
+*        is ready to handle I/0s.
+*
+* @param pAE - Pointer to adapter device extension.
+*
+* @return VOID
+******************************************************************************/
+VOID NVMeRunningWaitOnNamespaceReady(
+	PNVME_DEVICE_EXTENSION pAE
+	)
+{
+	PNVME_SRB_EXTENSION pNVMeSrbExt =
+		(PNVME_SRB_EXTENSION)pAE->DriverState.pSrbExt;
+	PNVMe_COMMAND pCmd = (PNVMe_COMMAND)(&pNVMeSrbExt->nvmeSqeUnit);
+	PRES_MAPPING_TBL pRMT = &pAE->ResMapTbl;
+	PNVME_LUN_EXTENSION pLunExt = NULL;
+	STOR_PHYSICAL_ADDRESS PhysAddr;
+	UINT32 lbaLengthPower, lbaLength;
+	UINT8 flbas;
+	BOOLEAN error = FALSE;
+
+	__try {
+		/* Zero out the extension first */
+		memset((PVOID)pNVMeSrbExt, 0, sizeof(NVME_SRB_EXTENSION));
+
+		/* Populate SRB_EXTENSION fields */
+		pNVMeSrbExt->pNvmeDevExt = pAE;
+
+		pLunExt = pAE->pLunExtensionTable[pAE->DriverState.NextNamespaceToCheckForReady];
+		pNVMeSrbExt->pNvmeCompletionRoutine = NVMeInitCallback;
+
+		/* Issue read command for attached and valid namespaces */
+		if (pAE->controllerIdentifyData.OACS.SupportsNamespaceMgmtAndAttachment) {
+			if ((pLunExt->nsStatus != ATTACHED) ||
+				(pLunExt->slotStatus != ONLINE)) {
+				pAE->DriverState.NextNamespaceToCheckForReady++;
+				/* We need to ensure all namespaces are ready in case of multiple namespaces */
+				if (pAE->DriverState.NextNamespaceToCheckForReady < pAE->DriverState.NumKnownNamespaces) {
+					pAE->DriverState.NextDriverState = NVMeWaitOnNamespaceReady;
+				}
+				else {
+					pAE->DriverState.AllNamespacesAreReady = TRUE;
+					pAE->DriverState.NextDriverState = NVMeStartComplete;
+				}
+				__leave;
+			}
+		}
+
+		/*Sending Read command to check if Namespace is Ready*/
+		flbas = pLunExt->identifyData.FLBAS.SupportedCombination;
+		lbaLengthPower = pLunExt->identifyData.LBAFx[flbas].LBADS;
+		lbaLength = 1 << lbaLengthPower;
+		pNVMeSrbExt->pDataBuffer = NVMeAllocatePool(pAE, lbaLength);
+		if (NULL == pNVMeSrbExt->pDataBuffer) {
+			/*
+			* strange that we can't get a small amount of memory
+			* so go ahead and complete the init state machine now
+			*/
+			pAE->DriverState.NextDriverState = NVMeStartComplete;
+			__leave;
+		}
+		/* Prepare PRP entries, need at least one PRP entry */
+		if (NVMePreparePRPs(pAE,
+			pNVMeSrbExt,
+			pNVMeSrbExt->pDataBuffer,
+			lbaLength)
+			== FALSE) {
+			error = TRUE;
+			pAE->LearningCores = pRMT->NumActiveCores;
+			pAE->DriverState.NextDriverState = NVMeStartComplete;
+			__leave;
+		}
+		pCmd->CDW0.OPC = NVME_READ;
+		pCmd->NSID = pLunExt->namespaceId;
+
+		/* Now issue the command via IO queue */
+		if (FALSE == ProcessIo(pAE, pNVMeSrbExt, NVME_QUEUE_TYPE_IO, FALSE)) {
+			error = TRUE;
+			pAE->DriverState.NextDriverState = NVMeStartComplete;
+			__leave;
+		}
+
+	}
+	__finally{
+		if ((error == TRUE) && (NULL != pNVMeSrbExt->pDataBuffer) && (pAE->ntldrDump == FALSE)) {
+			StorPortFreePool((PVOID)pAE, pNVMeSrbExt->pDataBuffer);
+			pNVMeSrbExt->pDataBuffer = NULL;
+		}if ((pAE->DriverState.NextDriverState == NVMeStartComplete) ||
+			(pAE->DriverState.NextDriverState == NVMeWaitOnNamespaceReady)){
+			NVMeCallArbiter(pAE);
+		}
+	}
+	return;
+} /* NVMeRunningWaitOnNamespaceReady */
+
 

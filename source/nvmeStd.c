@@ -396,6 +396,16 @@ NVMeFindAdapter(
         if ( pAE->pDpcArray == NULL )
             return (SP_RETURN_NOT_FOUND);
 
+		/* 
+		 * Allocate buffer for array of group affinity for message target.
+		 * If fails, return FALSE
+		 */
+		pAE->pArrGrpAff = (PGROUP_AFFINITY)NVMeAllocatePool(pAE,
+			pAE->ResMapTbl.NumActiveCores * sizeof(GROUP_AFFINITY));
+
+		if (pAE->pArrGrpAff == NULL) 
+			return (SP_RETURN_NOT_FOUND);
+
     }
 
     /* Populate all PORT_CONFIGURATION_INFORMATION fields... */
@@ -587,6 +597,8 @@ BOOLEAN NVMePassiveInitialize(
     pAE->IoQueuesAllocated = FALSE;
     pAE->ResourceTableMapped = FALSE;
     pAE->LearningCores = 0;
+    pAE->DriverState.AllNamespacesAreReady = FALSE;
+    pAE->DriverState.NextNamespaceToCheckForReady = 0;
 
     /*
      * Start off the state machine here, the following commands need to be
@@ -663,24 +675,15 @@ BOOLEAN NVMeInitialize(
     ULONG QEntries;
     ULONG Lun;
     NVMe_CONTROLLER_CONFIGURATION CC = {0};
+    PERF_CONFIGURATION_DATA perfQueryData = {0};
     PERF_CONFIGURATION_DATA perfData = {0};
 
     /* Ensure the Context is valid first */
     if (pAE == NULL)
         return (FALSE);
 
-    if (pAE->ntldrDump == FALSE) {
-        Status = StorPortInitializePerfOpts(pAE, TRUE, &perfData);
-        ASSERT(STOR_STATUS_SUCCESS == Status);
-        if (STOR_STATUS_SUCCESS == Status) {
-            /* Allow optimization of storport DPCs */
-            if (perfData.Flags & STOR_PERF_DPC_REDIRECTION) {
-                perfData.Flags = STOR_PERF_DPC_REDIRECTION;
-            }
-            Status = StorPortInitializePerfOpts(pAE, FALSE, &perfData);
-            ASSERT(STOR_STATUS_SUCCESS == Status);
-        }
-    }
+    pAE->IsMsiMappingComplete = FALSE;
+
     CC.AsUlong =
         StorPortReadRegisterUlong(pAE, (PULONG)(&pAE->pCtrlRegister->CC));
 
@@ -735,6 +738,40 @@ BOOLEAN NVMeInitialize(
             NVMeFreeBuffers(pAE);
             return (FALSE);
         }
+
+
+
+		perfQueryData.Version = STOR_PERF_VERSION;
+		perfQueryData.Size = sizeof(PERF_CONFIGURATION_DATA);
+		Status = StorPortInitializePerfOpts(pAE, TRUE, &perfQueryData);
+		ASSERT(STOR_STATUS_SUCCESS == Status);
+		if (STOR_STATUS_SUCCESS == Status) {
+
+			perfData.Version = STOR_PERF_VERSION;
+			perfData.Size = sizeof(PERF_CONFIGURATION_DATA);
+
+			/* Allow optimization of storport DPCs */
+			if (perfQueryData.Flags & STOR_PERF_DPC_REDIRECTION) {
+				perfData.Flags = STOR_PERF_DPC_REDIRECTION;
+
+				/* Allow optimization of Interrupt Redirection and Group Affinity */
+				if ((perfQueryData.Flags & (STOR_PERF_INTERRUPT_MESSAGE_RANGES | STOR_PERF_ADV_CONFIG_LOCALITY)) ==
+					(STOR_PERF_INTERRUPT_MESSAGE_RANGES | STOR_PERF_ADV_CONFIG_LOCALITY)){
+					perfData.Flags |= STOR_PERF_INTERRUPT_MESSAGE_RANGES;
+					perfData.Flags |= STOR_PERF_ADV_CONFIG_LOCALITY;
+
+					perfData.FirstRedirectionMessageNumber = 0;
+					perfData.LastRedirectionMessageNumber = (pRMT->NumMsiMsgGranted - 1);
+					perfData.MessageTargets = pAE->pArrGrpAff;
+				}
+			}
+
+			Status = StorPortInitializePerfOpts(pAE, FALSE, &perfData);
+			ASSERT(STOR_STATUS_SUCCESS == Status);
+			if (STOR_STATUS_SUCCESS == Status){
+				pAE->IsMsiMappingComplete = TRUE;
+			}
+		}
 
         /* Call StorPortPassiveInitialization to enable passive init */
         StorPortEnablePassiveInitialization(pAE, NVMePassiveInitialize);
@@ -2096,6 +2133,10 @@ IoCompletionRoutine(
             /* while learning we setup the CT so that this is always true */
             firstCheckQueue = lastCheckQueue = (USHORT)MsgID + 1;
         }
+		/* Determine which CQ to look in based on WaitOnNamespaceReady state */
+		else if (pAE->DriverState.NextDriverState == NVMeWaitOnNamespaceReady){
+			firstCheckQueue = lastCheckQueue = pMMT->CplQueueNum;
+		}
         /* else we're init'ing so admin queue is in use */
     } else {
         /*
@@ -2200,7 +2241,12 @@ IoCompletionRoutine(
                             pCT = pRMT->pCoreTbl + coreNum;
 
                             /* assign new queue pair */
-                            pCT->CplQueue = pCT->SubQueue = (USHORT)pQI->NumIoQMapped++;
+                            /*Only if MSIGranted is less than active core
+                            the QueueNo will be remapped in sequential manner
+                            Otherwise QueueNo remains same as before*/
+                            if (pAE->ResMapTbl.NumMsiMsgGranted < pAE->ResMapTbl.NumActiveCores) {
+                                pCT->CplQueue = pCT->SubQueue = (USHORT)pQI->NumIoQMapped;
+                            }
                             pCQI = pQI->pCplQueueInfo + pCT->CplQueue;
 
                             /* update based on current completion info */
@@ -2211,6 +2257,7 @@ IoCompletionRoutine(
 
                             /* increment our learning counter */
                             pAE->LearningCores++;
+                            pQI->NumIoQMapped++;
                             StorPortDebugPrint(INFO, 
                                 "Mapped#%d: core(%d) to MSI ID(%d)\n",
                                     pAE->LearningCores, coreNum, MsgID);
@@ -2222,8 +2269,8 @@ IoCompletionRoutine(
                             }
                         }
                     }
-
-                    if (pSrbExtension->pNvmeCompletionRoutine == NULL) {
+					
+					if (pSrbExtension->pNvmeCompletionRoutine == NULL) {
                         /*
                          * if no comp routine, call only if we had a valid
                          * status translation, otherwise let it timeout if
@@ -4097,7 +4144,7 @@ BOOLEAN NVMeCompletionNsAttachment(
                         pNsMgmtCmd->CDW0.OPC = ADMIN_NAMESPACE_MANAGEMENT;
                         pNsMgmtCmd->NSID = pNvmeCmd->NSID;
                         pNvmeCmd->CDW0.OPC = ADMIN_NAMESPACE_MANAGEMENT;
-						StorPortFreePool(pNVMeDevExt, pSrbExt->pDataBuffer);
+                        StorPortFreePool(pNVMeDevExt, pSrbExt->pDataBuffer);
                         pNsMgmtDW10 = (PADMIN_NAMESPACE_MANAGEMENT_DW10)&pNvmePtIoctl->NVMeCmd[10];
                         pNsMgmtDW10->SEL = NAMESPACE_MANAGEMENT_DELETE;
                         if (IOCTL_PENDING == NVMeIoctlNamespaceMgmt(pDevExt, pSrb, pNvmePtIoctl)) {
@@ -4226,9 +4273,9 @@ BOOLEAN NVMeCompletionNsMgmt(
             if (INVALID != NVMeGetNamespaceStatusAndSlot(pDevExt, pNvmeCmd->NSID, &lunId)) {
                 pLunExt = pDevExt->pLunExtensionTable[lunId];
                 if (FREE != pLunExt->slotStatus)
-					pDevExt->visibleLuns--;
+                    pDevExt->visibleLuns--;
                 memset(pLunExt, 0, sizeof(NVME_LUN_EXTENSION));
-				pDevExt->DriverState.NumKnownNamespaces--;
+                pDevExt->DriverState.NumKnownNamespaces--;
                 pNvmePtIoctl->SrbIoCtrl.ReturnCode = NVME_IOCTL_SUCCESS;
             } else {
                 //Namespace is not visible. Should have been if we are about to delete it...

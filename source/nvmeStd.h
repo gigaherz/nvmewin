@@ -385,6 +385,7 @@ enum
     NVMeWaitOnIoSQ,
     NVMeWaitOnLearnMapping,
     NVMeWaitOnReSetupQueues,
+    NVMeWaitOnNamespaceReady,
     NVMeStartComplete = 0x88,
     NVMeShutdown,
     NVMeStateFailed = 0xFF
@@ -478,6 +479,12 @@ typedef struct _START_STATE
      * in the case of errors
      */
     ULONG IdentifyNamespaceFetched;
+
+    /* Indicates all the NameSpace is ready when TRUE */
+    BOOLEAN AllNamespacesAreReady;
+
+    /* Indicates the NameSpace is ready when TRUE */
+    ULONG NextNamespaceToCheckForReady;
 
     /* Indicates the Interrupt Coalescing configured when TRUE */
     BOOLEAN InterruptCoalescingSet;
@@ -917,6 +924,7 @@ typedef struct _nvme_lun_extension
     UINT32                       namespaceId;
     NS_STATUS                    nsStatus;
     BOOLEAN                      ReadOnly;
+    BOOLEAN                       nsReady;
     LUN_SLOT_STATUS              slotStatus;
     LUN_OFFLINE_REASON           offlineReason;
 } NVME_LUN_EXTENSION, *PNVME_LUN_EXTENSION;
@@ -1047,6 +1055,12 @@ typedef struct _nvme_device_extension
     /* Flag to indicate hardReset is in progress in polled mode */
 	BOOLEAN                     polledResetInProg;
 
+   /* Array to hold group affinity data */
+   PGROUP_AFFINITY             pArrGrpAff;
+
+   /* Flag to check if StorPortInitializePerfOpts API executed succesfully.. */
+   BOOLEAN                     IsMsiMappingComplete;
+
 #if DBG
     /* part of debug code to sanity check learning */
     BOOLEAN                     LearningComplete;
@@ -1062,6 +1076,7 @@ typedef struct _nvme_device_extension
         ULONG                       value;
     } originalVersion;
     BOOLEAN                         DeviceRemovedDuringIO;
+
 
 } NVME_DEVICE_EXTENSION, *PNVME_DEVICE_EXTENSION;
 
@@ -1473,6 +1488,10 @@ VOID NVMeRunningWaitOnLearnMapping(
 
 VOID NVMeRunningWaitOnReSetupQueues(
     PNVME_DEVICE_EXTENSION pAE
+);
+
+VOID NVMeRunningWaitOnNamespaceReady(
+	PNVME_DEVICE_EXTENSION pAE
 );
 
 VOID NVMeDriverFatalError(
