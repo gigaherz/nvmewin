@@ -7784,9 +7784,14 @@ BOOLEAN SntiCompletionCallbackRoutine(
     UINT8 statusCodeType;
     UINT8 statusCode;
     BOOLEAN returnValue = TRUE;
+    ULONG ulStatus;
+    UINT8 opcode;
 
     /* Default to successful command sequence completion */
     SNTI_TRANSLATION_STATUS translationStatus = SNTI_SEQUENCE_COMPLETED;
+
+    /*get the opcode*/
+    opcode = GET_OPCODE(pSrb);
 
     /* Before calling commpletion code, insure NVMe command succeeded */
     statusCodeType = (UINT8)pSrbExt->pCplEntry->DW3.SF.SCT;
@@ -7795,7 +7800,7 @@ BOOLEAN SntiCompletionCallbackRoutine(
     if ((statusCodeType == GENERIC_COMMAND_STATUS) &&
         (statusCode == SUCCESSFUL_COMPLETION)) {
         if (pSrb != NULL) {
-            switch (GET_OPCODE(pSrb)) {
+            switch (opcode) {
                 case SCSIOP_LOG_SENSE:
                     translationStatus = SntiTranslateLogSenseResponse(
                         pSrb, pCQEntry);
@@ -7843,6 +7848,19 @@ BOOLEAN SntiCompletionCallbackRoutine(
             translationStatus = SNTI_SEQUENCE_ERROR;
         }
     } else {
+        if ((pDevExt->ntldrDump == FALSE) && (pSrbExt->pDataBuffer != NULL) &&
+            ((opcode == SCSIOP_LOG_SENSE) || (opcode == SCSIOP_MODE_SENSE) ||
+            (opcode == SCSIOP_MODE_SENSE10))) {
+                    ulStatus = StorPortFreeContiguousMemorySpecifyCache(pDevExt,
+                        pSrbExt->pDataBuffer,
+                        sizeof(ADMIN_GET_LOG_PAGE_SMART_HEALTH_INFORMATION_LOG_ENTRY),
+                        MmCached);
+
+                    if (ulStatus != STOR_STATUS_SUCCESS) {
+                        ASSERT(FALSE);
+                    }
+                    pSrbExt->pDataBuffer = NULL;
+        }
         /* NVME command status failure */
         pSrb->SrbStatus = SRB_STATUS_ERROR;
         translationStatus = SNTI_SEQUENCE_ERROR;
