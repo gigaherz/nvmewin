@@ -263,7 +263,7 @@ SNTI_RESPONSE_BLOCK commandSpecificStatusTable[] = {
         SCSI_ADSENSE_INTERNAL_TARGET_FAILURE,
         SCSI_ADSENSE_NO_SENSE},
 
-    /* WRITE TO READ ONLY RANGE - 0x82 (0xD) */
+    /* ATTEMPTED WRITE TO READ ONLY RANGE - 0x82 (0xD) */
     {SRB_STATUS_ERROR,
         SCSISTAT_CHECK_CONDITION,
         SCSI_SENSE_DATA_PROTECT,
@@ -5940,30 +5940,13 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeSense(
                     returnStatus = SNTI_COMMAND_COMPLETED;
                 break;
                 case MODE_SENSE_RETURN_ALL:
-                    SntiReturnAllModePages(pSrbExt,
-                                           pLunExt,
-                                           allocLength,
-                                           longLbaAccepted,
-                                           disableBlockDesc,
-                                           modeSense10,
-                                           supportsVwc);
-
-                    if (supportsVwc == FALSE) {
-                        /* Command now because we don't set the VWC cmd */
-                    pSrb->SrbStatus = SRB_STATUS_SUCCESS;
-                    returnStatus = SNTI_COMMAND_COMPLETED;
-                    } else {
-                        /* Command is completed in Build I/O phase */
-                        pSrb->SrbStatus = SRB_STATUS_PENDING;
-                        returnStatus = SNTI_TRANSLATION_SUCCESS;
-
-                    /*
-                     * Override the completion routine - translation necessary
-                     * on completion
-                     */
-                    pSrbExt->pNvmeCompletionRoutine =
-                        SntiCompletionCallbackRoutine;
-                    }
+	            returnStatus = SntiReturnAllModePages(pSrbExt,
+                                                          pLunExt,
+                                                          allocLength,
+                                                          longLbaAccepted,
+                                                          disableBlockDesc,
+                                                          modeSense10,
+                                                          supportsVwc);
                 break;
                 default:
                     SntiSetScsiSenseData(pSrb,
@@ -6389,9 +6372,10 @@ VOID SntiCreateInformationalExceptionsControlModePage(
  * @param modeSense10 - Boolean to determine Mode Sense 10
  * @param supportsVwc - From ID data, tells us if we can send VWC cmds or not
  *
- * @return VOID
+ * @return SNTI_TRANSLATION_STATUS
+ *     Indicates translation status
  ******************************************************************************/
-VOID SntiReturnAllModePages(
+SNTI_TRANSLATION_STATUS SntiReturnAllModePages(
     PNVME_SRB_EXTENSION pSrbExt,
     PNVME_LUN_EXTENSION pLunExt,
     UINT16 allocLength,
@@ -6415,6 +6399,9 @@ VOID SntiReturnAllModePages(
 #endif
     UINT16 modeDataLength = 0;
     UINT16 blockDescLength = 0;
+    SNTI_TRANSLATION_STATUS returnStatus;
+    PNVME_DEVICE_EXTENSION pAE = NULL;
+    pAE = pSrbExt->pNvmeDevExt;
 
     memset(GET_DATA_BUFFER(pSrb), 0, min(GET_DATA_LENGTH(pSrb), allocLength));
 
@@ -6532,14 +6519,40 @@ VOID SntiReturnAllModePages(
             WORD_LOW_BYTE_MASK);
     }
 
-    if (supportsVwc == TRUE) {
-    /* Finally, make sure we issue the GET FEATURES command */
-    SntiBuildGetFeaturesCmd(pSrbExt, VOLATILE_WRITE_CACHE);
+    pSrb->SrbStatus = SRB_STATUS_PENDING;
+
+    /* Set the completion callback routine to finish the command translation */
+    pSrbExt->pNvmeCompletionRoutine = SntiCompletionCallbackRoutine;
+
+    pSrbExt->dataBufferSize =
+	sizeof(ADMIN_GET_LOG_PAGE_SMART_HEALTH_INFORMATION_LOG_ENTRY);
+
+    pSrbExt->pDataBuffer = NVMeAllocateMem(pAE,
+	sizeof(ADMIN_GET_LOG_PAGE_SMART_HEALTH_INFORMATION_LOG_ENTRY), 0);
+
+    if (pSrbExt->pDataBuffer != NULL) {
+	SntiBuildGetLogPageCmd(pSrbExt, SMART_HEALTH_INFORMATION);
+
+	pSrbExt->ModeSenseWaitState = MODE_SENSE_WAIT_FOR_GET_LOG_PAGE_RESPONSE;
+
+	SET_DATA_LENGTH(pSrb, min(modeDataLength, allocLength));
+	
+	pSrb->SrbStatus = SRB_STATUS_PENDING;
+	returnStatus = SNTI_TRANSLATION_SUCCESS;
+    }
+    else {
+	SntiSetScsiSenseData(pSrb,
+			     SCSISTAT_CHECK_CONDITION,
+			     SCSI_SENSE_UNIQUE,
+			     SCSI_ADSENSE_INTERNAL_TARGET_FAILURE,
+			     SCSI_ADSENSE_NO_SENSE);
+
+	pSrb->SrbStatus |= SRB_STATUS_ERROR;
+	SET_DATA_LENGTH(pSrb, 0);
+	returnStatus = SNTI_FAILURE_CHECK_RESPONSE_DATA;
     }
 
-    SET_DATA_LENGTH(pSrb, min(modeDataLength, allocLength));
-    StorPortCopyMemory((PVOID)GET_DATA_BUFFER(pSrb),
-        (PVOID)(pSrbExt->modeSenseBuf), GET_DATA_LENGTH(pSrb));
+    return returnStatus;
 
 } /* SntiReturnAllModePages */
 
@@ -7812,6 +7825,8 @@ BOOLEAN SntiCompletionCallbackRoutine(
                 case SCSIOP_MODE_SENSE10:
                     translationStatus = SntiTranslateModeSenseResponse(
                         pSrb, pCQEntry);
+                    if (translationStatus == SNTI_SEQUENCE_IN_PROGRESS)
+                        returnValue = FALSE;
                 break;
                 case SCSIOP_START_STOP_UNIT:
                     /* NOTE: This is an implicit NVM Flush command completing */
@@ -8167,6 +8182,14 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeSenseResponse(
     UINT8 disableBlockDesc;
     UINT8 pageCode;
     BOOLEAN modeSense10;
+	UCHAR scsiStatus = 0;
+	BOOLEAN ioStarted = FALSE;
+	PNVME_DEVICE_EXTENSION pDevExt = NULL;
+	BOOLEAN supportsVwc = FALSE;
+	PADMIN_GET_LOG_PAGE_SMART_HEALTH_INFORMATION_LOG_ENTRY pNvmeLogPage = NULL;
+	PVOID pBuf = NULL;
+	ULONG ulStatus;
+
 
     /* Default to successful command sequence completion */
     SNTI_TRANSLATION_STATUS returnStatus = SNTI_SEQUENCE_COMPLETED;
@@ -8212,10 +8235,95 @@ SNTI_TRANSLATION_STATUS SntiTranslateModeSenseResponse(
                                                      modeSense10);
             break;
             case MODE_SENSE_RETURN_ALL:
-                SntiTranslateReturnAllModePagesResponse(pSrbExt,
-                                                        pCQEntry,
-                                                        modeSense10);
-            break;
+				pDevExt = ((PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(pSrb))->pNvmeDevExt;
+				supportsVwc = pDevExt->controllerIdentifyData.VWC.Present;
+				pBuf = pSrbExt->pDataBuffer;
+
+				switch (pSrbExt->ModeSenseWaitState)
+				{
+				case MODE_SENSE_WAIT_FOR_GET_LOG_PAGE_RESPONSE:
+					pNvmeLogPage = (PADMIN_GET_LOG_PAGE_SMART_HEALTH_INFORMATION_LOG_ENTRY)pBuf;
+
+					if (modeSense10 == FALSE) {
+						/* MODE SENSE 6 */
+						PMODE_PARAMETER_HEADER pModeHeader6 = (PMODE_PARAMETER_HEADER)(pSrbExt->modeSenseBuf);
+						if (pNvmeLogPage->CriticalWarning.MediaInReadOnlyMode == 1) {
+							pModeHeader6->DeviceSpecificParameter = pModeHeader6->DeviceSpecificParameter | WRITE_PROTECT;
+#if DBG
+							StorPortDebugPrint(INFO, "SntiTranslateModeSenseResponse: <Info> Device is in Read Only mode\n");
+#endif
+							pLunExt->IsNamespaceReadOnly = TRUE;
+						}
+					}
+					else {
+						/* MODE SENSE 10 */
+						PMODE_PARAMETER_HEADER10 pModeHeader10 = (PMODE_PARAMETER_HEADER10)(pSrbExt->modeSenseBuf);
+						if (pNvmeLogPage->CriticalWarning.MediaInReadOnlyMode == 1) {
+							pModeHeader10->DeviceSpecificParameter = pModeHeader10->DeviceSpecificParameter | WRITE_PROTECT;
+#if DBG
+							StorPortDebugPrint(INFO, "SntiTranslateModeSenseResponse: <Info> Device is in Read Only mode\n");
+#endif
+							pLunExt->IsNamespaceReadOnly = TRUE;
+						}
+					}
+
+					if ((pDevExt->ntldrDump == FALSE) && (pSrbExt->pDataBuffer != NULL)) {
+						ulStatus = StorPortFreeContiguousMemorySpecifyCache(pDevExt,
+							pSrbExt->pDataBuffer,
+							sizeof(ADMIN_GET_LOG_PAGE_SMART_HEALTH_INFORMATION_LOG_ENTRY),
+							MmCached);
+
+						if (ulStatus != STOR_STATUS_SUCCESS) {
+							ASSERT(FALSE);
+						}
+						pSrbExt->pDataBuffer = NULL;
+					}
+
+					/*Copy the response of GetLogPage command*/
+					StorPortCopyMemory((PVOID)GET_DATA_BUFFER(pSrb),
+						(PVOID)(pSrbExt->modeSenseBuf), GET_DATA_LENGTH(pSrb));
+
+					if (supportsVwc == TRUE) {
+
+						pSrbExt->pNvmeCompletionRoutine = SntiCompletionCallbackRoutine;
+
+						/* Finally, make sure we issue the GET FEATURES command */
+						SntiBuildGetFeaturesCmd(pSrbExt, VOLATILE_WRITE_CACHE);
+
+						ioStarted = ProcessIo(pSrbExt->pNvmeDevExt,
+							pSrbExt,
+							NVME_QUEUE_TYPE_ADMIN,
+							TRUE);
+
+						if (ioStarted == FALSE)
+							ASSERT(FALSE);
+
+						pSrb->SrbStatus = SRB_STATUS_PENDING;
+
+						pSrbExt->ModeSenseWaitState = MODE_SENSE_WAIT_FOR_GET_FEATURE_RESPONSE;
+						returnStatus = SNTI_SEQUENCE_IN_PROGRESS;
+					}
+					else {
+#if (NTDDI_VERSION > NTDDI_WIN7)
+						scsiStatus = SCSISTAT_GOOD;
+						SrbSetScsiData(pSrb, NULL, NULL, &scsiStatus, NULL, NULL);
+#else
+						pSrb->ScsiStatus = SCSISTAT_GOOD;
+#endif
+						pSrb->SrbStatus = SRB_STATUS_SUCCESS;
+						returnStatus = SNTI_COMMAND_COMPLETED;
+					}
+
+					break;
+
+				case MODE_SENSE_WAIT_FOR_GET_FEATURE_RESPONSE:
+					SntiTranslateReturnAllModePagesResponse(pSrbExt,
+						pCQEntry,
+						modeSense10);
+					returnStatus = SNTI_COMMAND_COMPLETED;
+					break;
+				}
+				break;
             default:
                 ASSERT(FALSE);
                 SntiSetScsiSenseData(pSrb,
@@ -8400,7 +8508,7 @@ VOID SntiTranslateReturnAllModePagesResponse(
     pSrb->ScsiStatus = SCSISTAT_GOOD;
 #endif
 
-    pSrbExt->pSrb->SrbStatus = SRB_STATUS_SUCCESS;
+    pSrb->SrbStatus = SRB_STATUS_SUCCESS;
 } /* SntiTranslateReturnAllModePagesResponse */
 
 /******************************************************************************
@@ -8736,22 +8844,23 @@ VOID SntiMapCommandSpecificStatus(
     SNTI_RESPONSE_BLOCK responseData;
 
     memset(&responseData, 0, sizeof(SNTI_RESPONSE_BLOCK));
-
-    /**
-     * Perform table lookup for Generic Command Status translation
-     *
-     * Command Specific Status Code Values:
-     *   0x00 - 0x0A and
-     *   0x80 (0x0B)
-     *
-     * Check bit 7 to see if this is a NVM Command Set status, if so then
-     * start at 0xB to index into lookup table
-     */
-    if ((commandSpecificStatus & NVM_CMD_SET_STATUS) != NVM_CMD_SET_STATUS)
-        responseData = commandSpecificStatusTable[commandSpecificStatus];
-    else
-        responseData = commandSpecificStatusTable[commandSpecificStatus -
-                       NVM_CMD_SET_SPECIFIC_STATUS_OFFSET];
+   
+	/**
+	* Perform table lookup for Generic Command Status translation
+	*
+	* Command Specific Status Code Values:
+	*   0x00 - 0x0A and
+	*   0x80 (0x0B)
+	*
+	* Check bit 7 to see if this is a NVM Command Set status, if so then
+	* start at 0xB to index into lookup table
+	*/
+	if ((commandSpecificStatus & NVM_CMD_SET_STATUS) != NVM_CMD_SET_STATUS)
+		responseData = commandSpecificStatusTable[commandSpecificStatus];
+	else
+		responseData = commandSpecificStatusTable[commandSpecificStatus -
+		               NVM_CMD_SET_SPECIFIC_STATUS_OFFSET];
+  
 
     SntiSetScsiSenseData(pSrb,
                          responseData.StatusCode,

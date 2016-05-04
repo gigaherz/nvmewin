@@ -924,7 +924,8 @@ typedef struct _nvme_lun_extension
     UINT32                       namespaceId;
     NS_STATUS                    nsStatus;
     BOOLEAN                      ReadOnly;
-    BOOLEAN                       nsReady;
+    BOOLEAN                      nsReady;
+    BOOLEAN                      IsNamespaceReadOnly;
     LUN_SLOT_STATUS              slotStatus;
     LUN_OFFLINE_REASON           offlineReason;
 } NVME_LUN_EXTENSION, *PNVME_LUN_EXTENSION;
@@ -1115,6 +1116,8 @@ typedef struct _nvme_srb_extension
 
     /* Callback completion routine, if needed */
     PNVME_COMPLETION_ROUTINE     pNvmeCompletionRoutine;
+
+    BOOLEAN ModeSenseWaitState;
 
     /* WMI */
 

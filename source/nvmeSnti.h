@@ -48,12 +48,16 @@
 #ifndef __NVME_SNTI_H__
 #define __NVME_SNTI_H__
 
+#define MODE_SENSE_WAIT_FOR_GET_LOG_PAGE_RESPONSE   0x1
+#define MODE_SENSE_WAIT_FOR_GET_FEATURE_RESPONSE    0x2
+
 #define VALID_NVME_PATH_ID   0
 #define VALID_NVME_TARGET_ID 0
 #define SNTI_STORPORT_QUEUE_DEPTH (254)
 #define MODE_BLOCK_DESC_MAX (0xFFFFFF)
 #define MODE_BLOCK_DESC_MAX_BYTE (0xFF)
 #define NVME_MAX_NUM_BLOCKS_PER_READ_WRITE (0xFFFF)
+#define WRITE_PROTECT       0x80
 
 /*******************************************************************************
  * VPD_EXTENDED_INQUIRY_DATA
@@ -986,7 +990,7 @@ VOID SntiCreateInformationalExceptionsControlModePage(
     BOOLEAN modeSense10
 );
 
-VOID SntiReturnAllModePages(
+SNTI_TRANSLATION_STATUS SntiReturnAllModePages(
     PNVME_SRB_EXTENSION pSrbExt,
     PNVME_LUN_EXTENSION pLunExt,
     UINT16 allocLength,
