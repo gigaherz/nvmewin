@@ -70,4 +70,12 @@ BOOLEAN NVMePowerControl(
     IN PSCSI_REQUEST_BLOCK Srb
 );
 
+#if (NTDDI_VERSION > NTDDI_WIN7)
+BOOLEAN NVMeAdapterPowerControl(
+	IN PNVME_DEVICE_EXTENSION pAE,
+	IN ULONG DevicePowerState,
+	IN ULONG PowerAction
+);
+#endif
+
 #endif /* __NVME_PWRMGMT_H__ */

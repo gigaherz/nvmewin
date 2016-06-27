@@ -47,9 +47,11 @@ HKR, "Parameters", "BusType", %REG_DWORD%, 0x00000011
 HKR, Interrupt Management, 0x00000010
 HKR, Interrupt Management\MessageSignaledInterruptProperties, 0x00000010
 HKR, Interrupt Management\MessageSignaledInterruptProperties, MSISupported,       %REG_DWORD%,   1
-HKR, Interrupt Management\MessageSignaledInterruptProperties, MessageNumberLimit, %REG_DWORD%,   32
+HKR, Interrupt Management\MessageSignaledInterruptProperties, MessageNumberLimit, %REG_DWORD%,   120
 HKR, Interrupt Management\Affinity Policy, 0x00000010
 HKR, Interrupt Management\Affinity Policy, DevicePolicy, %REG_DWORD%, 5 ;IrqPolicySpreadMessagesAcrossAllProcessors
+HKR, Interrupt Management\Affinity Policy, DevicePriority, %REG_DWORD%, 3
+HKR, Interrupt Management\Affinity Policy, GroupPolicy, %REG_DWORD%, 1
 
 [Parameters]
 HKR, Parameters\Device, Namespaces,         %REG_DWORD%, 0x00000010 ; max number of namespaces supported

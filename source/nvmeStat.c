@@ -269,6 +269,7 @@ VOID NVMeRunning(
     PNVME_DEVICE_EXTENSION pAE
 )
 {
+	ULONG newVersion = 0;
 
     /*
      * Go to the next state in the Start State Machine
@@ -318,9 +319,17 @@ VOID NVMeRunning(
 		break;
         case NVMeStartComplete:
             pAE->RecoveryAttemptPossible = TRUE;
-			if (pAE->ntldrDump == FALSE) {
-				StorPortNotification(RequestTimerCall, pAE, IsDeviceRemoved, START_SURPRISE_REMOVAL_TIMER); //start after 1 seconds
+			newVersion = StorPortReadRegisterUlong(pAE, (PULONG)(&pAE->pCtrlRegister->VS));
+
+			if (pAE->ntldrDump == FALSE  && newVersion != INVALID_DEVICE_REGISTER_VALUE && pAE->DeviceRemovedDuringIO != TRUE) {
+#if (NTDDI_VERSION > NTDDI_WIN7)
+				if (pAE->Timerhandle != NULL)
+					StorPortRequestTimer(pAE, pAE->Timerhandle, IsDeviceRemoved, NULL, START_SURPRISE_REMOVAL_TIMER, 0);//every 1 seconds
+#else
+					StorPortNotification(RequestTimerCall, pAE, IsDeviceRemoved, START_SURPRISE_REMOVAL_TIMER); //start after 1 seconds
+#endif
 			}
+
             /* Indicate learning is done with no unassigned cores */
             pAE->LearningCores = pAE->ResMapTbl.NumActiveCores;
 

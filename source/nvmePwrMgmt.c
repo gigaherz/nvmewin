@@ -277,3 +277,115 @@ BOOLEAN NVMePowerControl(
 
     return status;
 }
+
+#if (NTDDI_VERSION > NTDDI_WIN7)
+/*******************************************************************************
+* NVMeAdapterPowerControl
+*
+* @brief This function handles the power requests srb from the storport. This
+*        routine handles request from system to go to S3/S4 state or resume
+*        from S3/S4 state.
+*
+* @param pAE - pointer to device extension
+* @param DevicePowerState - Device Power State
+* @param PowerAction - Power Action
+*
+* @return BOOLEAN
+*     TRUE - command was processed successfully
+*     FALSE - If anything goes wrong
+******************************************************************************/
+BOOLEAN NVMeAdapterPowerControl(
+    IN PNVME_DEVICE_EXTENSION pAE,
+    IN ULONG DevicePowerState,
+	IN ULONG PowerAction
+	)
+{
+    BOOLEAN status = FALSE;
+    BOOLEAN powerActionValid = FALSE;
+    NVME_PWR_ACTION nvmePwrAction = NVME_PWR_NONE;
+
+    switch (DevicePowerState) {
+    case StorPowerDeviceD0:
+    case StorPowerDeviceD3:
+        StorPortDebugPrint(INFO, "NVMePowerControl: <Info> Device Power State request %d\n", DevicePowerState);
+        powerActionValid = TRUE;
+        break;
+    case StorPowerDeviceD1:
+    case StorPowerDeviceD2:
+        StorPortDebugPrint(INFO, "NVMePowerControl: <Info> Device Power State request %d\n", DevicePowerState);
+        powerActionValid = FALSE;
+        status = TRUE;
+        break;
+	case StorPowerDeviceUnspecified:
+        StorPortDebugPrint(ERROR, "NVMePowerControl: <Error> Unsupported Device Power State received %d\n", DevicePowerState);
+        powerActionValid = FALSE;
+        break;
+	default:
+        ASSERT(FALSE);
+        break;
+	}
+
+	/*
+	* Based on power state validity, which we determined above, we will
+	* transition into appropriate state.
+	*/
+    if (powerActionValid == TRUE) {
+        switch (PowerAction) {
+        case StorPowerActionNone:
+            break;
+        case StorPowerActionHibernate:
+        case StorPowerActionSleep:
+            switch (DevicePowerState) {
+            case StorPowerDeviceD0:
+                nvmePwrAction = NVME_PWR_ADAPTER_RESUME_FROM_S3_S4;
+                break;
+            case StorPowerDeviceD3:
+                nvmePwrAction = NVME_PWR_ADAPTER_ENTER_S3_S4;
+
+                /*
+                * Save the PowerAction to prevent
+                * SCSIOP_START_STOP_UNIT to issue any cmds if we are
+                * waking from the Hibernate and before our controller
+                * is ready.
+                */
+                pAE->PowerAction = PowerAction;
+                break;
+            default:
+                /* nvmePwrAction already initialized to NVME_PWR_NONE */
+                break;
+            } /* end DevicePowerState switch */
+            break;
+        case StorPowerActionShutdown:
+        case StorPowerActionShutdownReset:
+        case StorPowerActionShutdownOff:
+        case StorPowerActionWarmEject:
+            nvmePwrAction = NVME_PWR_ADAPTER_OFF;
+            break;
+        case StorPowerActionReserved:
+        default:
+            StorPortDebugPrint(ERROR, "NVMePowerControl: <Error> Unsupported Device Power Action requested %d\n", PowerAction);
+            break;
+        } /* end PowerAction switch */
+    } /* end if (powerActionValid == TRUE) */
+
+    /* Now at this point we know what power action we need to take */
+    switch (nvmePwrAction) {
+    case NVME_PWR_ADAPTER_OFF:
+        status = NVMeNormalShutdown(pAE);
+        break;
+    case NVME_PWR_ADAPTER_ENTER_S3_S4:
+        StorPortPause(pAE, STOR_ALL_REQUESTS);
+        status = NVMeAdapterControlPowerDown(pAE);
+        break;
+    case NVME_PWR_ADAPTER_RESUME_FROM_S3_S4:
+        status = NVMeAdapterControlPowerUp(pAE);
+        break;
+    case NVME_PWR_NONE:
+    default:
+        return FALSE;
+        break;
+    } /* end switch */
+
+    return status;
+}
+#endif

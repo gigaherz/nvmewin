@@ -236,7 +236,9 @@ NVMeFindAdapter(
     PACCESS_RANGE pMM_Range;
     PRES_MAPPING_TBL pRMT = NULL;
     ULONG pciStatus = 0;
-
+#if (NTDDI_VERSION > NTDDI_WIN7)
+	ULONG storStatus = STOR_STATUS_UNSUCCESSFUL;
+#endif
     NVMe_CONTROLLER_CAPABILITIES CAP = {0};
 
     UNREFERENCED_PARAMETER( Reserved1 );
@@ -406,6 +408,14 @@ NVMeFindAdapter(
 		if (pAE->pArrGrpAff == NULL) 
 			return (SP_RETURN_NOT_FOUND);
 
+#if (NTDDI_VERSION > NTDDI_WIN7)
+		storStatus = StorPortInitializeTimer(pAE, &pAE->Timerhandle);
+
+		if (storStatus != STOR_STATUS_SUCCESS) {
+			StorPortDebugPrint(ERROR, "---NVMeFindAdapter: <Error> Intialization of timer failed---\n");
+			pAE->Timerhandle = NULL;
+		}
+#endif
     }
 
     /* Populate all PORT_CONFIGURATION_INFORMATION fields... */
@@ -630,6 +640,14 @@ BOOLEAN NVMePassiveInitialize(
         /* increment 5000us (timer callback val */
         pAE->DriverState.TimeoutCounter += pAE->DriverState.CheckbackInterval;
         if ((pAE->DriverState.TimeoutCounter > passiveTimeout) || (pAE->originalVersion.value != newVersion)) {
+
+#if (NTDDI_VERSION > NTDDI_WIN7)
+            if (pAE->Timerhandle != NULL) {
+                StorPortFreeTimer(pAE, pAE->Timerhandle);
+                pAE->Timerhandle = NULL;
+            }
+#endif
+
             pAE->DriverState.NextDriverState = NVMeStartComplete;
             pAE->DeviceRemovedDuringIO = TRUE;
             StorPortDebugPrint(ERROR, "NVMePassiveInitialize: <Error> State machine timeout or device removed during \
@@ -954,6 +972,9 @@ SCSI_ADAPTER_CONTROL_STATUS NVMeAdapterControl(
     PSCSI_SUPPORTED_CONTROL_TYPE_LIST pList;
     SCSI_ADAPTER_CONTROL_STATUS scsiStatus = ScsiAdapterControlSuccess;
     BOOLEAN status = FALSE;
+    ULONG PowerAction = 0;
+    ULONG DevicePowerState = 0;
+    PSTOR_ADAPTER_CONTROL_POWER adapterPower = NULL;
 
     switch (ControlType) {
         /* Determine which control types (routines) are supported */
@@ -973,15 +994,25 @@ SCSI_ADAPTER_CONTROL_STATUS NVMeAdapterControl(
             if (ScsiRestartAdapter < pList->MaxControlType) {
                 pList->SupportedTypeList[ScsiRestartAdapter] = TRUE;
             }
+
+#if (NTDDI_VERSION > NTDDI_WIN7)
+            if (ScsiAdapterPower < pList->MaxControlType) {
+                pList->SupportedTypeList[ScsiAdapterPower] = TRUE;
+            }
+#endif
         break;
         /* StopAdapter routine called just before power down of adapter */
         case ScsiStopAdapter:
             StorPortDebugPrint(INFO,"NVMeAdapterControl: ScsiStopAdapter\n");
+
+#if (NTDDI_VERSION <= NTDDI_WIN7)
             if ((pAE->ntldrDump == FALSE) && (pAE->ShutdownInProgress == FALSE)) {
                 StorPortNotification(RequestTimerCall, pAE, IsDeviceRemoved, STOP_SURPRISE_REMOVAL_TIMER);
             }
             status = NVMeAdapterControlPowerDown(pAE);
-            break;
+#endif
+            scsiStatus = ScsiAdapterControlSuccess;
+        break;
         /*
          * Routine to reinitialize adapter while system in running. Since the
          * adapter DeviceExtension is maintained through a power management
@@ -989,11 +1020,22 @@ SCSI_ADAPTER_CONTROL_STATUS NVMeAdapterControl(
          */
         case ScsiRestartAdapter:
             StorPortDebugPrint(INFO,"NVMeAdapterControl: ScsiRestartAdapter\n");
-            if (pAE->ntldrDump == FALSE) {
-                StorPortNotification(RequestTimerCall, pAE, IsDeviceRemoved, START_SURPRISE_REMOVAL_TIMER);
-            }
+#if (NTDDI_VERSION <= NTDDI_WIN7)
             status = NVMeAdapterControlPowerUp(pAE);
+#endif
+            scsiStatus = ScsiAdapterControlSuccess;
         break;
+
+
+#if (NTDDI_VERSION > NTDDI_WIN7)
+        case ScsiAdapterPower:
+			adapterPower = (PSTOR_ADAPTER_CONTROL_POWER)Parameters;
+			PowerAction = adapterPower->PowerAction;
+			DevicePowerState = adapterPower->PowerState;
+			status = NVMeAdapterPowerControl(pAE, DevicePowerState, PowerAction);
+			scsiStatus = ScsiAdapterControlSuccess;
+	    break;
+#endif
         default:
             scsiStatus = ScsiAdapterControlUnsuccessful;
         break;
@@ -1074,6 +1116,7 @@ BOOLEAN NVMeBuildIo(
     SNTI_TRANSLATION_STATUS sntiStatus;
     BOOLEAN ioctlStatus = FALSE;
     UCHAR opCode = 0;
+    PCDB pCdb = NULL;
 
 #if (NTDDI_VERSION > NTDDI_WIN7)
     if (Function == SRB_FUNCTION_STORAGE_REQUEST_BLOCK) {
@@ -1113,42 +1156,6 @@ BOOLEAN NVMeBuildIo(
                                 (PSCSI_REQUEST_BLOCK)Srb);
 #endif
         return FALSE;
-    }
-
-
-    /*
-     * Block Read/Write commands while Format NVM is in progress
-     * Case 1: All namespace are being formatted.
-     * Case 2: Only one namespace is being formatted.
-     */
-    if (pAdapterExtension->FormatNvmInfo.State != FORMAT_NVM_NO_ACTIVITY) {
-        opCode = GET_OPCODE(Srb);
-        if (pAdapterExtension->FormatNvmInfo.FormatAllNamespaces == TRUE) {
-            if (NVMeIsReadWriteCmd(Function, opCode) == TRUE) {
-                Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
-                IO_StorPortNotification(RequestComplete,
-                    AdapterExtension,
-#if (NTDDI_VERSION > NTDDI_WIN7)
-                    (PSTORAGE_REQUEST_BLOCK)Srb);
-#else
-                    (PSCSI_REQUEST_BLOCK)Srb);
-#endif
-                return FALSE;
-            }
-        } else {
-            if ((pAdapterExtension->FormatNvmInfo.TargetLun == Lun) &&
-                (NVMeIsReadWriteCmd(Function, opCode) == TRUE)) {
-                Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
-                IO_StorPortNotification(RequestComplete,
-                    AdapterExtension,
-#if (NTDDI_VERSION > NTDDI_WIN7)
-                    (PSTORAGE_REQUEST_BLOCK)Srb);
-#else
-                    (PSCSI_REQUEST_BLOCK)Srb);
-#endif
-                return FALSE;
-            }
-        }
     }
 
     /* Check to see if the controller has started yet */
@@ -1212,7 +1219,15 @@ BOOLEAN NVMeBuildIo(
              */
             pAdapterExtension->ShutdownInProgress = TRUE;
             if (pAdapterExtension->ntldrDump == FALSE) {
-                StorPortNotification(RequestTimerCall, AdapterExtension, IsDeviceRemoved, STOP_SURPRISE_REMOVAL_TIMER);
+#if (NTDDI_VERSION > NTDDI_WIN7)					
+			if (pAdapterExtension->Timerhandle != NULL) {
+				StorPortRequestTimer(pAdapterExtension, pAdapterExtension->Timerhandle, IsDeviceRemoved, NULL, STOP_SURPRISE_REMOVAL_TIMER, 0);
+				StorPortFreeTimer(pAdapterExtension, pAdapterExtension->Timerhandle);
+				pAdapterExtension->Timerhandle = NULL;
+			}
+#else
+			StorPortNotification(RequestTimerCall, pAdapterExtension, IsDeviceRemoved, STOP_SURPRISE_REMOVAL_TIMER);
+#endif
             }
             Srb->SrbStatus = SRB_STATUS_SUCCESS;
             IO_StorPortNotification(RequestComplete, 
@@ -1283,9 +1298,17 @@ BOOLEAN NVMeBuildIo(
                  * allocated for it.
                  */
                 if (pAdapterExtension->ntldrDump == FALSE) {
-                        StorPortNotification(RequestTimerCall, pAdapterExtension, IsDeviceRemoved, STOP_SURPRISE_REMOVAL_TIMER);
-                        NVMeAdapterControlPowerDown(pAdapterExtension);
-                        NVMeFreeBuffers(pAdapterExtension);
+#if (NTDDI_VERSION > NTDDI_WIN7)
+					if (pAdapterExtension->Timerhandle != NULL) {
+						StorPortRequestTimer(pAdapterExtension, pAdapterExtension->Timerhandle, IsDeviceRemoved, NULL, STOP_SURPRISE_REMOVAL_TIMER, 0);
+						StorPortFreeTimer(pAdapterExtension, pAdapterExtension->Timerhandle);
+						pAdapterExtension->Timerhandle = NULL;
+					}
+#else
+					StorPortNotification(RequestTimerCall, pAdapterExtension, IsDeviceRemoved, STOP_SURPRISE_REMOVAL_TIMER);
+#endif
+                    NVMeAdapterControlPowerDown(pAdapterExtension);
+                    NVMeFreeBuffers(pAdapterExtension);
                 }
 
                 Srb->SrbStatus = SRB_STATUS_SUCCESS;
@@ -1357,6 +1380,41 @@ BOOLEAN NVMeBuildIo(
             return TRUE;
         break;
         case SRB_FUNCTION_EXECUTE_SCSI:
+			/*
+			* Block Read/Write commands while Format NVM is in progress
+			* Case 1: All namespace are being formatted.
+			* Case 2: Only one namespace is being formatted.
+			*/
+			if (pAdapterExtension->FormatNvmInfo.State != FORMAT_NVM_NO_ACTIVITY) {
+				opCode = GET_OPCODE(Srb);
+				if (pAdapterExtension->FormatNvmInfo.FormatAllNamespaces == TRUE) {
+					if (NVMeIsReadWriteCmd(Function, opCode) == TRUE) {
+						Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
+						IO_StorPortNotification(RequestComplete,
+							AdapterExtension,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+							(PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+							(PSCSI_REQUEST_BLOCK)Srb);
+#endif
+						return FALSE;
+					}
+				}
+				else {
+					if ((pAdapterExtension->FormatNvmInfo.TargetLun == Lun) &&
+						(NVMeIsReadWriteCmd(Function, opCode) == TRUE)) {
+						Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
+						IO_StorPortNotification(RequestComplete,
+							AdapterExtension,
+#if (NTDDI_VERSION > NTDDI_WIN7)
+							(PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+							(PSCSI_REQUEST_BLOCK)Srb);
+#endif
+						return FALSE;
+					}
+				}
+			}
 #if DBG
             /* Debug print only - turn off for main I/O */
             StorPortDebugPrint(INFO, "BuildIo: SRB_FUNCTION_EXECUTE_SCSI\n");
@@ -1488,6 +1546,53 @@ BOOLEAN NVMeBuildIo(
     return TRUE;
 } /* NVMeBuildIo */
 
+#if (NTDDI_VERSION > NTDDI_WIN7)
+  /*******************************************************************************
+  * IsDeviceRemoved
+  *
+  * @brief Surprise removal timer routine for the Ioctl path to check if the device
+  * is surprise removed by checking the validity of the Version register. Whenever
+  * device is surprise removed, the memory mapped registers will be unmapped and
+  * returns 1 when read.
+  *
+  * @param pAE - Pointer to Device extension.
+  *
+  * @return VOID
+  ******************************************************************************/
+VOID IsDeviceRemoved(
+	PNVME_DEVICE_EXTENSION pAE, 
+	PVOID Context
+)
+{
+	ULONG Version = 0;
+	if (pAE->ShutdownInProgress == TRUE)
+		return;
+	Version = StorPortReadRegisterUlong(pAE, (PULONG)(&pAE->pCtrlRegister->VS));
+
+	if (Version == INVALID_DEVICE_REGISTER_VALUE) {
+
+		pAE->DeviceRemovedDuringIO = TRUE;
+		StorPortPause(pAE, STOR_ALL_REQUESTS);
+#if DBG
+		StorPortDebugPrint(ERROR, "CheckSurpriseRemoval: <Info> Device removed with outstanding IO\n");
+#endif
+		NVMeDetectPendingCmds(pAE, TRUE, SRB_STATUS_ERROR);
+		if (pAE->Timerhandle != NULL) {
+				StorPortFreeTimer(pAE, pAE->Timerhandle);
+				pAE->Timerhandle = NULL;
+		}
+		NVMeFreeBuffers(pAE);
+		StorPortResume(pAE);
+	}
+	else {
+		if (pAE->DriverState.NextDriverState == NVMeStartComplete)
+			if (pAE->Timerhandle != NULL)
+				StorPortRequestTimer(pAE, pAE->Timerhandle, IsDeviceRemoved, NULL, START_SURPRISE_REMOVAL_TIMER, 0);//every 1 seconds
+	}
+
+}/*  IsDeviceRemoved */
+
+#else
 /*******************************************************************************
 * IsDeviceRemoved
 *
@@ -1524,8 +1629,8 @@ VOID IsDeviceRemoved(
         if(pAE->DriverState.NextDriverState == NVMeStartComplete)
             StorPortNotification(RequestTimerCall, pAE, IsDeviceRemoved, START_SURPRISE_REMOVAL_TIMER); //every 1 seconds
     }
-
 }
+#endif
 
 /*******************************************************************************
  * NVMeIssueAbortCmd
@@ -1693,6 +1798,8 @@ BOOLEAN NVMeStartIo(
     PNVMe_COMMAND_DWORD_0 pNvmeCmdDW0 = NULL;
     PFORMAT_NVM_INFO pFormatNvmInfo = NULL;
     ULONG Wait = 5;
+    ULONG Version = 0;
+
 #if (NTDDI_VERSION > NTDDI_WIN7)
     if (Function == SRB_FUNCTION_STORAGE_REQUEST_BLOCK)
         Function = (UCHAR)((PSTORAGE_REQUEST_BLOCK)Srb)->SrbFunction;
@@ -1702,17 +1809,27 @@ BOOLEAN NVMeStartIo(
      * resources, slot and command history. Check if command processing should
      * happen.
      */
-
     if (pAdapterExtension->DriverState.NextDriverState != NVMeStartComplete) {
-            Srb->SrbStatus = SRB_STATUS_NO_DEVICE;
-            IO_StorPortNotification(RequestComplete, 
-                                    pAdapterExtension, 
+
+		Version = StorPortReadRegisterUlong(pAdapterExtension, (PULONG)(&pAdapterExtension->pCtrlRegister->VS));
+		if (Version == INVALID_DEVICE_REGISTER_VALUE) {
 #if (NTDDI_VERSION > NTDDI_WIN7)
-                                    (PSTORAGE_REQUEST_BLOCK)Srb);
-#else
-                                    (PSCSI_REQUEST_BLOCK)Srb);
+			if (pAdapterExtension->Timerhandle != NULL) {
+				StorPortFreeTimer(pAdapterExtension, pAdapterExtension->Timerhandle);
+				pAdapterExtension->Timerhandle = NULL;
+			}
 #endif
-            return TRUE;
+		}
+
+        Srb->SrbStatus = SRB_STATUS_NO_DEVICE;
+        IO_StorPortNotification(RequestComplete, 
+                                pAdapterExtension, 
+#if (NTDDI_VERSION > NTDDI_WIN7)
+                                (PSTORAGE_REQUEST_BLOCK)Srb);
+#else
+                                (PSCSI_REQUEST_BLOCK)Srb);
+#endif
+        return TRUE;
     }
 
     pSrbExtension = (PNVME_SRB_EXTENSION)GET_SRB_EXTENSION(Srb);
@@ -1800,7 +1917,9 @@ BOOLEAN NVMeStartIo(
         case SRB_FUNCTION_POWER:
             StorPortDebugPrint(INFO, "NVMeStartIo: SRB_FUNCTION_POWER");
             Srb->SrbStatus = SRB_STATUS_SUCCESS;
+#if (NTDDI_VERSION <= NTDDI_WIN7)
             status = NVMePowerControl(pAdapterExtension, Srb);
+#endif
             IO_StorPortNotification(RequestComplete, 
                                     pAdapterExtension, 
 #if (NTDDI_VERSION > NTDDI_WIN7)
@@ -2502,7 +2621,18 @@ VOID RecoveryDpcRoutine(
             NVMeRunningStartAttempt(pAE, TRUE, pSrb);
         } /* init the admin queues */
     } else {
+		pAE->DeviceRemovedDuringIO = TRUE;
+#if (NTDDI_VERSION > NTDDI_WIN7)
+		if (pAE->Timerhandle != NULL) {
+			StorPortFreeTimer(pAE, pAE->Timerhandle);
+			pAE->Timerhandle = NULL;
+		}
+#endif
+
+		NVMeDetectPendingCmds(pAE, TRUE, SRB_STATUS_ERROR);
         StorPortReleaseSpinLock(pAE, &startLockhandle);
+        NVMeFreeBuffers(pAE);
+		StorPortResume(pAE);
     }  /* reset the controller */
 } /* RecoveryDpcRoutine */
 
@@ -2616,13 +2746,24 @@ BOOLEAN NVMeReInitializeController(
             NVMeRunningStartAttempt(pAE, FALSE, NULL);
         
         } /* init the admin queues */
-    }
+	} else {
+		pAE->DeviceRemovedDuringIO = TRUE;
+#if (NTDDI_VERSION > NTDDI_WIN7)
+		if (pAE->Timerhandle != NULL) {
+			StorPortFreeTimer(pAE, pAE->Timerhandle);
+			pAE->Timerhandle = NULL;
+		}
+#endif
+
+		NVMeDetectPendingCmds(pAE, TRUE, SRB_STATUS_ERROR);
+		NVMeFreeBuffers(pAE);
+	}
 
     pAE->polledResetInProg = FALSE;
 
     /* if init state machine completed successfully, we allow IOs to resume */
-    if (pAE->DriverState.NextDriverState == NVMeStartComplete) {
-        NVMeRunning(pAE);
+	if ((pAE->DriverState.NextDriverState == NVMeStartComplete) && (pAE->DeviceRemovedDuringIO == FALSE)) {
+		NVMeRunning(pAE);
     } else {
         StorPortResume(pAE);
     }
@@ -4334,17 +4475,28 @@ BOOLEAN FormatNVMGetIdentify(
         if (pIdenCtrl == NULL) {
             Status = FALSE;
         } else {
-            ASSERT(INVALID_LUN_EXTN != lunId);
 			/* Assign the destination buffer for retrieved structure */
-            pIdenNS = &pAE->pLunExtensionTable[lunId]->identifyData;
-            /* Namespace ID is 1-based. */
-            pIdentify->NSID = NamespaceID;
-            /* Prepare PRP entries, need at least one PRP entry */
-            if (NVMePreparePRPs(pAE, 
-                                pSrbExt,
-                                (PVOID)pIdenNS,
-                                sizeof(ADMIN_IDENTIFY_NAMESPACE)) == FALSE)
-            Status = FALSE;            
+			if (FALSE == NVMeIsNamespaceVisible(pSrbExt, NamespaceID, &lunId)) {
+				/*
+				* Not a visible namespace, so we can skip fetching identify
+				* namespace structure. Return TRUE so we can complete the
+				* request.
+				*/
+				Status = TRUE;
+			}
+			else {
+				ASSERT(INVALID_LUN_EXTN != lunId);
+				/* Assign the destination buffer for retrieved structure */
+				pIdenNS = &pAE->pLunExtensionTable[lunId]->identifyData;
+				/* Namespace ID is 1-based. */
+				pIdentify->NSID = NamespaceID;
+				/* Prepare PRP entries, need at least one PRP entry */
+				if (NVMePreparePRPs(pAE,
+									pSrbExt,
+									(PVOID)pIdenNS,
+									sizeof(ADMIN_IDENTIFY_NAMESPACE)) == FALSE)
+				Status = FALSE;
+			}
         }
     }
     /* Complete the request now if something goes wrong */

@@ -105,7 +105,7 @@ HW_PASSIVE_INITIALIZE_ROUTINE NVMePassiveInitialize;
 /* Default, minimum, maximum values of Registry keys */
 #define DFT_NAMESPACES              16
 #define MIN_NAMESPACES              1
-#define MAX_NAMESPACES              16
+#define MAX_NAMESPACES              128
 #define MAX_TTL_NAMESPACES          MAX_NAMESPACES // to account for some hidden NS
 
 #ifdef DUMB_DRIVER
@@ -138,7 +138,7 @@ HW_PASSIVE_INITIALIZE_ROUTINE NVMePassiveInitialize;
 #define MAX_IO_QUEUE_ENTRIES        4096
 #endif
 
-#define DUMP_BUFFER_SIZE            (5*64*1024)
+#define DUMP_BUFFER_SIZE            ((5*64*1024) + (sizeof(NVME_LUN_EXTENSION)*MAX_NAMESPACES))
 
 #define DFT_INT_COALESCING_TIME     80
 #define MIN_INT_COALESCING_TIME     0
@@ -1077,7 +1077,9 @@ typedef struct _nvme_device_extension
         ULONG                       value;
     } originalVersion;
     BOOLEAN                         DeviceRemovedDuringIO;
-
+#if (NTDDI_VERSION > NTDDI_WIN7)
+	PVOID Timerhandle;
+#endif
 
 } NVME_DEVICE_EXTENSION, *PNVME_DEVICE_EXTENSION;
 
@@ -1532,9 +1534,11 @@ BOOLEAN NVMeInitialize(
     __in PVOID AdapterExtension
 );
 
-VOID IsDeviceRemoved(
-	__in PNVME_DEVICE_EXTENSION pAE
-);
+#if (NTDDI_VERSION > NTDDI_WIN7)
+    HW_TIMER_EX IsDeviceRemoved;
+#else
+    HW_TIMER IsDeviceRemoved;
+#endif
 
 BOOLEAN NVMeStartIo(
     __in PVOID AdapterExtension,
