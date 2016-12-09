@@ -108,7 +108,8 @@
     <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='Win8.1 Release|x64'">
-    <TargetVersion>WindowsV6.3</TargetVersion>
+    <TargetVersion>
+    </TargetVersion>
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
   </PropertyGroup>
@@ -180,7 +181,7 @@
       <AdditionalDependencies>$(DDK_LIB_PATH)\wdm.lib;$(DDK_LIB_PATH)\storport.lib;$(DDK_LIB_PATH)\scsiwmi.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Inf>
-      <TimeStamp>1.4.0.0</TimeStamp>
+      <TimeStamp>1.5.0.0</TimeStamp>
       <CatalogFileName>nvme64.cat</CatalogFileName>
     </Inf>
     <Mofcomp>
