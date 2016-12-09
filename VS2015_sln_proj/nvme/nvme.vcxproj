@@ -1,0 +1,499 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Win8.1 Debug|Win32">
+      <Configuration>Win8.1 Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Win8 Debug|Win32">
+      <Configuration>Win8 Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Win8.1 Release|Win32">
+      <Configuration>Win8.1 Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Win8 Release|Win32">
+      <Configuration>Win8 Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Win7 Debug|Win32">
+      <Configuration>Win7 Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Win7 Release|Win32">
+      <Configuration>Win7 Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Win8.1 Debug|x64">
+      <Configuration>Win8.1 Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Win8 Debug|x64">
+      <Configuration>Win8 Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Win8.1 Release|x64">
+      <Configuration>Win8.1 Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Win8 Release|x64">
+      <Configuration>Win8 Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Win7 Debug|x64">
+      <Configuration>Win7 Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Win7 Release|x64">
+      <Configuration>Win7 Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{4228E762-9381-4DA4-9DDA-04A47FA2DAC4}</ProjectGuid>
+    <TemplateGuid>{dd38f7fc-d7bd-488b-9242-7d8754cde80d}</TemplateGuid>
+    <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
+    <MinimumVisualStudioVersion>11.0</MinimumVisualStudioVersion>
+    <Configuration>Win8 Debug</Configuration>
+    <Platform Condition="'$(Platform)' == ''">Win32</Platform>
+  </PropertyGroup>
+  <PropertyGroup Label="Globals">
+    <RootNamespace>nvme</RootNamespace>
+    <VCTargetsPath Condition="'$(VCTargetsPath11)' != '' and '$(VisualStudioVersion)' == '11.0'">$(VCTargetsPath11)</VCTargetsPath>
+  </PropertyGroup>
+  <PropertyGroup Label="PropertySheets">
+    <ConfigurationType>Driver</ConfigurationType>
+    <DriverType>WDM</DriverType>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='Win8.1 Debug|Win32'">
+    <TargetVersion>WindowsV6.3</TargetVersion>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win8 Debug|Win32'" Label="Configuration">
+    <TargetVersion>Windows8</TargetVersion>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='Win8.1 Release|Win32'">
+    <TargetVersion>WindowsV6.3</TargetVersion>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win8 Release|Win32'" Label="Configuration">
+    <TargetVersion>Windows8</TargetVersion>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win7 Debug|Win32'" Label="Configuration">
+    <TargetVersion>Windows7</TargetVersion>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win7 Release|Win32'" Label="Configuration">
+    <TargetVersion>Windows7</TargetVersion>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='Win8.1 Debug|x64'">
+    <TargetVersion>WindowsV6.3</TargetVersion>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win8 Debug|x64'" Label="Configuration">
+    <TargetVersion>Windows8</TargetVersion>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='Win8.1 Release|x64'">
+    <TargetVersion>
+    </TargetVersion>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win8 Release|x64'" Label="Configuration">
+    <TargetVersion>Windows8</TargetVersion>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win7 Debug|x64'" Label="Configuration">
+    <TargetVersion>Windows7</TargetVersion>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win7 Release|x64'" Label="Configuration">
+    <TargetVersion>Windows7</TargetVersion>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup />
+  <PropertyGroup>
+    <DebuggerFlavor>DbgengKernelDebugger</DebuggerFlavor>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Win7 Release|x64'">
+    <ClCompile>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <PreprocessorDefinitions>__KERNEL_;__MSWINDOWS__;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>Level3</WarningLevel>
+      <WppEnabled>true</WppEnabled>
+      <WppKernelMode>true</WppKernelMode>
+      <WppTraceFunction>StorPortDebugPrint(LEVEL,MSG,...)</WppTraceFunction>
+      <WppGenerateUsingTemplateFile>{km-StorDefault.tpl}*.tmh</WppGenerateUsingTemplateFile>
+      <WppScanConfigurationData>..\..\source\nvme_tracing.h</WppScanConfigurationData>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(DDK_LIB_PATH)\wdm.lib;$(DDK_LIB_PATH)\storport.lib;$(DDK_LIB_PATH)\scsiwmi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <Inf>
+      <TimeStamp>1.4.0.0</TimeStamp>
+      <CatalogFileName>nvme64.cat</CatalogFileName>
+    </Inf>
+    <Mofcomp>
+      <WmiSyntaxCheck>true</WmiSyntaxCheck>
+    </Mofcomp>
+    <Mofcomp>
+      <CreateBinaryMofFile>"../../source/%(FileName).bmf"</CreateBinaryMofFile>
+    </Mofcomp>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Win8.1 Release|x64'">
+    <ClCompile>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <PreprocessorDefinitions>__KERNEL_;__MSWINDOWS__;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WppEnabled>true</WppEnabled>
+      <WppKernelMode>true</WppKernelMode>
+      <WppTraceFunction>StorPortDebugPrint(LEVEL,MSG,...)</WppTraceFunction>
+      <WppScanConfigurationData>..\..\source\nvme_tracing.h</WppScanConfigurationData>
+      <WppAlternateConfigurationFile>
+      </WppAlternateConfigurationFile>
+      <WppGenerateUsingTemplateFile>{km-StorDefault.tpl}*.tmh</WppGenerateUsingTemplateFile>
+      <WarningLevel>Level3</WarningLevel>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(DDK_LIB_PATH)\wdm.lib;$(DDK_LIB_PATH)\storport.lib;$(DDK_LIB_PATH)\scsiwmi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <Inf>
+      <TimeStamp>1.5.0.0</TimeStamp>
+      <CatalogFileName>nvme64.cat</CatalogFileName>
+    </Inf>
+    <Mofcomp>
+      <WmiSyntaxCheck>true</WmiSyntaxCheck>
+    </Mofcomp>
+    <Mofcomp>
+      <CreateBinaryMofFile>"../../source/%(FileName).bmf"</CreateBinaryMofFile>
+    </Mofcomp>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Win8 Release|x64'">
+    <ClCompile>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <PreprocessorDefinitions>__KERNEL_;__MSWINDOWS__;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>Level3</WarningLevel>
+      <WppEnabled>true</WppEnabled>
+      <WppTraceFunction>StorPortDebugPrint(LEVEL,MSG,...)</WppTraceFunction>
+      <WppKernelMode>true</WppKernelMode>
+      <WppGenerateUsingTemplateFile>{km-StorDefault.tpl}*.tmh</WppGenerateUsingTemplateFile>
+      <WppScanConfigurationData>..\..\source\nvme_tracing.h</WppScanConfigurationData>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(DDK_LIB_PATH)\wdm.lib;$(DDK_LIB_PATH)\storport.lib;$(DDK_LIB_PATH)\scsiwmi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <Inf>
+      <TimeStamp>1.4.0.0</TimeStamp>
+      <CatalogFileName>nvme64.cat</CatalogFileName>
+    </Inf>
+    <Mofcomp>
+      <WmiSyntaxCheck>true</WmiSyntaxCheck>
+    </Mofcomp>
+    <Mofcomp>
+      <CreateBinaryMofFile>"../../source/%(FileName).bmf"</CreateBinaryMofFile>
+    </Mofcomp>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Win7 Debug|x64'">
+    <ClCompile>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <PreprocessorDefinitions>__KERNEL_;MSWINDOWS__;_WIN64;_AMD64_;AMD64;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>Level3</WarningLevel>
+      <WppEnabled>true</WppEnabled>
+      <WppKernelMode>true</WppKernelMode>
+      <WppTraceFunction>StorPortDebugPrint(LEVEL,MSG,...)</WppTraceFunction>
+      <WppGenerateUsingTemplateFile>{km-StorDefault.tpl}*.tmh</WppGenerateUsingTemplateFile>
+      <WppScanConfigurationData>..\..\source\nvme_tracing.h</WppScanConfigurationData>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(DDK_LIB_PATH)\storport.lib;$(DDK_LIB_PATH)\wdm.lib;%(AdditionalDependencies);$(KernelBufferOverflowLib);$(DDK_LIB_PATH)\ntoskrnl.lib;$(DDK_LIB_PATH)\hal.lib;$(DDK_LIB_PATH)\wmilib.lib;$(DDK_LIB_PATH)\scsiwmi.lib</AdditionalDependencies>
+    </Link>
+    <Inf>
+      <TimeStamp>1.4.0.0</TimeStamp>
+    </Inf>
+    <Inf>
+      <CatalogFileName>nvme64.cat</CatalogFileName>
+    </Inf>
+    <Mofcomp>
+      <WmiSyntaxCheck>true</WmiSyntaxCheck>
+    </Mofcomp>
+    <Mofcomp>
+      <CreateBinaryMofFile>"../../source/%(FileName).bmf"</CreateBinaryMofFile>
+    </Mofcomp>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Win8.1 Debug|x64'">
+    <ClCompile>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <PreprocessorDefinitions>__KERNEL_;__MSWINDOWS;_WIN64;_AMD64_;AMD64;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WppEnabled>true</WppEnabled>
+      <WppKernelMode>true</WppKernelMode>
+      <WppTraceFunction>StorPortDebugPrint(LEVEL,MSG,...)</WppTraceFunction>
+      <WppGenerateUsingTemplateFile>{km-StorDefault.tpl}*.tmh</WppGenerateUsingTemplateFile>
+      <WppScanConfigurationData>..\..\source\nvme_tracing.h</WppScanConfigurationData>
+      <WarningLevel>Level3</WarningLevel>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(DDK_LIB_PATH)\storport.lib;$(DDK_LIB_PATH)\wdm.lib;%(AdditionalDependencies);$(KernelBufferOverflowLib);$(DDK_LIB_PATH)\ntoskrnl.lib;$(DDK_LIB_PATH)\hal.lib;$(DDK_LIB_PATH)\wmilib.lib;$(DDK_LIB_PATH)\scsiwmi.lib</AdditionalDependencies>
+    </Link>
+    <Inf>
+      <TimeStamp>1.4.0.0</TimeStamp>
+    </Inf>
+    <Inf>
+      <CatalogFileName>nvme64.cat</CatalogFileName>
+    </Inf>
+    <Mofcomp>
+      <WmiSyntaxCheck>true</WmiSyntaxCheck>
+    </Mofcomp>
+    <Mofcomp>
+      <CreateBinaryMofFile>"../../source/%(FileName).bmf"</CreateBinaryMofFile>
+    </Mofcomp>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <Wmimofck Include="../../source/nvmeMofData.bmf">
+      <HeaderOuputFile>"$(IntDir)nvmeMofData.h"</HeaderOuputFile>
+      <AdditionalOptions>-u -h"$(IntDir)nvmeMofData.h"</AdditionalOptions>
+    </Wmimofck>
+  </ItemGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Win8 Debug|x64'">
+    <ClCompile>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <PreprocessorDefinitions>__KERNEL_;__MSWINDOWS;_WIN64;_AMD64_;AMD64;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>Level3</WarningLevel>
+      <WppEnabled>true</WppEnabled>
+      <WppKernelMode>true</WppKernelMode>
+      <WppTraceFunction>StorPortDebugPrint(LEVEL,MSG,...)</WppTraceFunction>
+      <WppGenerateUsingTemplateFile>{km-StorDefault.tpl}*.tmh</WppGenerateUsingTemplateFile>
+      <WppScanConfigurationData>..\..\source\nvme_tracing.h</WppScanConfigurationData>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(DDK_LIB_PATH)\storport.lib;$(DDK_LIB_PATH)\wdm.lib;%(AdditionalDependencies);$(KernelBufferOverflowLib);$(DDK_LIB_PATH)\ntoskrnl.lib;$(DDK_LIB_PATH)\hal.lib;$(DDK_LIB_PATH)\wmilib.lib;$(DDK_LIB_PATH)\scsiwmi.lib</AdditionalDependencies>
+    </Link>
+    <Inf>
+      <TimeStamp>1.4.0.0</TimeStamp>
+    </Inf>
+    <Inf>
+      <CatalogFileName>nvme64.cat</CatalogFileName>
+    </Inf>
+    <Mofcomp>
+      <WmiSyntaxCheck>true</WmiSyntaxCheck>
+    </Mofcomp>
+    <Mofcomp>
+      <CreateBinaryMofFile>"../../source/%(FileName).bmf"</CreateBinaryMofFile>
+    </Mofcomp>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Win8.1 Release|Win32'">
+    <ClCompile>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <PreprocessorDefinitions>__KERNEL_;__MSWINDOWS__;_X86_=1;i386=1;STD_CALL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>Level3</WarningLevel>
+      <WppEnabled>true</WppEnabled>
+      <WppKernelMode>true</WppKernelMode>
+      <WppTraceFunction>StorPortDebugPrint(LEVEL,MSG,...)</WppTraceFunction>
+      <WppGenerateUsingTemplateFile>{km-StorDefault.tpl}*.tmh</WppGenerateUsingTemplateFile>
+      <WppScanConfigurationData>..\..\source\nvme_tracing.h</WppScanConfigurationData>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(DDK_LIB_PATH)\storport.lib;$(DDK_LIB_PATH)\wdm.lib;%(AdditionalDependencies);$(KernelBufferOverflowLib);$(DDK_LIB_PATH)\ntoskrnl.lib;$(DDK_LIB_PATH)\hal.lib;$(DDK_LIB_PATH)\wmilib.lib;$(DDK_LIB_PATH)\scsiwmi.lib</AdditionalDependencies>
+    </Link>
+    <Inf>
+      <TimeStamp>1.4.0.0</TimeStamp>
+    </Inf>
+    <Inf>
+      <CatalogFileName>nvme86.cat</CatalogFileName>
+    </Inf>
+    <Mofcomp>
+      <WmiSyntaxCheck>true</WmiSyntaxCheck>
+    </Mofcomp>
+    <Mofcomp>
+      <CreateBinaryMofFile>"../../source/%(FileName).bmf"</CreateBinaryMofFile>
+    </Mofcomp>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Win8 Release|Win32'">
+    <ClCompile>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <PreprocessorDefinitions>__KERNEL_;__MSWINDOWS__;_X86_=1;i386=1;STD_CALL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>Level3</WarningLevel>
+      <WppEnabled>true</WppEnabled>
+      <WppKernelMode>true</WppKernelMode>
+      <WppTraceFunction>StorPortDebugPrint(LEVEL,MSG,...)</WppTraceFunction>
+      <WppGenerateUsingTemplateFile>{km-StorDefault.tpl}*.tmh</WppGenerateUsingTemplateFile>
+      <WppScanConfigurationData>..\..\source\nvme_tracing.h</WppScanConfigurationData>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(DDK_LIB_PATH)\storport.lib;$(DDK_LIB_PATH)\wdm.lib;%(AdditionalDependencies);$(KernelBufferOverflowLib);$(DDK_LIB_PATH)\ntoskrnl.lib;$(DDK_LIB_PATH)\hal.lib;$(DDK_LIB_PATH)\wmilib.lib;$(DDK_LIB_PATH)\scsiwmi.lib</AdditionalDependencies>
+    </Link>
+    <Inf>
+      <TimeStamp>1.4.0.0</TimeStamp>
+    </Inf>
+    <Inf>
+      <CatalogFileName>nvme86.cat</CatalogFileName>
+    </Inf>
+    <Mofcomp>
+      <WmiSyntaxCheck>true</WmiSyntaxCheck>
+    </Mofcomp>
+    <Mofcomp>
+      <CreateBinaryMofFile>"../../source/%(FileName).bmf"</CreateBinaryMofFile>
+    </Mofcomp>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Win8.1 Debug|Win32'">
+    <ClCompile>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <PreprocessorDefinitions>__KERNEL_;__MSWINDOWS__;_X86_=1;i386=1;STD_CALL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>Level3</WarningLevel>
+      <WppEnabled>true</WppEnabled>
+      <WppKernelMode>true</WppKernelMode>
+      <WppTraceFunction>StorPortDebugPrint(LEVEL,MSG,...)</WppTraceFunction>
+      <WppGenerateUsingTemplateFile>{km-StorDefault.tpl}*.tmh</WppGenerateUsingTemplateFile>
+      <WppScanConfigurationData>..\..\source\nvme_tracing.h</WppScanConfigurationData>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(DDK_LIB_PATH)\storport.lib;$(DDK_LIB_PATH)\wdm.lib;%(AdditionalDependencies);$(KernelBufferOverflowLib);$(DDK_LIB_PATH)\ntoskrnl.lib;$(DDK_LIB_PATH)\hal.lib;$(DDK_LIB_PATH)\wmilib.lib;$(DDK_LIB_PATH)\scsiwmi.lib</AdditionalDependencies>
+    </Link>
+    <Inf>
+      <CatalogFileName>nvme86.cat</CatalogFileName>
+    </Inf>
+    <Mofcomp>
+      <WmiSyntaxCheck>true</WmiSyntaxCheck>
+    </Mofcomp>
+    <Mofcomp>
+      <CreateBinaryMofFile>"../../source/%(FileName).bmf"</CreateBinaryMofFile>
+    </Mofcomp>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Win8 Debug|Win32'">
+    <ClCompile>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <PreprocessorDefinitions>__KERNEL_;__MSWINDOWS__;_X86_=1;i386=1;STD_CALL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>Level3</WarningLevel>
+      <WppEnabled>true</WppEnabled>
+      <WppKernelMode>true</WppKernelMode>
+      <WppTraceFunction>StorPortDebugPrint(LEVEL,MSG,...)</WppTraceFunction>
+      <WppGenerateUsingTemplateFile>{km-StorDefault.tpl}*.tmh</WppGenerateUsingTemplateFile>
+      <WppScanConfigurationData>..\..\source\nvme_tracing.h</WppScanConfigurationData>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(DDK_LIB_PATH)\storport.lib;$(DDK_LIB_PATH)\wdm.lib;%(AdditionalDependencies);$(KernelBufferOverflowLib);$(DDK_LIB_PATH)\ntoskrnl.lib;$(DDK_LIB_PATH)\hal.lib;$(DDK_LIB_PATH)\wmilib.lib;$(DDK_LIB_PATH)\scsiwmi.lib</AdditionalDependencies>
+    </Link>
+    <Inf>
+      <CatalogFileName>nvme86.cat</CatalogFileName>
+    </Inf>
+    <Mofcomp>
+      <WmiSyntaxCheck>true</WmiSyntaxCheck>
+    </Mofcomp>
+    <Mofcomp>
+      <CreateBinaryMofFile>"../../source/%(FileName).bmf"</CreateBinaryMofFile>
+    </Mofcomp>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Win7 Release|Win32'">
+    <ClCompile>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <PreprocessorDefinitions>__KERNEL_;__MSWINDOWS__;_X86_=1;i386=1;STD_CALL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>Level3</WarningLevel>
+      <WppEnabled>true</WppEnabled>
+      <WppKernelMode>true</WppKernelMode>
+      <WppTraceFunction>StorPortDebugPrint(LEVEL,MSG,...)</WppTraceFunction>
+      <WppGenerateUsingTemplateFile>{km-StorDefault.tpl}*.tmh</WppGenerateUsingTemplateFile>
+      <WppScanConfigurationData>..\..\source\nvme_tracing.h</WppScanConfigurationData>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(DDK_LIB_PATH)\storport.lib;$(DDK_LIB_PATH)\wdm.lib;%(AdditionalDependencies);$(KernelBufferOverflowLib);$(DDK_LIB_PATH)\ntoskrnl.lib;$(DDK_LIB_PATH)\hal.lib;$(DDK_LIB_PATH)\wmilib.lib;$(DDK_LIB_PATH)\scsiwmi.lib</AdditionalDependencies>
+    </Link>
+    <Inf>
+      <TimeStamp>1.4.0.0</TimeStamp>
+    </Inf>
+    <Inf>
+      <CatalogFileName>nvme86.cat</CatalogFileName>
+    </Inf>
+    <Mofcomp>
+      <WmiSyntaxCheck>true</WmiSyntaxCheck>
+    </Mofcomp>
+    <Mofcomp>
+      <CreateBinaryMofFile>"../../source/%(FileName).bmf"</CreateBinaryMofFile>
+    </Mofcomp>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Win7 Debug|Win32'">
+    <ClCompile>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <PreprocessorDefinitions>__KERNEL_;__MSWINDOWS__;_X86_=1;i386=1;STD_CALL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>Level3</WarningLevel>
+      <WppEnabled>true</WppEnabled>
+      <WppKernelMode>true</WppKernelMode>
+      <WppTraceFunction>StorPortDebugPrint(LEVEL,MSG,...)</WppTraceFunction>
+      <WppGenerateUsingTemplateFile>{km-StorDefault.tpl}*.tmh</WppGenerateUsingTemplateFile>
+      <WppScanConfigurationData>..\..\source\nvme_tracing.h</WppScanConfigurationData>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(DDK_LIB_PATH)\storport.lib;$(DDK_LIB_PATH)\wdm.lib;%(AdditionalDependencies);$(KernelBufferOverflowLib);$(DDK_LIB_PATH)\ntoskrnl.lib;$(DDK_LIB_PATH)\hal.lib;$(DDK_LIB_PATH)\wmilib.lib;$(DDK_LIB_PATH)\scsiwmi.lib</AdditionalDependencies>
+    </Link>
+    <Inf>
+      <CatalogFileName>nvme86.cat</CatalogFileName>
+    </Inf>
+    <Mofcomp>
+      <WmiSyntaxCheck>true</WmiSyntaxCheck>
+    </Mofcomp>
+    <Mofcomp>
+      <CreateBinaryMofFile>"../../source/%(FileName).bmf"</CreateBinaryMofFile>
+    </Mofcomp>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <FilesToPackage Include="$(TargetPath)" />
+    <FilesToPackage Include="@(Inf->'%(CopyOutput)')" Condition="'@(Inf)'!=''" />
+  </ItemGroup>
+  <ItemGroup>
+    <Inf Include="..\..\source\nvme.inf" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\..\source\nvme.h" />
+    <ClInclude Include="..\..\source\nvmeInit.h" />
+    <ClInclude Include="..\..\source\nvmeIo.h" />
+    <ClInclude Include="..\..\source\nvmeIoctl.h" />
+    <ClInclude Include="..\..\source\nvmePwrMgmt.h" />
+    <ClInclude Include="..\..\source\nvmeReg.h" />
+    <ClInclude Include="..\..\source\nvmeSnti.h" />
+    <ClInclude Include="..\..\source\nvmeSntiTypes.h" />
+    <ClInclude Include="..\..\source\nvmeSntiUtils.h" />
+    <ClInclude Include="..\..\source\nvmeStd.h" />
+    <ClInclude Include="..\..\source\nvmeWmi.h" />
+    <ClInclude Include="..\..\source\nvme_tracing.h" />
+    <ClInclude Include="..\..\source\precomp.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\..\source\nvmeInit.c" />
+    <ClCompile Include="..\..\source\nvmeIo.c" />
+    <ClCompile Include="..\..\source\nvmePwrMgmt.c" />
+    <ClCompile Include="..\..\source\nvmeSnti.c" />
+    <ClCompile Include="..\..\source\nvmeStat.c" />
+    <ClCompile Include="..\..\source\nvmeStd.c" />
+    <ClCompile Include="..\..\source\nvmeWmi.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="..\..\source\nvme.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <Mofcomp Include="..\..\source\nvmeMofData.mof" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>
