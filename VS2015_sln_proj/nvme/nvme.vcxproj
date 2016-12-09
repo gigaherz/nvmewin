@@ -1,6 +1,14 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Win10 Release|Win32">
+      <Configuration>Win10 Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Win10 Release|x64">
+      <Configuration>Win10 Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
     <ProjectConfiguration Include="Win8.1 Debug|Win32">
       <Configuration>Win8.1 Debug</Configuration>
       <Platform>Win32</Platform>
@@ -82,6 +90,12 @@
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win10 Release|Win32'" Label="Configuration">
+    <TargetVersion>
+    </TargetVersion>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+  </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win8 Release|Win32'" Label="Configuration">
     <TargetVersion>Windows8</TargetVersion>
     <UseDebugLibraries>false</UseDebugLibraries>
@@ -110,6 +124,11 @@
   <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='Win8.1 Release|x64'">
     <TargetVersion>
     </TargetVersion>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win10 Release|x64'" Label="Configuration">
+    <TargetVersion />
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
   </PropertyGroup>
@@ -165,6 +184,33 @@
     </Mofcomp>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Win8.1 Release|x64'">
+    <ClCompile>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <PreprocessorDefinitions>__KERNEL_;__MSWINDOWS__;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WppEnabled>true</WppEnabled>
+      <WppKernelMode>true</WppKernelMode>
+      <WppTraceFunction>StorPortDebugPrint(LEVEL,MSG,...)</WppTraceFunction>
+      <WppScanConfigurationData>..\..\source\nvme_tracing.h</WppScanConfigurationData>
+      <WppAlternateConfigurationFile>
+      </WppAlternateConfigurationFile>
+      <WppGenerateUsingTemplateFile>{km-StorDefault.tpl}*.tmh</WppGenerateUsingTemplateFile>
+      <WarningLevel>Level3</WarningLevel>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(DDK_LIB_PATH)\wdm.lib;$(DDK_LIB_PATH)\storport.lib;$(DDK_LIB_PATH)\scsiwmi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <Inf>
+      <TimeStamp>1.5.0.0</TimeStamp>
+      <CatalogFileName>nvme64.cat</CatalogFileName>
+    </Inf>
+    <Mofcomp>
+      <WmiSyntaxCheck>true</WmiSyntaxCheck>
+    </Mofcomp>
+    <Mofcomp>
+      <CreateBinaryMofFile>"../../source/%(FileName).bmf"</CreateBinaryMofFile>
+    </Mofcomp>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Win10 Release|x64'">
     <ClCompile>
       <TreatWarningAsError>true</TreatWarningAsError>
       <PreprocessorDefinitions>__KERNEL_;__MSWINDOWS__;%(PreprocessorDefinitions)</PreprocessorDefinitions>
@@ -304,6 +350,33 @@
     </Mofcomp>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Win8.1 Release|Win32'">
+    <ClCompile>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <PreprocessorDefinitions>__KERNEL_;__MSWINDOWS__;_X86_=1;i386=1;STD_CALL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>Level3</WarningLevel>
+      <WppEnabled>true</WppEnabled>
+      <WppKernelMode>true</WppKernelMode>
+      <WppTraceFunction>StorPortDebugPrint(LEVEL,MSG,...)</WppTraceFunction>
+      <WppGenerateUsingTemplateFile>{km-StorDefault.tpl}*.tmh</WppGenerateUsingTemplateFile>
+      <WppScanConfigurationData>..\..\source\nvme_tracing.h</WppScanConfigurationData>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>$(DDK_LIB_PATH)\storport.lib;$(DDK_LIB_PATH)\wdm.lib;%(AdditionalDependencies);$(KernelBufferOverflowLib);$(DDK_LIB_PATH)\ntoskrnl.lib;$(DDK_LIB_PATH)\hal.lib;$(DDK_LIB_PATH)\wmilib.lib;$(DDK_LIB_PATH)\scsiwmi.lib</AdditionalDependencies>
+    </Link>
+    <Inf>
+      <TimeStamp>1.4.0.0</TimeStamp>
+    </Inf>
+    <Inf>
+      <CatalogFileName>nvme86.cat</CatalogFileName>
+    </Inf>
+    <Mofcomp>
+      <WmiSyntaxCheck>true</WmiSyntaxCheck>
+    </Mofcomp>
+    <Mofcomp>
+      <CreateBinaryMofFile>"../../source/%(FileName).bmf"</CreateBinaryMofFile>
+    </Mofcomp>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Win10 Release|Win32'">
     <ClCompile>
       <TreatWarningAsError>true</TreatWarningAsError>
       <PreprocessorDefinitions>__KERNEL_;__MSWINDOWS__;_X86_=1;i386=1;STD_CALL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
