@@ -424,8 +424,7 @@ VOID NVMeRunningWaitOnIdentifyCtrl(
      * Issue Identify command for the very first time If failed, fail the state
      * machine
      */
-    if (NVMeGetIdentifyStructures(pAE, 0, IDENTIFY_CNTLR, 
-        pAE->controllerIdentifyData.CNTLID) == FALSE) {
+    if (NVMeGetIdentifyStructures(pAE, 0, IDENTIFY_CNTLR) == FALSE) {
         NVMeDriverFatalError(pAE,
                             (1 << START_STATE_IDENTIFY_CTRL_FAILURE));
         NVMeCallArbiter(pAE);
@@ -447,8 +446,7 @@ VOID NVMeRunningWaitOnListAttachedNs(
     PNVME_DEVICE_EXTENSION pAE
 )
 {
-    if (NVMeGetIdentifyStructures(pAE, 0, LIST_ATTACHED_NAMESPACES, 
-        pAE->controllerIdentifyData.CNTLID) == FALSE) {
+    if (NVMeGetIdentifyStructures(pAE, 0, LIST_ATTACHED_NAMESPACES) == FALSE) {
         NVMeDriverFatalError(pAE,
                             (1 << START_STATE_LIST_ATTACHED_NS_FAILURE));
         NVMeCallArbiter(pAE);
@@ -469,8 +467,7 @@ VOID NVMeRunningWaitOnListExistingNs(
     PNVME_DEVICE_EXTENSION pAE
 )
 {
-    if (NVMeGetIdentifyStructures(pAE, 0, LIST_EXISTING_NAMESPACES, 
-        pAE->controllerIdentifyData.CNTLID) == FALSE) {
+    if (NVMeGetIdentifyStructures(pAE, 0, LIST_EXISTING_NAMESPACES) == FALSE) {
         NVMeDriverFatalError(pAE,
                             (1 << START_STATE_LIST_EXISTING_NS_FAILURE));
         NVMeCallArbiter(pAE);
@@ -507,8 +504,7 @@ VOID NVMeRunningWaitOnIdentifyNS(
      * Please note that NN of Controller structure is 1-based.
      */
 
-    if (NVMeGetIdentifyStructures(pAE, nsid, IDENTIFY_NAMESPACE, 
-        pAE->controllerIdentifyData.CNTLID) == FALSE) {
+    if (NVMeGetIdentifyStructures(pAE, nsid, IDENTIFY_NAMESPACE) == FALSE) {
         NVMeDriverFatalError(pAE,
                             (1 << START_STATE_IDENTIFY_NS_FAILURE));
         NVMeCallArbiter(pAE);
