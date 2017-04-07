@@ -2212,7 +2212,7 @@ IoCompletionRoutine(
     )
 {
     PNVME_DEVICE_EXTENSION pAE = (PNVME_DEVICE_EXTENSION)pHwDeviceExtension;
-    ULONG MsgID = (ULONG)pSystemArgument1;
+    ULONG MsgID = PtrToUlong(pSystemArgument1);
     PNVMe_COMPLETION_QUEUE_ENTRY pCplEntry = NULL;
     PNVME_SRB_EXTENSION pSrbExtension = NULL;
     SNTI_TRANSLATION_STATUS sntiStatus = SNTI_TRANSLATION_SUCCESS;
