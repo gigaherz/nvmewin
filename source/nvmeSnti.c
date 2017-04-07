@@ -9010,12 +9010,12 @@ VOID SntiDpcRoutine(
 {
     PNVME_SRB_EXTENSION pSrbExt = NULL;
     PNVME_DEVICE_EXTENSION pDevExt = NULL;
-    SIZE_T bufferSize;
+    UINT32 bufferSize;
     ULONG status;
 
     pDevExt = (PNVME_DEVICE_EXTENSION)pHwDeviceExtension;
     pSrbExt = (PNVME_SRB_EXTENSION)pSystemArgument1;
-    bufferSize = (SIZE_T)pSystemArgument2;
+    bufferSize = (UINT32)pSystemArgument2;
 
     status = StorPortFreeContiguousMemorySpecifyCache(pDevExt,
                                                       pSrbExt->pDataBuffer,

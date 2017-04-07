@@ -2494,8 +2494,7 @@ BOOLEAN NVMeAccessLbaRangeEntry(
 BOOLEAN NVMeGetIdentifyStructures(
     PNVME_DEVICE_EXTENSION pAE,
     ULONG NamespaceID,
-    USHORT CNS,
-    USHORT CNTID
+    USHORT CNS
 )
 {
     PNVME_SRB_EXTENSION pNVMeSrbExt =
@@ -2519,8 +2518,6 @@ BOOLEAN NVMeGetIdentifyStructures(
     pIdentifyCDW10 = (PADMIN_IDENTIFY_COMMAND_DW10) &pIdentify->CDW10;
     /* Set the type of identify command */
     pIdentifyCDW10->CNS = CNS;
-    /* Select the controller to talk to */
-    pIdentifyCDW10->CNTID = CNTID;
 
     switch (CNS) {
     case IDENTIFY_CNTLR:
